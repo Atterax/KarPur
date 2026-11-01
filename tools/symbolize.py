@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MAP = ROOT / 'build' / 'game' / 'karpur.map'
-BASE = 0x140000000   # PE32+ default image base (lld)
+BASE = 0x140000000   # PE32+ default image base (lld); used only when the map lists absolute addresses
 
 # lld's own map format: "<address> [<load address>] <size> <align> <name>", indented by level (output section, input
 # section "file:(section)", symbol); the MSVC-style format has "<section>:<offset> <symbol> <address> ...". Both are
@@ -46,7 +46,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('addresses', nargs='+', help='karpur+0x... as the fault report prints them')
     ap.add_argument('--map', type=Path, default=MAP)
-    ap.add_argument('--base', type=lambda s: int(s, 16), default=BASE, help='image base (hex)')
+    ap.add_argument('--base', type=lambda s: int(s, 16), default=None, help='image base (hex); default: detected')
     a = ap.parse_args()
     if not a.map.is_file():
         sys.exit(f'error: {a.map} not found: run tools\\build_game.py first')
@@ -54,7 +54,10 @@ def main():
     if not syms:
         sys.exit(f'error: no symbols read from {a.map}')
     addrs = [s[0] for s in syms]
-    print(f'{len(syms)} symbols in {a.map.name}')
+    # lld's MinGW map lists image-relative addresses (all below the default image base): offsets are used as they are.
+    if a.base is None:
+        a.base = BASE if addrs[-1] >= BASE else 0
+    print(f'{len(syms)} symbols in {a.map.name}, image base {a.base:#x}')
     for text in a.addresses:
         off = int(text.split('+', 1)[-1], 16)
         va = a.base + off
