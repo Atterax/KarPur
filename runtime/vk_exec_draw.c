@@ -2510,6 +2510,27 @@ static void cs_note(VkExec *ex, const GfxShader *cs, const p_dispatch *d) {
     }
     if (nseen[k] >= 3) return;
     nseen[k]++;
+    if (nseen[k] == 1) {   // instruction census of the translation: counts only, no shader content
+        uint64_t nw = 0;
+        const uint32_t *w = gfx_shader_spirv(cs, &nw);
+        unsigned atom = 0, aadd = 0, acas = 0, aminmax = 0, aload = 0, astore = 0, grp = 0, ballot = 0, func = 0,
+                 call = 0, cbar = 0, mbar = 0, u2p = 0, loads = 0, stores = 0;
+        for (uint64_t i = 5; w && i < nw;) {
+            uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+            if (!len) break;
+            if (op >= 227 && op <= 242) atom++;
+            aadd += op == 234 || op == 232, acas += op == 230, aminmax += op >= 236 && op <= 239;
+            aload += op == 227, astore += op == 228;
+            grp += op >= 333 && op <= 366, ballot += op == 339;
+            func += op == 54, call += op == 57, cbar += op == 224, mbar += op == 225, u2p += op == 120;
+            loads += op == 61, stores += op == 62;
+            i += len;
+        }
+        rt_log("vk_exec: compute shader %d SPIR-V: %llu words, functions %u, calls %u, loads %u, stores %u, atomics %u "
+               "(add/inc %u, compare-exchange %u, min/max %u, atomic load %u, atomic store %u), group ops %u (ballot %u), "
+               "control barriers %u, memory barriers %u, pointer conversions %u", k + 1, (unsigned long long)nw, func,
+               call, loads, stores, atom, aadd, acas, aminmax, aload, astore, grp, ballot, cbar, mbar, u2p);
+    }
     uint32_t l[3];
     gfx_shader_local_size(cs, l);
     char buf[1400], *o = buf, *end = buf + sizeof buf;

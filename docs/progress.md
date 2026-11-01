@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Compute-Shader 1 ist das GPU-Culling
+- Bericht: Shader 1 (120 Gruppen × 64, im Feld je Frame) liest Storage 0 (32784 B) und 2 (4 MiB), schreibt 1 (256 KiB), 3 (1 MiB, kompaktierte Instanzliste) und 4 (256 KiB, **die indirekten Argumente**). Keine Textur: Sichtfeld-/Abstands-Culling, kein Hi-Z. Shader 2–4: je 1 Gruppe × 32, viele kleine Storage-Buffer (Vorbereitung).
+- Datenwettläufe sind ausgeschlossen (SUBMIT_SYNC, MEMORY=import), Verdeckung auch. Verdacht: Übersetzung von Shader 1 (Atomics zum Zählen/Kompaktieren, Global-Memory-Zugriffe über Hilfsfunktionen). Bericht `vk_exec: compute shader N SPIR-V: …` zählt Funktionen, Aufrufe, Atomics, Gruppen-Ops, Barrieren (nur Zahlen).
+
 ### 2026-11-01: Shader lesen die Abfrage-Ergebnisse nicht; Verdeckung endgültig ausgeschlossen
 - `OQ_FILL=1`: ploppt weiter. Berichte liegen in 9–10 Seiten; kein Compute- und kein Storage-Zugriff darauf, nur ~0,5 Uniform-Bindungen pro Frame (Nachbarn auf derselben Seite). Verdeckungsabfragen sind nicht die Ursache.
 - Nächste Diagnose: `vk_exec: compute shader N dispatch M: …` (ab Frame 900, je Shader 3 Dispatches): Gruppen, Local-Size, gelesene Texturen/Images (Größe, Format, „occlusion depth“/„depth“), Storage-Buffer (Größe, geschrieben, „covers indirect draw arguments“). Zeigt, ob ein GPU-Culling ein Tiefenbild liest und die Argumente schreibt.
