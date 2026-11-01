@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: Lauf mit `KARPUR_WATCH` auf `nn::os::GetTlsValue`, `SetTlsValue`, `AllocateTlsSlot`. Gesucht: liefert `GetTlsValue` aus `main+0x14ff62c` (in `main+0x14ff4dc`) 0, und wurde der Slot auf diesem Thread je gesetzt?
+1. Maintainer: Lauf mit `KARPUR_WATCH` (GetTlsValue, LockMutex, `__cxa_guard_acquire`, AcquireAudioDeviceNotificationForOutput) und `KARPUR_WATCH_FROM=main+0x14fd2d8-0x14ff98c` (Audio-Initialisierung und `main+0x14ff4dc`). Gesucht: was `GetTlsValue` in `main+0x14ff4dc` liefert.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Erster KARPUR_WATCH-Lauf
+- Der Beobachter läuft unter Windows. TLS ist in Ordnung: Slot 0 (`nn::mem::StandardAllocator`, ein Cache pro Thread) und Slot 1 (vom Spiel in `nninitStartup` gesetzt, Speicherkontext) werden auf jedem Thread gesetzt und konsistent gelesen; Slot 2 legt `main+0xb4e600` beim ersten Gebrauch an.
+- Slot 1 wird an Hunderten Stellen gelesen; nach 600 Zeilen war Schluss, bevor die Audio-Initialisierung kam. Neu `KARPUR_WATCH_FROM=modul+0xLO-0xHI,...`: nur Aufrufer in diesen Bereichen.
 
 ### 2026-11-01: main+0x14ff4dc, Beobachter KARPUR_WATCH
 - `main+0x14ff4dc` (300 Instruktionen): `nn::os::GetTlsValue` (+0x150), ein Funktionsaufruf `main+0x106d150`, zwei Hilfsfunktionen, virtuelle Aufrufe, eine statische Variable mit `__cxa_guard_*` und Abbruchpfade (`nn::diag::detail::AbortImpl`). Ein Abbruch kam nicht, also liefert die Funktion ein leeres Ergebnis ohne Fehler.
