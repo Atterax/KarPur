@@ -57,7 +57,11 @@ GuestFn hostfn_override(const char *name) {
     return table_find(ovr_start, ovr_stop, name);
 }
 
-GuestFn hostfn_observer(const char *name) { return table_find(obs_start, obs_stop, name); }
+GuestFn watch_observer(const char *name);   // KarPur: watch.c, KARPUR_WATCH
+GuestFn hostfn_observer(const char *name) {
+    GuestFn f = table_find(obs_start, obs_stop, name);
+    return f ? f : watch_observer(name);
+}
 
 // Linked HOST_OVERRIDE / HOST_OBSERVER entries (the loader reports how many it installed).
 int hostfn_table_size(int observers) {

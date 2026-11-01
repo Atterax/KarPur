@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `tools/calls.py main+0x14ff4dc main+0x14fd2d8` (alle Aufrufe beider Funktionen). Gesucht: was `main+0x14ff4dc` nachschlägt oder anlegt und warum es 0 liefert.
+1. Maintainer: Lauf mit `KARPUR_WATCH` auf `nn::os::GetTlsValue`, `SetTlsValue`, `AllocateTlsSlot`. Gesucht: liefert `GetTlsValue` aus `main+0x14ff62c` (in `main+0x14ff4dc`) 0, und wurde der Slot auf diesem Thread je gesetzt?
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: main+0x14ff4dc, Beobachter KARPUR_WATCH
+- `main+0x14ff4dc` (300 Instruktionen): `nn::os::GetTlsValue` (+0x150), ein Funktionsaufruf `main+0x106d150`, zwei Hilfsfunktionen, virtuelle Aufrufe, eine statische Variable mit `__cxa_guard_*` und Abbruchpfade (`nn::diag::detail::AbortImpl`). Ein Abbruch kam nicht, also liefert die Funktion ein leeres Ergebnis ohne Fehler.
+- Stärkster Verdacht: Der Zeiger kommt aus einem TLS-Slot, der auf diesem Thread (Hauptthread) nie gesetzt wurde. Die Runtime ersetzt die TLS-Funktionen nicht; es läuft der SDK-Code.
+- Neu `runtime/watch.c`: `KARPUR_WATCH=<Symbol>,<Symbol>` hängt an jeden JUMP_SLOT-Import dieser Symbole einen Beobachter, der Aufrufer, x0–x3, Ergebnis und TLS-Adresse des Threads loggt (jede neue Kombination aus Symbol, Aufrufer und Ergebnis einmal, höchstens 600 Zeilen). `hostfn_observer` fragt ihn nach den fest eingebauten Beobachtern.
 
 ### 2026-11-01: calls.py auf den LockMutex-Absturz
 - `main+0x11bcec8` ist ein virtueller Aufruf (`indirect x8`, +0x240) in der Startfunktion `main+0x11bcc84` (607 Instruktionen), aufgerufen aus `main+0x11acb4c`.
