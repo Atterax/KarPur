@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: UMGEBUNGSLICHT KORREKT; Zählung übersprungener Draws
+- Mit Cube-kompatiblen 2D-Arrays: Schattenbereiche, Kleidung, Innenräume und Metall sehen normal aus; keine Ersatz-Textur-Meldung mehr.
+- Offen: einzelne fehlende Objekte (Vase mit Pflanze vor dem Haus: Pflanze schwebt, Topf fehlt; Blumenbeet unsichtbar, blockiert aber).
+- Diagnose `vk_exec_draw.c skip_tick/skip_note`: übersprungene Draws nach Grund (Render aus/Bedingung, leerer Scissor, Shader wartet, Shader fehlt, Pipeline wartet, Pipeline fehlgeschlagen), Summe über 600 Bilder, höchstens 30 Zeilen.
+
 ### 2026-11-01: Ursache des fehlenden Umgebungslichts: Cube-Sampler auf 2D-Array
 - Diagnose: genau eine Kombination: Shader-Ressource Typ 0x5 (Cube) auf ein 2D-Array-Bild 32×32, 6 Ebenen, 1 Stufe, View mit Ebenen 0+6 → Ersatz gebunden. Die Umgebungslicht-Würfeltextur wird als 2D-Array angelegt und als Würfel gelesen.
 - Fix: `vk_texture.c` legt quadratische 2D-Arrays mit 6n Ebenen zusätzlich CUBE_COMPATIBLE an (`VkTexImage.cube_ok`), außer auf AMD (TotK-Kommentar: Layoutfehler im AMD-Treiber); `get_view` erlaubt dann Cube-Views.
