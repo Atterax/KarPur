@@ -596,6 +596,14 @@ static void vertex_input(const VkPipeState *s, VtxInput *v) {
         } else {
             a->binding = VK_PIPE_ZERO_BINDING, a->format = zero_format(io[l].type);
             zero = 1;
+            // KarPur diagnostic: an attribute the game set up in a format without a Vulkan vertex format reads zeros
+            // (positions at one point: the object is invisible). Each NVN format once.
+            if (va.fmt) {
+                static uint8_t seen[256];
+                if (!seen[va.fmt & 0xff]++)
+                    rt_log("vk_pipeline: vertex attribute %d in NVN format %#x has no vertex format here: read as zeros", l,
+                           (unsigned)va.fmt);
+            }
         }
     }
     for (uint32_t b = 0; b < 16; b++) {

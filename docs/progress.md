@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Fehlende Objekte werden nicht übersprungen
+- Zählung: in mehreren Minuten kein einziger übersprungener Draw (keine `draws in frames`-Zeile). Die Draws laufen, die Objekte sind trotzdem unsichtbar.
+- Verdacht: Vertex-Attribut in einem NVN-Format ohne Eintrag in `vtx_formats` → liest lautlos Nullen (Positionen in einem Punkt). Diagnose in `vk_pipeline.c vertex_input`: jedes solche Format einmal. Weitere Kandidaten danach: GPU-Culling (indirekte Draws mit Anzahl 0), Instanz-Divisor.
+
 ### 2026-11-01: UMGEBUNGSLICHT KORREKT; Zählung übersprungener Draws
 - Mit Cube-kompatiblen 2D-Arrays: Schattenbereiche, Kleidung, Innenräume und Metall sehen normal aus; keine Ersatz-Textur-Meldung mehr.
 - Offen: einzelne fehlende Objekte (Vase mit Pflanze vor dem Haus: Pflanze schwebt, Topf fehlt; Blumenbeet unsichtbar, blockiert aber).
