@@ -140,14 +140,16 @@ static int fns_ready(void) {
     if (!fn_state) {
         VkCtx *c = vk_ctx();
         fn_state = -1;
-        if (c && c->has_transform_feedback) {
+        int on = rt_knob("XFB", "1");   // TOTK_XFB=0: transform feedback draws are drawn without capturing
+        if (c && c->has_transform_feedback && on) {
             fn_bind = (PFN_vkCmdBindTransformFeedbackBuffersEXT)vkGetDeviceProcAddr(c->device, "vkCmdBindTransformFeedbackBuffersEXT");
             fn_begin = (PFN_vkCmdBeginTransformFeedbackEXT)vkGetDeviceProcAddr(c->device, "vkCmdBeginTransformFeedbackEXT");
             fn_end = (PFN_vkCmdEndTransformFeedbackEXT)vkGetDeviceProcAddr(c->device, "vkCmdEndTransformFeedbackEXT");
             if (fn_bind && fn_begin && fn_end) fn_state = 1;
         }
-        rt_log("tf: transform feedback %s", fn_state > 0 ? "recorded with VK_EXT_transform_feedback"
-                                                         : "unavailable (no VK_EXT_transform_feedback): those draws capture nothing");
+        rt_log("tf: transform feedback %s", fn_state > 0 ? "recorded with VK_EXT_transform_feedback (TOTK_XFB=0 turns it off)"
+                                            : !on ? "off (TOTK_XFB=0): those draws capture nothing"
+                                                  : "unavailable (no VK_EXT_transform_feedback): those draws capture nothing");
     }
     return fn_state > 0;
 }
@@ -185,8 +187,11 @@ int vk_xfb_draw_begin(VkExec *ex) {
         rt_log("tf: draw %d captures into %d buffers:%s", tf_draws, nbound, d);
     }
     rec_drain();
+    if (tf_draws <= 2) rt_log("tf: draw %d: binding the buffers", tf_draws);
     fn_bind(ex->cb, 0, (uint32_t)nbound, buf, off, size);
+    if (tf_draws <= 2) rt_log("tf: draw %d: beginning", tf_draws);
     fn_begin(ex->cb, 0, 0, NULL, NULL);
+    if (tf_draws <= 2) rt_log("tf: draw %d: begun, drawing", tf_draws);
     ex->recorded += 2;
     return 1;
 }
@@ -207,7 +212,9 @@ static uint64_t captured_vertices(int prim, uint32_t n, uint32_t inst) {
 
 void vk_xfb_draw_end(VkExec *ex, int prim, uint32_t n, uint32_t inst) {
     rec_drain();
+    if (tf_draws <= 2) rt_log("tf: draw %d: drawn, ending", tf_draws);
     fn_end(ex->cb, 0, 0, NULL, NULL);
+    if (tf_draws <= 2) rt_log("tf: draw %d: ended", tf_draws);
     ex->recorded++;
     uint64_t verts = captured_vertices(prim, n, inst);
     for (int b = 0; b < nbound; b++) {

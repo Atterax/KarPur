@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Absturz im Treiber beim ersten TF-Draw
+- Erster Lauf mit echtem TF: Übersetzer baut, Smoke-Test ok, alle 490 Shader neu übersetzt. Layout dekodiert wie erwartet (`[0: stride 12, 3 components from 0x20] [1: … 0x24] [2: … 0x28]`). Direkt nach `tf: draw 1 captures into 3 buffers` endet der Prozess ohne Meldung: Der Absturz liegt außerhalb von karpur.exe (der Crash-Reporter meldet nur Fehler in unserem Modul), also im Treiber.
+- Eingebaut zum Eingrenzen: `TOTK_XFB=0` schaltet die TF-Aufnahme ab (Binden nach Stufen und XFB-Shader bleiben), Schrittlogs für die ersten 2 TF-Draws (binden, beginnen, gezeichnet, beendet). Vorhandene Schalter: `TOTK_GPL=0` (keine Pipeline-Libraries), `TOTK_VK_RECORDER=0` (kein Recorder-Thread).
+
 ### 2026-11-01: Transform Feedback und Programm-Binden nach Stufen umgesetzt
 - Layout-Bytes der ersten 4 TF-Shader: außer den bekannten Stellen nur `6e8..6ea = 01 01 01`, `6ec = 03`, `6ed = 01` (vermutlich Puffer-aktiv und Pufferanzahl 3) – sonst nichts. Bereiche: Attribut je Ausgabe bei 0x0dc + 0x80·b + j, (vermutlich) erste Komponente bei 0x2dc + …, Komponentenzahl bei 0x4dc + …, Strides u16 bei 0x6dc. Die drei 0x200-Bereiche schließen lückenlos an die Strides an. Annahme: Attributwert 0x20 + k = generisches Attribut k (Puffer 0: Position xyz, 1/2: Normale/Tangente).
 - `runtime/nvn_xfb.h`: dekodiert das Layout in Maxwell-Attributwörter je Komponente (0x20 + 4k + c), wie Ryujinx sie erwartet.
