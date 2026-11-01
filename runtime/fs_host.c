@@ -1082,12 +1082,40 @@ static void close_directory(uint64_t h) {
 // and ApplicationId are 8-byte structs passed in one register; Uid, ReadOption and WriteOption by reference.
 #define I32(i) ((int32_t)arg_x(c, i))
 #define I64(i) ((int64_t)arg_x(c, i))
-static void ov_open_file(Cpu *c) { ret_x(c, open_file(arg_p(c, 0), arg_p(c, 1), I32(2))); }
+// KarPur: a failed open or entry query is logged (at most 200 lines a run) with path, result and caller, so a file the
+// game expects and does not get shows up without TOTK_TRACE=fs. Games probe for optional files too, so not every
+// line is a fault.
+static void fs_failed(Cpu *c, const char *what, const char *path, uint32_t r) {
+    static int32_t n;
+    if (!r || plat_inc32(&n) > 200) return;
+    char from[160];
+    rt_log("fs: %s %s -> %#x (x2 %#llx) from %s", what, path ? path : "(null)", r, (unsigned long long)arg_x(c, 2),
+           ldr_describe(c->x[30] - 4, from, sizeof from));
+}
+static void ov_open_file(Cpu *c) {
+    const char *path = arg_p(c, 1);
+    uint32_t r = open_file(arg_p(c, 0), path, I32(2));
+    fs_failed(c, "OpenFile", path, r);
+    ret_x(c, r);
+}
 static void ov_file_size(Cpu *c) { ret_x(c, file_size(arg_p(c, 0), arg_x(c, 1))); }
 static void ov_close_file(Cpu *c) { close_file(arg_x(c, 0)); }
-static void ov_entry_type(Cpu *c) { ret_x(c, entry_type(arg_p(c, 0), arg_p(c, 1))); }
-static void ov_read_file(Cpu *c) { ret_x(c, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
-static void ov_read_options(Cpu *c) { ret_x(c, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
+static void ov_entry_type(Cpu *c) {
+    const char *path = arg_p(c, 1);
+    uint32_t r = entry_type(arg_p(c, 0), path);
+    fs_failed(c, "GetEntryType", path, r);
+    ret_x(c, r);
+}
+static void ov_read_file(Cpu *c) {
+    uint32_t r = read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4));
+    fs_failed(c, "ReadFile", "(handle)", r);
+    ret_x(c, r);
+}
+static void ov_read_options(Cpu *c) {
+    uint32_t r = read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4));
+    fs_failed(c, "ReadFile", "(handle)", r);
+    ret_x(c, r);
+}
 static void ov_read_exact(Cpu *c) { ret_x(c, read_exact(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3))); }
 static void ov_write_file(Cpu *c) { ret_x(c, write_file(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3), arg_p(c, 4))); }
 static void ov_set_file_size(Cpu *c) { ret_x(c, set_file_size(arg_x(c, 0), I64(1))); }

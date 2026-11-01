@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: Lauf mit `KARPUR_WATCH` auf `bsearch`, `snprintf`, `strlen` und `KARPUR_WATCH_FROM=main+0x14fd2d8-0x14ff98c`. Gesucht: liefert eine der `bsearch`-Suchen in `main+0x14fd2d8` (+0x5fc…+0x13c0) 0, und mit welchem Schlüssel?
+1. Maintainer: normaler Lauf ohne Beobachter; im Log nach `fs: OpenFile`/`GetEntryType`/`ReadFile`-Fehlern suchen. Gesucht: eine Wwise-Datei (`audio/*.pck`, `*.bnk`), die das Spiel nicht öffnen kann.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: bsearch in der Audio-Initialisierung
+- Alle acht `bsearch`-Suchen in `main+0x14fd2d8` finden ihren Schlüssel. Die Vermutung „Tabelleneintrag fehlt“ ist falsch.
+- Die Funktion baut mit `snprintf` die Schlüssel `packageName0`, `packageName5` und `bankName0` (Wwise-Soundpakete `.pck` und Soundbanks `.bnk`). Das leere Objekt ist vermutlich ein Soundpaket oder eine Bank, die nicht geladen wurde.
+- Hinweis: Beobachter auf sehr häufig gerufenen Funktionen (`strlen`, `snprintf`) machen den Lauf sehr langsam (30–45 s bis zum Absturz statt wenige Sekunden): Jeder Aufruf läuft durch den Beobachter.
+- Neu in `fs_host.c`: fehlgeschlagene `OpenFile`, `GetEntryType` und `ReadFile` werden immer geloggt (Pfad, Ergebnis, Aufrufer; höchstens 200 Zeilen).
 
 ### 2026-11-01: KARPUR_WATCH_FROM auf die Audio-Initialisierung
 - Im Bereich `main+0x14fd2d8-0x14ff98c` kommen nur zwei beobachtete Aufrufe an: `LockMutex` bei +0xd04 (gültiger Mutex) und `AcquireAudioDeviceNotificationForOutput` (Ergebnis 0 = Erfolg). Dann der Absturz im beobachteten `LockMutex` bei +0x1528 (deshalb `lr host`).
