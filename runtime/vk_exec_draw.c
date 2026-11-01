@@ -2064,6 +2064,32 @@ static void skip_tick(void) {
     skip_draws = 0, skip_frame0 = f;
 }
 
+// KarPur diagnostic: the state of draws counted by samples-passed queries (the game's occlusion test proxies), each
+// distinct state logged once, at most 12. Violet's objects pop in and out with distance and camera angle, and ~95 % of
+// its reports say 0: this shows how the proxies are drawn (depth test and target, clipping, culling).
+static void oq_draw_note(VkExec *ex, const VkPipeState *s, int32_t count) {
+    static struct { uint64_t ds; uint32_t poly, chmask; int32_t depth_fmt; uint8_t fs, prim, discard, clamp, minus_w; } seen[12];
+    static int n;
+    if (n >= 12) return;
+    typeof(seen[0]) k;
+    memset(&k, 0, sizeof k);
+    memcpy(&k.ds, &s->ds, sizeof s->ds < 8 ? sizeof s->ds : 8);
+    memcpy(&k.poly, &s->poly, sizeof k.poly);
+    k.chmask = s->chmask.mask, k.depth_fmt = s->depth_fmt, k.fs = s->fs != NULL, k.prim = s->prim;
+    k.discard = s->raster_discard, k.clamp = s->depth_clamp, k.minus_w = s->depth_minus_w;
+    for (int i = 0; i < n; i++)
+        if (!memcmp(&seen[i], &k, sizeof k)) return;
+    seen[n++] = k;
+    char tg[512];
+    vk_exec_targets_describe(ex, tg, sizeof tg);
+    rt_log("vk_exec: occlusion-counted draw %d: prim %u, %d indices/vertices, fragment shader %s, depth test %u write %u "
+           "func %u, stencil test %u, cull %u front %u, channel mask %#x, raster discard %u, depth clamp %u, clip -w..w %u, "
+           "depth range %.3f-%.3f, pass %ux%u, %s",
+           n, s->prim, count, k.fs ? "yes" : "no", (unsigned)s->ds.dt, (unsigned)s->ds.dw, (unsigned)s->ds.df,
+           (unsigned)s->ds.st, (unsigned)s->poly.cull, (unsigned)s->poly.front, k.chmask, k.discard, k.clamp, k.minus_w,
+           ex->depth_range[0], ex->depth_range[1], ex->pass_w, ex->pass_h, tg);
+}
+
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     skip_tick();
@@ -2218,6 +2244,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
+    if (vk_exec_oq_counting()) oq_draw_note(ex, &s, count);
     return 1;
 }
 

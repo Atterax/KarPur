@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Objekte ploppen je nach Abstand/Kamera (Verdeckungsabfragen verdächtig)
+- `IND_CPU=1`, `IND_SHOW=1`, `MEMORY=import`: Objekte sind da, ploppen aber je nach Abstand und Kamerawinkel ein und aus (bei `IND_SHOW` am meisten sichtbar). ~95 % der Samples-Passed-Berichte sind 0. Typisch für falsche Verdeckungsabfragen; der frühere `OCCLUSION=0`-Test lief noch vor dem Basis-Instanz-Fix und zählt nicht.
+- Diagnose: `vk_exec: occlusion-counted draw N: …` (Zustand der gezählten Prüf-Draws: Tiefentest, Ziel, Culling, Clipping, bis 12 verschiedene). Occlusion-Bericht nur noch die ersten drei Male, dann jedes 16. Mal.
+
 ### 2026-11-01: Weiterhin viele unsichtbare Objekte (Topf, Büsche, Zäune)
 - Nach dem Basis-Instanz-Fix fehlen weiter Objekte mit Kollision. Fehlende NVN-Zeichenfunktionen sind ausgeschlossen (würden mit `rt_fatal` abbrechen).
 - Die Hälfte der indirekten Draws hat in der CPU-Sicht Instanzzahl 0. A/B-Schalter: `TOTK_IND_CPU=1` zeichnet mit den Argumenten aus CPU-Sicht (vkCmdDrawIndexed statt Lesen aus dem GPU-Puffer, prüft veraltete GPU-Kopie/Spiegel), `TOTK_IND_SHOW=1` zeichnet zusätzlich Instanzzahl 0 als eine Instanz (prüft, ob die fehlenden Objekte vom Culling stammen). Dazu `MEMORY=import` (keine Spiegel).

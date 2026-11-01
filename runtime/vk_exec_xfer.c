@@ -194,6 +194,8 @@ void vk_exec_oq_draw(VkExec *ex) {
 
 void vk_exec_oq_pass_end(VkExec *ex) { oq_close(ex); }
 
+int vk_exec_oq_counting(void) { return oq_open >= 0; }
+
 void vk_exec_xfer_shutdown(void) {
     if (oq_state > 0) vkDestroyQueryPool(vk_ctx()->device, oq_pool, NULL);
     oq_pool = VK_NULL_HANDLE, oq_state = 0, oq_next = 0, oq_counting = oq_reported = oq_keep = 0, oq_open = -1;
@@ -223,13 +225,14 @@ static uint64_t oq_fake_next(void) {
 static void oq_stat(int cpu, uint64_t count, uint32_t queries) {
     static uint64_t reports, cpu_reports, zeros, no_query, total;
     reports++, total++;
+    if (reports > 16 * 4096) reports = cpu_reports = zeros = no_query = 0;
     cpu_reports += cpu;
     zeros += cpu && !count;
     no_query += cpu && !queries;
     if (total == 1)
         rt_log("vk: first samples-passed report: %s memory, count %llu from %u queries", cpu ? "CPU-visible" : "GPU-only",
                (unsigned long long)count, queries);
-    if (reports < 4096) return;
+    if (reports < 4096 || (total > 3 * 4096 && total % (16 * 4096))) return;   // the first three, then every 16th
     rt_log("vk: occlusion: %llu samples-passed reports (%llu total), %llu to CPU-visible memory, %llu of those 0 "
            "(%llu without any query)%s", (unsigned long long)reports, (unsigned long long)total,
            (unsigned long long)cpu_reports, (unsigned long long)zeros, (unsigned long long)no_query,
