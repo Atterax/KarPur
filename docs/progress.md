@@ -25,6 +25,15 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: TF-Layout im Control-Teil gefunden (teilweise)
+- Bestätigt: Purpur bindet für TF erst ein reines Vertex-Programm (Maske 0x1), dann `BindProgram(NULL, 0x2)` (Fragment lösen). Andere Masken: 0x1f (alle Grafikstufen), 0x20 (Compute). Das Back-End muss die Stufenmaske umsetzen (siehe nächste Schritte).
+- Layout-Bericht (4 TF-Shader, 58 normale): nur in TF-Shadern gesetzt sind
+  - +0x0dc / +0x15c / +0x1dc (Abstand 0x80): Werte 0x20 / 0x21 / 0x22 – vermutlich Varying-Location-Bytes je Puffer (Maxwell-Attributadresse/4: 0x20 = generisches Attribut 0, Komponente x). Noch unklar, wo die Bytes je Puffer beginnen.
+  - +0x4dc / +0x55c / +0x5dc (Abstand 0x80): 3/3/3 bzw. 3/1/1 – Varying-Anzahl je Puffer.
+  - +0x6dc: u16[4] Strides (0x000c000c, 0x0000000c → 12/12/12; beim 12/4/4-Shader 0x0004000c, 0x4). Passt genau zu den Puffergrößen.
+  - +0x6e8 = 0x10101, +0x6ec = 0x103: noch unbekannt (Streams? Puffer-aktiv-Maske?).
+- `vk_xfb.c` loggt jetzt für die ersten 4 TF-Shader alle Bytes ≠ 0 in 0x0c0–0x2e0 und 0x4c0–0x700, um den Beginn der Location-Arrays zu finden.
+
 ### 2026-11-01: TF-Draws ohne gebundenes Programm – Stufenmaske von BindProgram
 - Dritter Lauf: Die TF-Draws laufen mit `ex->prog == NULL` und Rasterizer-Discard an. Vertexzahlen passen genau zu den Puffergrößen: 88 Vertices → 0x420 = 88 × 12 Bytes, 173 → 0x81c, 797 → 0x255c (hier alle drei Puffer je 12 Bytes pro Vertex; in einem früheren Lauf 12/4/4, das Layout hängt also vom Shader ab).
 - Ursache (Vermutung, Lauf soll es bestätigen): `nvnCommandBufferBindProgram(cb, prog, stages)` bindet nur die Stufen in der Maske; Stufen in der Maske, die das Programm nicht hat, werden gelöst (prog darf NULL sein); andere Stufen bleiben. Purpur löst so für TF den Fragment-Shader und behält den Vertex-Shader. `vk_exec_draw.c` ersetzt bei jedem Bind alle Stufen (`ex->prog = b->prog`), ignoriert die Maske. Folge: TF-Draws werden übersprungen (`a draw without a bound program is skipped`). Möglicherweise trifft das auch andere Draws (z. B. Compute-Bind zwischen Grafik-Draws) und erklärt Bildfehler.

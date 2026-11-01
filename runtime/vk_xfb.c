@@ -114,10 +114,29 @@ static void tf_report(void) {
     rt_log("tf: %d words in all, %d in some", found, some);
 }
 
+// The nonzero bytes of a transform feedback shader's layout regions (found by the first report: per-buffer words at
+// 0x0dc + 0x80 i, 0x4dc + 0x80 i, strides as u16[4] at 0x6dc), as offset=value; '*' marks a word that is nonzero in
+// some plain shader too. Small numbers (output locations, counts, strides), at most 160 bytes a shader.
+static void tf_dump(int k, const uint8_t *ctl) {
+    static const int lo[2] = {0x0c0, 0x4c0}, hi[2] = {0x2e0, 0x700};
+    char line[200];
+    int o = 0, n = 0, total = 0;
+    for (int r = 0; r < 2; r++)
+        for (int off = lo[r]; off < hi[r] && total < 160; off++) {
+            if (!ctl[off]) continue;
+            o += snprintf(line + o, sizeof line - o, " %03x=%02x%s", off, ctl[off], plain_nz[off / 4] ? "*" : "");
+            n++, total++;
+            if (n == 16) rt_log("tf: shader %d layout bytes:%s", k, line), o = n = 0;
+        }
+    if (n) rt_log("tf: shader %d layout bytes:%s", k, line);
+    rt_log("tf: shader %d: %d nonzero layout bytes", k, total);
+}
+
 static void tf_add(const uint8_t *ctl) {
     if (ntf >= TF_KEEP || is_tf(ctl)) return;
     memcpy(tf_ctrl[ntf], ctl, CTRL_SIZE);
     tf_at[ntf++] = ctl;
+    if (ntf <= 4) tf_dump(ntf, ctl);
     if (ntf == 1 || ntf == 4 || ntf == TF_KEEP) tf_report();
 }
 
