@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: ARGS_FORCE bringt Objekte zurück; Verdacht Ausrichtung der Storage-Buffer
+- `ARGS_FORCE=1` (95–146 Instanzzahlen pro Submission von 0 auf 1): Großer Baum, viele Orangenbäume, Büsche und Gräser erscheinen, die vorher fehlten. Bewiesen: Compute-Shader 1 (GPU-Culling) rechnet sichtbare Objekte als unsichtbar; die CPU übernimmt das. Es ploppt weiter (die CPU liest auch Puffer 0 / Storage 1).
+- Beobachtung: Ein Baum ist sichtbar, wenn man links davon steht, nie von rechts. Passt zu verschoben gelesenen Hüllen (Bounding-Daten), nicht zu einer falschen Kamera.
+- Verdacht: Der Ausweg für minStorageBufferOffsetAlignment > 4 (NVIDIA 16; Entwicklung lief auf RX 9070 ohne ihn): Ryujinx' Unaligned-Storage-Pfad + Bindung der abgerundeten Adresse. Diagnose: Bericht der Compute-Dispatches zeigt jetzt die Adresse jedes Storage-Buffers modulo 256; Log `storage binding of stage N at an address X bytes past a 16-byte boundary` (je Stufe 3 Mal).
+
 ### 2026-11-01: Bestätigt: Die CPU liest die Ergebnisse des GPU-Cullings zurück
 - `READ_WATCH=1` + `symbolize.py --log`: Spielcode `f_7000b88fc0` liest Puffer 0 (Storage 1 von Compute-Shader 1, 256 KiB) und `f_7000b89f1c` liest Puffer 2 (die indirekten Draw-Argumente, 256 KiB); beide aufgerufen von `f_7000b88d48`. Weitere Zugriffe: unsere Runtime (`vk_exec_op_draw`, `ov_memcpy`).
 - Folgerung: Die CPU entscheidet mit den Ergebnissen des GPU-Cullings (vermutlich den Instanzzahlen) aus dem vorigen Frame, welche Objekte sie überhaupt zeichnet. Rechnet Compute-Shader 1 falsch (0 statt sichtbar), fehlen die Objekte samt ihren direkten Draws.

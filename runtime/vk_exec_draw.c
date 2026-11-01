@@ -1024,6 +1024,15 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
+        {   // diagnostic: storage bindings whose address is not a multiple of the device alignment, by stage, once each
+            static int logged[6];
+            if (lead && st < 6 && logged[st] < 3) {
+                logged[st]++;
+                rt_log("vk_exec: storage binding of stage %d at an address %llu bytes past a %u-byte boundary (%s, %llu bytes)",
+                       st, (unsigned long long)lead, vk_caps.sbuf_align, ubo ? "uniform block as storage" : "storage",
+                       (unsigned long long)b->size);
+            }
+        }
         // TOTK_SSBO_WHOLE=1 (KarPur A/B test): a storage buffer the shader only reads is bound up to the end of its memory,
         // not at the size the game gave (written ones keep it: their range is written back to guest memory). Maxwell does not bound-check storage accesses; Vulkan with robustBufferAccess returns zeros past the
         // binding and drops writes there, so a shader that reaches past the size it was given behaves differently.
@@ -2891,9 +2900,9 @@ static void cs_note(VkExec *ex, const GfxShader *cs, const p_dispatch *d) {
         int ubo, slot = ssbo_slot(&res[r], NVN_STAGE_CS, &ubo);
         const p_bind_buf *b = slot >= 0 && slot < 16 ? (ubo ? &ex->ubo[NVN_STAGE_CS][slot] : &ex->ssbo[NVN_STAGE_CS][slot]) : NULL;
         int args = b && (res[r].flags & 1) && ind_hi && b->addr < ind_hi && ind_lo < b->addr + b->size;
-        o += snprintf(o, (size_t)(end - o), "; storage %d %s %llu bytes%s%s", r, b ? "bound" : "via pointer",
-                      b ? (unsigned long long)b->size : 0ull, res[r].flags & 1 ? " written" : "",
-                      args ? " (covers indirect draw arguments)" : "");
+        o += snprintf(o, (size_t)(end - o), "; storage %d %s %llu bytes at +%llu mod 256%s%s", r, b ? "bound" : "via pointer",
+                      b ? (unsigned long long)b->size : 0ull, b ? (unsigned long long)(b->addr & 0xff) : 0ull,
+                      res[r].flags & 1 ? " written" : "", args ? " (covers indirect draw arguments)" : "");
     }
     rt_log("%s", buf);
 }
