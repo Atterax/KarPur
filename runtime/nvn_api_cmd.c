@@ -581,8 +581,10 @@ NVN_API(nvnCommandBufferSetRenderEnableConditional) {
     r->addr = arg_x(c, 2);
 }
 // void nvnCommandBufferBindProgram(NVNcommandBuffer *cmd, const NVNprogram *program, int stages)
+void nvn_tf_note_program(const void *prog);   // KarPur: nvn_api_more.c, transform feedback layout report
 NVN_API(nvnCommandBufferBindProgram) {
     *REC(cmd_of(c), OP_BIND_PROGRAM, p_bind_program) = (p_bind_program){arg_p(c, 1), (int)arg_x(c, 2)};
+    nvn_tf_note_program(arg_p(c, 1));
 }
 // void nvnCommandBufferBind{Blend,Color,ChannelMask,Multisample,Polygon,DepthStencil}State(NVNcommandBuffer *cmd,
 // const NVN*State *state): the state object's bytes are copied (p_bind_state.kind order)

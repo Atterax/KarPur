@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback umsetzen** (größere Arbeit, mehrere Teile):
-   - Woher kommt das Layout (welche Ausgaben in welchen Puffer, Stride)? Auf Maxwell setzt der Treiber es als GPU-Zustand aus den Steuerdaten des NVN-Programms (`nvnProgramSetShaders`, Control-Teil der ShaderData). Herausfinden, wo es in Purpurs Programmen steht (Bericht-Werkzeug: Größen/Offsets der Control-Daten, Zähler der TF-Einträge, keine Bytes).
+   - Woher kommt das Layout (welche Ausgaben in welchen Puffer, Stride)? Auf Maxwell setzt der Treiber es als GPU-Zustand aus den Steuerdaten des NVN-Programms (`nvnProgramSetShaders`, Control-Teil der ShaderData). Herausfinden, wo es in Purpurs Programmen steht: **Diagnose eingebaut, wartet auf den Lauf beim Maintainer** (Zeilen `tf:` im Log, siehe Protokoll).
    - Übersetzer (`tools/xlate/Program.cs`): `QueryTransformFeedbackEnabled`, `QueryTransformFeedbackVaryingLocations`, `QueryTransformFeedbackStride` aus dem Job beantworten (Ryujinx erzeugt dann die XFB-Decorations im SPIR-V); Job-Felder in `gfx_shader.c`.
    - Front-End (`nvn_api_more.c` → echte Ops): Bind(s), Begin/End/Pause/Resume, DrawTransformFeedback als Command-Records.
    - Vulkan-Back-End: `vkCmdBindTransformFeedbackBuffersEXT`, `vkCmdBegin/EndTransformFeedbackEXT` mit Zählerpuffer (NVN-Control-Adresse), `vkCmdDrawIndirectByteCountEXT` für DrawTransformFeedback; Pipeline mit XFB-Ausgaben. `vk_device.c` aktiviert VK_EXT_transform_feedback schon, Puffer haben die Usage-Flags (`vk_memory.c`).
@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Diagnose für das Transform-Feedback-Layout
+- `nvn_api_more.c`: Jedes `nvnCommandBufferBindProgram` merkt sich den Vertex-Shader-Control-Teil (Stufe 0 bei +0x714). Vertex-Shader, nach deren Bindung kein `BeginTransformFeedback` kommt, gelten als „normal“: ihre gesetzten 32-Bit-Wörter (unter +0x700) werden in eine Maske ODER-verknüpft. Die bei `BeginTransformFeedback` gebundenen werden kopiert (bis 16). Bei 1, 4 und 16 verschiedenen TF-Shadern loggt `tf: layout report` die Wörter, die in allen TF-Shadern und in keinem normalen gesetzt sind (mit Werten der ersten drei: kleine Zahlen wie Strides/Locations), dazu die, die nur in einigen TF-Shadern gesetzt sind.
+- Die TF-Einstiegspunkte loggen ihre ersten Aufrufe (Puffer-Index/Adresse/Größe, Control-Adressen, Draw-Modus). Sie bleiben No-ops.
+- Nächster Schritt: Maintainer lässt das Spiel bis zu sichtbaren Figuren laufen und schickt die `tf:`-Zeilen. Daraus Offsets für Varying-Locations und Strides ableiten (Maxwell: pro Puffer Stride, Anzahl, Stream; danach Location-Bytes je Puffer, 128 pro Puffer wäre plausibel).
 
 ### 2026-11-01: Ton läuft, Figuren unsichtbar
 - AudioOut über SDL: **Musik und Geräusche sind zu hören** (`audout: default audio output opened (... to the default playback device)`). Purpur spielt seinen Ton also über AudioOut.
