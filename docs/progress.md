@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Dunkle Schatten/schwarzes Metall seit Anfang; Diagnose für Ersatz-Texturen
+- Maintainer: Die zu dunklen Schattenbereiche und die schwarze Dunstabzugshaube gibt es seit dem ersten Bild, unabhängig von `SPLIT_DRAWS`, `MEMORY`, `GPL` (A/B ohne Unterschied). Die gl_Layer-Ausnahme (whole_only 2) hat nichts geändert, bleibt aber (schadet nicht).
+- Verdacht: Ein Shader bekommt statt einer Textur den Ersatz (`tex_info_full`, 1×1, Nullen) – lautlos, wenn `get_view` den Typ ablehnt (z. B. Cube-Sampler auf ein nicht als Cube angelegtes Bild) oder die Textur-ID nicht registriert ist. Nullen ergäben fehlendes Umgebungslicht/Spiegelungen (Cubemap) und mit Alpha 0 verworfene Objekte (fehlende Vasen, Blumenbeet).
+- Diagnose `vk_exec_draw.c`: meldet jede neue Kombination (Shader-Ressourcentyp, Bildtyp, View-Typ, Ebenen) mit Größe/Ebenen/Stufen und View, sowie nicht registrierte Textur-IDs.
+
 ### 2026-11-01: gl_Layer-Draws sind Cubemap und Farbtabelle, nicht Schatten
 - Diagnose: die Draws mit gl_Layer-Vertex-Shader sind Vollbild-Dreiecke in 64×64 × 6 Ebenen (Umgebungs-Cubemap) und 32×32 × 32 Ebenen (3D-Farbtabelle), mit Fragment-Shader, 8 Farbzielen; Gerät meldet shaderOutputLayer 1.
 - Neue Deutung der „zu dunklen Schatten“: fehlendes Umgebungslicht (Cubemap schwarz/falsch) – alles ohne direkte Sonne dunkel, Metall (Dunstabzugshaube im Spielerhaus) schwarz. In einem früheren Lauf mit `TOTK_GPL=0` sahen Kleidung und Figuren normal aus.

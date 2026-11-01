@@ -1207,6 +1207,32 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
             samp = point ? vk_sampler_point_by_id_locked(sid) : vk_sampler_by_id_locked(sid);
         }
     }
+    if (!view && h) {   // KarPur diagnostic: the shader names a texture, but a stand-in (black) is bound instead
+        view_t v2;
+        int hv2;
+        const VkTexImage *im = vk_texture_by_id_locked((int)(h & 0xfffff), &v2, &hv2);
+        static struct { uint16_t rtype; int itype, ivt; uint32_t layers; } seen[16];
+        static int nseen, n_unreg;
+        if (!im) {
+            if (++n_unreg <= 3 || n_unreg % 10000 == 0)
+                rt_log("vk_exec: a shader samples texture id %#x, which is not registered: stand-in bound (%d so far)",
+                       (unsigned)(h & 0xfffff), n_unreg);
+        } else {
+            int fresh = 1;
+            for (int i = 0; i < nseen && fresh; i++)
+                fresh = !(seen[i].rtype == r->type && seen[i].itype == (int)im->type && seen[i].ivt == (int)im->view_type &&
+                          seen[i].layers == im->layers);
+            if (fresh && nseen < 16) {
+                seen[nseen++] = (typeof(seen[0])){r->type, (int)im->type, (int)im->view_type, im->layers};
+                rt_log("vk_exec: shader resource type %#x (view type %d%s) cannot use a texture of image type %d, view type "
+                       "%d, %ux%u, %u layers, %u levels, view %s (layers %u+%u, levels %u+%u): stand-in bound",
+                       r->type, (int)res_view_type(r->type), storage ? ", storage" : "", (int)im->type, (int)im->view_type,
+                       im->width, im->height, im->layers, im->levels, hv2 ? "set" : "none",
+                       hv2 && v2.set_layers ? v2.min_layer : 0, hv2 && v2.set_layers ? v2.nlayers : 0,
+                       hv2 && v2.set_levels ? v2.base_level : 0, hv2 && v2.set_levels ? v2.nlevels : 0);
+            }
+        }
+    }
     if (!view) {
         int di = dummy_index(res_view_type(r->type), ms);
         view = storage ? storage_dummy(di, r->format) : Z.img[di].view;
