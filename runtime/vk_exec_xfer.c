@@ -413,7 +413,32 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
     vk_completion_add(ex->fence, event_cb, e);
 }
 
+// KarPur diagnostic: counter reports by NVN counter type (0-16, 17 other) and GPU-only destination, conditional render
+// ops by outcome, and render-enable ops, logged every 1800 replayed frames (the first three windows). Counter types
+// other than samples passed get 0 (timestamps their time) from this replay: a game that reads one of them would see 0.
+static uint64_t cnt_type[18], cnt_gpu_only, cond_ops[3], enable_ops[2];   // cond: rendered, skipped, unknown
+static int cnt_logs;
+static uint64_t cnt_frame0;
+static void cnt_tick(void) {
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (!cnt_frame0) cnt_frame0 = f ? f : 1;
+    if (f < cnt_frame0 + 1800 || cnt_logs >= 3) return;
+    cnt_logs++;
+    char buf[512], *o = buf;
+    for (int t = 0; t < 18; t++)
+        if (cnt_type[t]) o += snprintf(o, (size_t)(buf + sizeof buf - o), " type %d: %llu;", t, (unsigned long long)cnt_type[t]);
+    rt_log("vk: frames %llu-%llu: counter reports by type:%s GPU-only %llu; conditional render: rendered %llu, skipped %llu, "
+           "undecided %llu; render enable on %llu off %llu", (unsigned long long)cnt_frame0, (unsigned long long)f,
+           o == buf ? " none;" : buf, (unsigned long long)cnt_gpu_only, (unsigned long long)cond_ops[0],
+           (unsigned long long)cond_ops[1], (unsigned long long)cond_ops[2], (unsigned long long)enable_ops[1],
+           (unsigned long long)enable_ops[0]);
+    memset(cnt_type, 0, sizeof cnt_type), memset(cond_ops, 0, sizeof cond_ops), memset(enable_ops, 0, sizeof enable_ops);
+    cnt_gpu_only = 0, cnt_frame0 = f;
+}
+
 static void report_counter(VkExec *ex, const p_report_counter *p) {
+    cnt_type[p->type <= 16 ? p->type : 17]++, cnt_gpu_only += nvn_gpu_only(p->addr) != 0;
+    cnt_tick();
     int samples = p->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && oq_ready();
     if (nvn_gpu_only(p->addr)) {   // CPU-invisible pool: no host memory behind it
         if (samples) oq_report(ex, 0, NULL);
@@ -753,11 +778,19 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload) {
     case OP_REPORT_COUNTER: report_counter(ex, payload); break;
     case OP_RESET_COUNTER: reset_counter(ex, payload); break;
     case OP_CLEAR_BUF: clear_buf(ex, payload); break;
-    case OP_RENDER_ENABLE: ex->render_disabled = !((const p_flag *)payload)->value; break;
+    case OP_RENDER_ENABLE:
+        ex->render_disabled = !((const p_flag *)payload)->value;
+        enable_ops[((const p_flag *)payload)->value != 0]++;
+        break;
     case OP_RENDER_COND:
         ex->render_cond = *(const p_render_cond *)payload;
         ex->has_render_cond = 1;
         ex->render_disabled = !cond_enabled(payload);
+        {   // diagnostic: undecided = a counter of the condition not readable or not done yet (rendered then)
+            uint64_t x, y;
+            int rx = counter_word(ex->render_cond.addr, &x), ry = counter_word(ex->render_cond.addr + 16, &y);
+            cond_ops[!rx || !ry || rx == 2 || ry == 2 ? 2 : ex->render_disabled ? 1 : 0]++;
+        }
         break;
     default: rt_fatal("vk: op %s is not a transfer", nvn_op_name(op));
     }

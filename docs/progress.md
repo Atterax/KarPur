@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: A2C/Discard nicht die Ursache; Hinweis von yuzu auf Zählerabfragen
+- `A2C=0` (das Spiel fordert A2C mit Dither an, 1 Sample) und `NO_DISCARD=1`: Baum verschwindet weiter beim direkten Hinschauen aus der Nähe, sichtbar am Bildrand und aus der Ferne. Die Objekte werden also gar nicht gezeichnet (Culling/LOD), nicht weggeblendet.
+- Web: yuzus Fortschrittsbericht August 2023 nennt für Karmesin/Purpur behobene Detailstufen und Baum-Flackern (nur mit GPU-Genauigkeit „Hoch“) durch die Überarbeitung des Query-Caches (Zählerabfragen, Host Conditional Rendering). Seite aus der Sitzung nicht abrufbar (yuzu-mirror.github.io nicht auflösbar).
+- Diagnose: `vk: frames …: counter reports by type: … ; conditional render: rendered/skipped/undecided; render enable on/off` (alle 1800 Frames, dreimal). Alle Zählerarten außer Samples-Passed schreibt die Wiedergabe als 0 – liest das Spiel eine davon, sieht es 0.
+
 ### 2026-11-01: Ausblendung nahe der Bildmitte (Kamera-Fade) verdächtig
 - `RECONVERGE=1` (Erweiterung verfügbar und aktiv): ploppt weiter.
 - Beobachtung des Maintainers: Ein Baum nah an der Kamera ist sichtbar, solange er am Bildrand steht (Blätter oben mit Punktmuster), verschwindet, wenn man ihn direkt anschaut, und ist aus der Ferne wieder da. Passt zu einer Kamera-/Distanz-Ausblendung per Alpha (Dither) bzw. Discard, die bei uns zu stark greift.
