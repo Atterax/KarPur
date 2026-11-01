@@ -563,6 +563,40 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 
 static void (*crash_fn)(const PlatCrash *c);
 
+// KarPur: a fault in another module (a graphics driver) is left to that module's handlers, but the first few are
+// written to stderr with the module, the offset, the thread's name and the return addresses in this executable on
+// the stack, so a crash inside the driver says which call of ours led there. A first-chance exception a driver
+// handles itself shows up here too, hence "may be handled". Addresses and names only.
+static void foreign_fault_note(EXCEPTION_POINTERS *ep, const char *what, uintptr_t rip, const MODULEINFO *self) {
+    static volatile LONG notes;
+    if (InterlockedIncrement(&notes) > 4) return;
+    HMODULE mod = NULL;
+    char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)rip, &mod) && mod)
+        GetModuleFileNameA(mod, name, sizeof name);
+    const char *base = strrchr(name, '\\');
+    base = base ? base + 1 : name;
+    char tname[64] = "";
+    PWSTR wd = NULL;
+    if (SUCCEEDED(GetThreadDescription(GetCurrentThread(), &wd)) && wd) {
+        WideCharToMultiByte(CP_UTF8, 0, wd, -1, tname, sizeof tname, NULL, NULL);
+        LocalFree(wd);
+    }
+    fprintf(stderr, "[host] fault in another module (may be handled there): %s at %s+%#llx, thread \"%s\"", what, base,
+            (unsigned long long)(rip - (uintptr_t)mod), tname);
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
+        fprintf(stderr, ", %s address %#llx", ep->ExceptionRecord->ExceptionInformation[0] == 1 ? "writing" : "reading",
+                (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1]);
+    fprintf(stderr, "\n");
+    void *f[62];
+    USHORT n = RtlCaptureStackBackTrace(0, 62, f, NULL);
+    for (USHORT i = 0, k = 0; i < n && k < 12; i++)
+        if ((uintptr_t)f[i] - (uintptr_t)self->lpBaseOfDll < self->SizeOfImage)
+            fprintf(stderr, "[host]   called from karpur+%#llx\n", (unsigned long long)((uintptr_t)f[i] - (uintptr_t)self->lpBaseOfDll)), k++;
+    fflush(stderr);
+}
+
 static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     const char *what = code == EXCEPTION_ACCESS_VIOLATION ? "access violation"
@@ -575,8 +609,11 @@ static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
     MODULEINFO mi;
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(NULL), &mi, sizeof mi) ||
-        rip - (uintptr_t)mi.lpBaseOfDll >= mi.SizeOfImage)
+        rip - (uintptr_t)mi.lpBaseOfDll >= mi.SizeOfImage) {
+        if (code != EXCEPTION_IN_PAGE_ERROR && GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(NULL), &mi, sizeof mi))
+            foreign_fault_note(ep, what, rip, &mi);
         return EXCEPTION_CONTINUE_SEARCH;   // not our code: leave it to the handler that expects it
+    }
     PlatCrash c = {what, (uint32_t)code, rip, rip - (uintptr_t)mi.lpBaseOfDll, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
         c.access = (int)ep->ExceptionRecord->ExceptionInformation[0], c.addr = ep->ExceptionRecord->ExceptionInformation[1];

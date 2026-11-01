@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Absturz trotz GPL-Ausnahme für XFB-Shader
+- Mit `uses_xfb()` (keine Libraries für XFB-Pipelines) stürzt es weiter ab, diesmal **vor** „draw 1: binding the buffers“, also während `rec_drain` die vorher eingereihten Befehle (Pipeline binden, Deskriptoren, dynamischer Zustand) im Recorder-Thread ausführt. Mit `TOTK_GPL=0` lief es. Unterschiede bei GPL an außer den Libraries: unabhängige Set-Layouts (`P.indep`, INDEPENDENT_SETS, Vertex-Ausgabe-Union), Vertex-Set per Push. Neu ist dabei: Draws mit reinem Vertex-Programm (vorher ohne Programm übersprungen).
+- `platform/win32.c`: Fehler in anderen Modulen (Treiber) werden jetzt (erste 4) auf stderr gemeldet: Modul+Offset, Thread-Name, Rücksprungadressen in karpur.exe. Nächster Lauf soll zeigen, welcher Aufruf in den Treiber führt.
+
 ### 2026-11-01: FIGUREN SICHTBAR – Transform Feedback läuft
 - Lauf A (`TOTK_XFB=0`): Absturz nach dem Hauptmenü beim Laden, auch ohne TF-Aufnahme. Lauf B (`TOTK_GPL=0`, mit Aufnahme): läuft stabil, **Spielerin, NPCs und Pokémon mit Modellen und Animationen sichtbar**, 30 fps. Die Schrittlogs zeigen: Binden, Begin, Draw, End laufen durch.
 - Folgerung: Der Treiber (NVIDIA 621.01) stürzt ab, wenn ein Vertex-Shader mit TransformFeedback-Capability durch Pipeline-Libraries (GPL) geht. `vk_pipeline.c`: `uses_xfb()` (Capability 53 im SPIR-V); solche Pipelines nehmen weder Stage-Libraries noch Fast-Link, nur `create_graphics`.
