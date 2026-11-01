@@ -101,8 +101,10 @@ def namespace(symbol, depth=2):
     s = symbol[2:]
     if not s.startswith('N'):
         m = re.match(r'(\d+)', s)
-        return s[len(m.group(1)):len(m.group(1)) + int(m.group(1))] if m else '?'
+        return s[len(m.group(1)):len(m.group(1)) + int(m.group(1))] if m else 'C++ operators'
     s = s[1:].lstrip('KVr')
+    if s.startswith('S') and not s.startswith('St'):
+        return 'std (abbreviated)'
     parts = []
     while len(parts) < depth:
         if s.startswith('St'):            # std:: abbreviation

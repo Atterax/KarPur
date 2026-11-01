@@ -7,6 +7,7 @@ to understand behaviour, but never copied.
 | What | From | Upstream commit | License / where |
 |---|---|---|---|
 | XCI/NSP/NCA3/ticket reading and ExeFS extraction (`extract_exefs.py`), Copyright (c) 2026 MacNativeGames contributors | [MacNativeGames](https://github.com/ly05010419/MacNativeGames), as vendored unmodified by [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) | `b75be8cfa704df3701e86130c8ced268e79d6b11` | MIT, adapted in `tools/switchfs.py` |
+| List of SDK symbol names the TotK runtime handles, with the runtime file of each | [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) `runtime/` | `f469c5a7745502357fc1664c04e02522fe92c42a` | MIT, `tools/data/totk_sdk_symbols.txt` |
 
 ## Planned sources
 

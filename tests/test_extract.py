@@ -28,6 +28,9 @@ def main():
         report = r.stdout + (tmp / 'game' / 'report' / 'main-imports.txt').read_text()
         assert not any(k in report for k in keys), 'a key value leaked into the report'
 
+        r = run(ROOT / 'tools' / 'compare_totk.py', '--exefs', tmp / 'game' / 'extracted' / 'update' / 'exefs')
+        assert r.returncode == 0 and 'TotK runtime symbols present in our game: 1 of' in r.stdout, r.stdout + r.stderr
+
         # Swapped base and update must fail with a hint, not a traceback.
         swapped = (tmp / 'config.toml').read_text().replace('base.xci', 'X').replace('update.nsp', 'base.xci').replace('X', 'update.nsp')
         (tmp / 'swapped.toml').write_text(swapped)
