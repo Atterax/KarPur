@@ -685,8 +685,19 @@ uint32_t romfs_entry_type(int *out, const char *path) {
         *out = FS_ENTRY_FILE;
         return 0;
     }
+    // KarPur: a folder may be asked for with a trailing '/' (Violet's Wwise setup asks for "audio/wwise/bin/Switch/");
+    // the separators are dropped before one is appended, and the RomFS root itself is a folder.
     char dir[4096];
-    if (snprintf(dir, sizeof dir, "%s/", p) >= (int)sizeof dir) return FS_R_INVALID;
+    size_t n = strlen(p);
+    while (n && p[n - 1] == '/') n--;
+    if (!n) {
+        *out = FS_ENTRY_DIRECTORY;
+        return 0;
+    }
+    if (n + 2 > sizeof dir) return FS_R_INVALID;
+    memcpy(dir, p, n);
+    dir[n] = '/';
+    dir[n + 1] = 0;
     if (folder_exists(dir)) {
         *out = FS_ENTRY_DIRECTORY;
         return 0;

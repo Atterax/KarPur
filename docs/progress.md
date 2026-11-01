@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: normaler Lauf ohne Beobachter; im Log nach `fs: OpenFile`/`GetEntryType`/`ReadFile`-Fehlern suchen. Gesucht: eine Wwise-Datei (`audio/*.pck`, `*.bnk`), die das Spiel nicht öffnen kann.
+1. Maintainer: Lauf mit der Ordner-Korrektur; Dateifehler und Log-Ende schicken, dazu die Liste der RomFS-Dateinamen. Erwartung: `GetEntryType data:/audio/wwise/bin/Switch/` klappt, Wwise lädt seine Pakete, und `PM.bnk` wird im Paket gefunden statt als lose Datei.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Ursache des LockMutex-Absturzes gefunden (vermutlich)
+- Fehlgeschlagene Dateizugriffe beim Start: `OpenFile data:/config/trinity_config/data.trowc` (0x202, wohl optional), `GetEntryType data:/audio/wwise/bin/Switch/` (0x202) aus `main+0x157145c`, dann `OpenFile data:/audio/wwise/bin/Switch/English(US)/PM.bnk` (0x202) aus `main+0x10b4ae4`, direkt danach der Absturz.
+- Ursache: `romfs_entry_type` hängt für die Ordnerprüfung ein `/` an; mit dem `/`, den das Spiel schon mitgibt, entsteht `Switch//`, das zu keiner Datei passt. Das Spiel hält den Wwise-Ordner für nicht vorhanden, lädt keine Pakete, und das Bank-Objekt bleibt leer.
+- Behoben in `romfs.c`: abschließende `/` werden vor der Prüfung entfernt, die Wurzel selbst ist ein Ordner.
+- `PM.bnk` liegt vermutlich nicht lose in der RomFS, sondern in einem `.pck`-Paket (Wwise sucht zuerst in geladenen Paketen, dann lose). Prüfen mit der Dateiliste.
 
 ### 2026-11-01: bsearch in der Audio-Initialisierung
 - Alle acht `bsearch`-Suchen in `main+0x14fd2d8` finden ihren Schlüssel. Die Vermutung „Tabelleneintrag fehlt“ ist falsch.
