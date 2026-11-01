@@ -23,6 +23,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### 2026-11-01: gl_BaseInstance allein behebt das Ploppen nicht
 - Übersetzer gebaut (neue ID `1170d8f8…`), Objekte ploppen weiter (Zaun, Büsche je nach Kamera). Barriere zwischen Compute und indirektem Draw ist voll (ALL→ALL), daran liegt es nicht.
+- `OQ_GPU=1` stürzte im Startmenü ab (Gerätefehler „write invalid at 0“, kurz nach `occlusion query slot 1 not available after its fence`). Erst die Diagnose ohne Schalter auswerten; OQ_GPU nutzt jetzt VK_MEM_PICK wie die anderen Kopien (Ursache des Absturzes nicht sicher).
 - Neuer Verdacht: Der Culling-Compute-Shader liest die Samples-Passed-Ergebnisse direkt auf der GPU (auf der Switch schreibt die GPU sie der Reihe nach in den Speicher). Die Wiedergabe schreibt sie erst nach dem Fence von der CPU, für den Shader zu spät. Diagnose: `vk_exec: frames …: samples-passed reports span …; buffer bindings over them: compute N, draws M`. Test-Schalter `TOTK_OQ_GPU=1`: Berichte mit genau einer Abfrage schreibt zusätzlich die GPU (`vkCmdCopyQueryPoolResults`).
 
 ### 2026-11-01: Indirekte Argumente kommen von einem Compute-Shader → gl_BaseInstance

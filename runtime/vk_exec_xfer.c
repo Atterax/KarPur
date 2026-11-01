@@ -309,7 +309,7 @@ static void oq_segment(VkExec *ex, uint64_t addr, int reset, VkMemSpan *m) {
     if (m && oq_gpu()) {
         if (oq_nseg == 1 && !oq_keep && !oq_lost && m->offset % 8 == 0) {
             vk_exec_barrier(ex);
-            VK_MEM_USE(*m);
+            VK_MEM_PICK(*m);   // as the other copies: the mirror only when the pool already has one
             vkCmdCopyQueryPoolResults(ex->cb, oq_pool, oq_seg[0], 1, m->buffer, m->offset, 8,
                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
             ex->recorded++;
