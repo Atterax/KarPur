@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M3, erstes Lebenszeichen
 
 ### Nächste Schritte
-1. RomFS entpacken: Basis + Update (BKTR) zusammenführen. Wie bei TotK mit hactool (ISC), gebaut in MSYS2 mit den Patches aus TotK Recomp (`tools/build_hactool.py`, `tools/hactool/*.patch`). Braucht viel Platz (Basis 6,4 GB + Update 4,9 GB, zusammengeführt grob 10+ GB, zeitweise doppelt).
+1. Maintainer baut hactool und führt `tools/extract_romfs.py` aus ([setup-windows.md](setup-windows.md), Schritt 10), schickt den RomFS-Bericht. Daran sehen wir, wie die Spieldaten organisiert sind (z. B. `trpfs`/`trpfd`).
 2. Runtime aus TotK Recomp übernehmen, zuerst nur das, was zum Starten nötig ist: Loader (Module an ihre Basis legen, Relocations, dynamisches Linken zwischen main/subsdk0/sdk), Speicher (Reservierung ab `0x7000000000`), `rt_dispatch`, Kernel/Threads, SVCs, `HOST_OVERRIDE`-Mechanismus, Dateisystem auf die RomFS, Boot. Grafik, Audio und Eingabe zunächst als Stubs.
 3. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
 
@@ -14,6 +14,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Karmesin/Purpur packt seine Daten in `trpfs`/`trpak`-Archive; ob der Spielcode sie selbst entpackt (dann nichts zu tun) oder ob dafür Middleware nötig ist, zeigt sich in M3.
 
 ## Protokoll
+
+### 2026-11-01: RomFS-Extraktion vorbereitet
+- Maintainer hat 100 GB frei (bei Bedarf 200–400 GB).
+- `tools/build_hactool.py` und `tools/hactool/*.patch` aus TotK Recomp übernommen (baut hactool 1d64a83 mit MSYS2-gcc und `make`).
+- `tools/extract_romfs.py`: kopiert Basis- und Update-Program-NCA nach `game/tmp`, übergibt Title-Key und bereinigte `prod.keys` über private Dateien, lässt hactool die BKTR-Zusammenführung mit Prüfung aller sechs IVFC-Ebenen machen, schreibt `game/romfs/romfs.bin` + `index.json` und berichtet Größen und Dateitypen. Der RomFS-Index ist mit `tests/test_romfs.py` getestet.
+- Nicht hier getestet: der hactool-Build und die echte Zusammenführung. Das Herunterladen und Ausführen von fremdem Code wurde in der Agent-Umgebung blockiert; das läuft nur beim Maintainer.
 
 ### 2026-11-01: M2 erledigt
 - Erster echter Lauf von `tools/lift.py` auf Purpur 4.0.0 (Windows, Clang 23.1.4):

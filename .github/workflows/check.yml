@@ -18,6 +18,8 @@ jobs:
         run: python -m pip install -r tools/requirements.txt
       - name: End-to-end test on a fake game
         run: python tests/test_extract.py
+      - name: RomFS index test
+        run: python tests/test_romfs.py
       - name: Install clang, lld and LLVM tools
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm ninja-build
       - name: Lifter differential test (AArch64 guest lifted, run on x86-64, compared with native)

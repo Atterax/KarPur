@@ -193,6 +193,42 @@ Das Tool:
 
 Den Bericht am Ende bitte kopieren und schicken. Er enthält nur Zahlen, Instruktionsarten und Dateinamen, keinen Spielcode.
 
+## 10. Spieldaten entpacken (Meilenstein M3)
+
+Die Spieldaten (Grafiken, Texte, Welt) stecken im Basisspiel, und das Update ändert einen Teil davon. Das Werkzeug **hactool** führt beides zusammen. hactool wird einmal auf deinem PC gebaut.
+
+Neuen Stand holen:
+
+```
+cd C:\KarPur\repo
+```
+
+```
+git pull
+```
+
+Das Build-Werkzeug `make` für MSYS2 installieren:
+
+```
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm make"
+```
+
+hactool herunterladen und bauen (dauert unter einer Minute):
+
+```
+.venv\Scripts\python tools\build_hactool.py
+```
+
+Erwartete Ausgabe: eine Zeile, die mit `...\toolchain\hactool\hactool.exe: 1d64a83 + portable.patch, unicode.patch, mbedtls-asm-clobbers.patch` endet.
+
+Dann die Spieldaten zusammenführen:
+
+```
+.venv\Scripts\python tools\extract_romfs.py
+```
+
+Das Werkzeug kopiert die beiden großen Datenpakete aus deinen Dumps, lässt hactool sie zusammenführen und dabei jede Prüfsumme kontrollieren, und legt das Ergebnis als `game\romfs\romfs.bin` ab. **Das dauert etwa 5–20 Minuten** und braucht zeitweise rund 30 GB freien Platz, danach bleiben etwa 6–7 GB. Am Ende kommt wieder ein Bericht zwischen `=====`-Linien, den bitte schicken.
+
 ## Was später noch dazukommt
 
 Für die Grafik (Meilenstein M4) kommen das Vulkan SDK und .NET (für den Shader-Übersetzer) dazu. Diese Anleitung wird dann erweitert.
