@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Treiberfehler lokalisiert (Adressen), Bäume ohne TF
+- Lauf mit GPL: `access violation at nvoglv64.dll+0xedca72, thread "vk recorder", reading address 0`, aufgerufen von karpur+0xc7a4607 ← +0xc8a6207 ← +0xc7a293e (Runtime-Code, nicht geliftet). Lesen von Adresse 0 im Treiber deutet auf ein NULL-Handle oder einen NULL-Zeiger in einem vkCmd-Aufruf.
+- `tools/symbolize.py`: ordnet karpur+0x…-Adressen über `build/game/karpur.map` Symbolen zu.
+- Lauf ohne GPL: nur zwei TF-Layouts (12/12/12 und 12/4/4), Bäume nutzen also kein TF. Der verformte Baum (Klumpen) steht neben einem korrekten: eher LOD/Impostor oder Compute-Ergebnis, eigenes Thema.
+
 ### 2026-11-01: Absturz trotz GPL-Ausnahme für XFB-Shader
 - Mit `uses_xfb()` (keine Libraries für XFB-Pipelines) stürzt es weiter ab, diesmal **vor** „draw 1: binding the buffers“, also während `rec_drain` die vorher eingereihten Befehle (Pipeline binden, Deskriptoren, dynamischer Zustand) im Recorder-Thread ausführt. Mit `TOTK_GPL=0` lief es. Unterschiede bei GPL an außer den Libraries: unabhängige Set-Layouts (`P.indep`, INDEPENDENT_SETS, Vertex-Ausgabe-Union), Vertex-Set per Push. Neu ist dabei: Draws mit reinem Vertex-Programm (vorher ohne Programm übersprungen).
 - `platform/win32.c`: Fehler in anderen Modulen (Treiber) werden jetzt (erste 4) auf stderr gemeldet: Modul+Offset, Thread-Name, Rücksprungadressen in karpur.exe. Nächster Lauf soll zeigen, welcher Aufruf in den Treiber führt.
