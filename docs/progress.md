@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/extract_fonts.py` (Abschnitt 14), `tools/build_game.py`, `karpur.exe` starten; Bericht von `extract_fonts.py` und Log-Ende schicken.
+1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe` starten; Log-Ende schicken. Erwartung: Das Spiel kommt über die Schriftarten hinaus.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Shared Fonts geladen, Absturz in der Font-Verarbeitung
+- `extract_fonts.py` aus der Basis-XCI: alle sechs Fonts bestanden die Prüfungen (Standard 2.053.628, Chinesisch vereinfacht 7.814.744, Erweiterung 106.320, traditionell 3.580.260, Koreanisch 3.672.868, Nintendo-Erweiterung 180.236 Bytes Font).
+- Das Spiel lädt die Typen 4, 2, 1, 3 und stürzt dann ab: Schreibzugriff auf `0x38` in `main+0x2151b80` (x0 = 0), Aufruf von `sdk+0x19dc00`, Kette `main+0x120f7d8` → `0x120d3fc` → `0x11ba8ec` → `0x11acd04` → nnMain.
+- Ursache (vermutlich): Die Runtime gab dem Spiel die noch XOR-codierten BFTTF-Daten. Auf der Konsole decodiert `pl` die Fonts in den Shared Memory (Header mit festem Schlüssel 0x49621806, so liest libnx `plGetSharedFont`); das Spiel bekommt ein normales sfnt. Behoben in `ov_system.c font_data`: Nutzdaten werden beim Laden decodiert. `--probe-*` für Fonts (`ov_probe.c`) erwartet noch die codierte Form; Probes sind für Purpur ohnehin nicht gedacht.
 
 ### 2026-11-01: Wwise lädt, nächster Abbruch an den Shared Fonts
 - Mit der Ordner-Korrektur läuft die Audio-Initialisierung durch. Wwise versucht jede Bank zuerst unter `audio/wwise/bin/Switch/English(US)/` (0x202, normal) und nimmt dann die lose Datei in `audio/wwise/bin/Switch/`. Init, BGM, ME, COMMON, DEMO, UI, VIB, ENV, UI_ADD, PM, PL, BATTLE_SYSTEM, PROPS, NPC, PM_SKILLS, PM_VOICE werden so geladen.

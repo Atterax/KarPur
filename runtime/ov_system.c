@@ -742,6 +742,16 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         fclose(f);
         uint64_t size = got == (size_t)len ? ov_bfttf_size(p, (uint64_t)len) : 0;
         if (!size) rt_fatal("nn::pl: shared font %s is not a BFTTF font", path);
+        // KarPur: the pl service hands the game a plain sfnt font. The firmware file's payload is XORed with its key in
+        // big-endian words; pl decodes it into shared memory and writes the 8-byte header with the fixed key
+        // 0x49621806 (the layout libnx's plGetSharedFont reads). Without the decode the game's font library parsed the
+        // still encoded bytes and crashed on the font object it could not build.
+        uint32_t key = be32(p) ^ BFTTF_MAGIC;
+        uint8_t kb[4] = {(uint8_t)(key >> 24), (uint8_t)(key >> 16), (uint8_t)(key >> 8), (uint8_t)key};
+        for (int64_t i = 8; i < len; i++) p[i] ^= kb[(i - 8) & 3];
+        uint32_t hw_magic = 0x18029a7fu ^ 0x49621806u, hw_size = (uint32_t)size ^ 0x49621806u;
+        memcpy(p, &hw_magic, 4);   // little-endian, as pl writes it
+        for (int k = 0; k < 4; k++) p[4 + k] = (uint8_t)(hw_size >> (24 - 8 * k));
         fonts.size[t] = size;
         __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
         rt_log("pl: shared font %lld (%s): %llu bytes from %s", (long long)t, font_type_name(t),
