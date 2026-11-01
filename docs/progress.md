@@ -2,17 +2,31 @@
 
 Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. Neueste Einträge oben.
 
-## Aktueller Meilenstein: M2, Lifter läuft
+## Aktueller Meilenstein: M3, erstes Lebenszeichen
 
 ### Nächste Schritte
-1. Maintainer führt `tools/lift.py` aus ([setup-windows.md](setup-windows.md), Schritt 9) und schickt den M2-Bericht.
-2. Nicht unterstützte Instruktionen und Kompilierfehler aus dem Bericht beheben, bis beides 0 ist. Dann ist M2 erledigt.
-3. Danach M3: Runtime aus TotK übernehmen (Loader, Speicher, Kernel/Threads, SVCs, Dateisystem auf die RomFS) und die Module verlinken.
+1. RomFS entpacken: Basis + Update (BKTR) zusammenführen. Wie bei TotK mit hactool (ISC), gebaut in MSYS2 mit den Patches aus TotK Recomp (`tools/build_hactool.py`, `tools/hactool/*.patch`). Braucht viel Platz (Basis 6,4 GB + Update 4,9 GB, zusammengeführt grob 10+ GB, zeitweise doppelt).
+2. Runtime aus TotK Recomp übernehmen, zuerst nur das, was zum Starten nötig ist: Loader (Module an ihre Basis legen, Relocations, dynamisches Linken zwischen main/subsdk0/sdk), Speicher (Reservierung ab `0x7000000000`), `rt_dispatch`, Kernel/Threads, SVCs, `HOST_OVERRIDE`-Mechanismus, Dateisystem auf die RomFS, Boot. Grafik, Audio und Eingabe zunächst als Stubs.
+3. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
+- Karmesin/Purpur packt seine Daten in `trpfs`/`trpak`-Archive; ob der Spielcode sie selbst entpackt (dann nichts zu tun) oder ob dafür Middleware nötig ist, zeigt sich in M3.
 
 ## Protokoll
+
+### 2026-11-01: M2 erledigt
+- Erster echter Lauf von `tools/lift.py` auf Purpur 4.0.0 (Windows, Clang 23.1.4):
+
+  | Modul | Funktionen | Instruktionen | C | Sprungtabellen | Fallbacks | br über Dispatch | Traps | nicht unterstützt |
+  |---|---|---|---|---|---|---|---|---|
+  | main | 180.337 | 13.696.804 | 939 MB | 4.390 | 31 | 18.238 | 54.847 | 0 |
+  | subsdk0 | 13.662 | 850.420 | 59 MB | 335 | 1 | 3.957 | 5.589 | 0 |
+  | sdk | 39.287 | 1.529.240 | 106 MB | 661 | 16 | 10.327 | 24.661 | 0 |
+
+- **0 nicht unterstützte Instruktionen, alle 404 Dateien kompilieren fehlerfrei.** Lifting 0,8 min, Kompilieren 3,5 min.
+- „Traps“ sind keine Fehler: `brk`-Instruktionen (Abbruchpfade nach `abort`/Assertions) und Füllwörter zwischen Funktionen, die nur bei einem echten Absturz erreicht würden.
+- „br über Dispatch“: berechnete Sprünge ohne erkannte Tabelle (meist Tail-Calls über Funktionszeiger) laufen über `rt_dispatch`. Das ist korrekt, nur etwas langsamer.
 
 ### 2026-11-01: Lifter übernommen und getestet
 - MSYS2 beim Maintainer installiert: Clang 23.1.4, LLD, Ninja (UCRT64).
