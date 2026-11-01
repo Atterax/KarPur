@@ -2357,9 +2357,11 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
 // dispatch), as nxnative nvn_mtl.m does. The base instance stays out of c0 (0x644): c0 cannot be patched by a transfer
 // inside a pass; gl_BaseInstance of the Vulkan draw is the argument's. Byte indices need the count to be widened: skipped.
 // The base instance GLSLC shaders read from c0 (0x644) is the firstInstance of the arguments: the shader adds it to the
-// instance index to find its per-instance data. Violet's indirect draws all have a nonzero one (written by the CPU);
-// with 0 every instance read another instance's data and objects disappeared (vases, a flower bed). The arguments are
-// read when the draw is recorded; arguments in GPU-only memory cannot be read and keep 0. TOTK_IND_BASE=0: always 0.
+// instance index to find its per-instance data. Violet's indirect draws all have a nonzero one; with 0 every instance
+// read another instance's data and objects disappeared (vases, a flower bed). A compute shader earlier in the same
+// command buffer writes these arguments, so the value read here at record time can be stale: vertex shaders translated
+// since 2026-11-01 read gl_BaseInstance instead (tools/xlate/Program.cs QueryHasConstantBufferDrawParameters), and c0
+// only matters for shaders from an older translator. Arguments in GPU-only memory keep 0. TOTK_IND_BASE=0: always 0.
 static uint32_t ind_first_instance(uint64_t ind) {
     static int on = -1;
     if (on < 0) {

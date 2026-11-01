@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Indirekte Argumente kommen von einem Compute-Shader → gl_BaseInstance
+- Zählung: **alle** indirekten Argumente schreibt ein Shader im selben Befehlspuffer vor dem Draw (GPU-Culling mit Kompaktierung). Die erste Instanz ändert sich also je nach Sichtbarkeit pro Frame; der Wert, den die Wiedergabe beim Aufzeichnen aus dem Speicher liest, ist veraltet. Darum ploppen Objekte mit Abstand und Kamera.
+- Fix im Übersetzer: `QueryHasConstantBufferDrawParameters() => true` (Ryujinx `DrawParametersReplace`): Vertex-Shader lesen c0+0x640/0x644/0x648 als `gl_BaseVertex`/`gl_BaseInstance`/`gl_DrawID`, die GPU nimmt den Wert direkt aus den Argumenten. Neuer Übersetzer = neue Übersetzer-ID = Shader-Cache wird neu aufgebaut. `shaderDrawParameters` ist eingeschaltet (vk_device.c schaltet alle gemeldeten Features ein).
+
 ### 2026-11-01: Verdeckungsabfragen sind nicht die Ursache des Ploppens
 - `OCCLUSION=0`: Objekte ploppen weiter. Die Prüf-Draws sind Boxen (36 Indizes), Tiefentest GREATER (Reverse-Z) ohne Schreiben, halbe Auflösung 960x540: plausibel.
 - Neue Verdachte: Distanz-/LOD-abhängiges Culling, eventuell auf der GPU (Compute schreibt Instanzzahlen in die indirekten Argumente) oder über eine CPU-Rücklesung (z. B. Tiefenpuffer → Puffer, deren Kopie übersprungen wird). Diagnose: Zähler „written by a shader“ in der Indirekt-Zeile; dazu alle `(logged once)`-Warnungen ansehen.

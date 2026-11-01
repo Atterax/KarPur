@@ -1,7 +1,8 @@
 // TOTK Vulkan adaptation of MacNativeGames games/totk/tools/totk_xlate/Program.cs (MIT, see LICENSE; MNG commit b75be8cf).
 // Provenance: that file is based on D2R Mobile dm/gfx/tools/dmsh_xlate/Program.cs. Changes here: SPIR-V for Vulkan is the final
 // output (no MSL service, no VertexCounterLowering, no NEAR_IS_MINUS_W rewrite), depth clip control reported as supported,
-// non-constant texture offsets reported as unsupported, --disasm dropped. KarPur: transform feedback answered from the job ("xfb").
+// non-constant texture offsets reported as unsupported, --disasm dropped. KarPur: transform feedback answered from the job ("xfb"),
+// draw parameters read from the Vulkan built-ins instead of c0.
 // Protocol (stdout carries replies only; diagnostics go to stderr):
 //   totk_xlate --serve              one request per stdin line: {"job": {...}, "out": "<dir>"}; one reply line per request:
 //                                   "ok <key>" or "fail <key> <message>"; a malformed line gets "fail ? <message>" and the loop continues.
@@ -114,6 +115,12 @@ static class SwshXlate
         // "sbuf_align": n: the host binds each storage buffer at its guest address rounded down to n (minStorageBufferOffsetAlignment
         // above 4), so storage offsets count from there (Ryujinx's unaligned path; the multi-target path uses n too).
         public bool QueryHasUnalignedStorageBuffer() => _job["sbuf_align"] is JsonNode;
+        // KarPur: vertex shaders read the base vertex, base instance and draw index the NVN driver keeps in c0 (+0x640,
+        // +0x644, +0x648) as the Vulkan built-ins gl_BaseVertex, gl_BaseInstance and gl_DrawID (Ryujinx's
+        // DrawParametersReplace). Violet's indirect draws get their arguments, first instance included, from a compute
+        // shader earlier in the same command buffer: only the GPU knows the value when the draw runs, and a value the host
+        // writes into c0 at record time is stale, which made objects pop in and out with the camera.
+        public bool QueryHasConstantBufferDrawParameters() => true;
         public int QueryHostStorageBufferOffsetAlignment() => _job["sbuf_align"] is JsonNode n ? (int)n : 16;
         // "subgroup": n: lanes per subgroup when the host cannot pin 32 (AMD GCN/Vega run 64): ballots and votes span n lanes.
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
