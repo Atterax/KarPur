@@ -2353,13 +2353,29 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     VK_MEM_USE(ib);
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     ind_stat[0]++;
-    if (!nvn_gpu_only(d->ind)) {
-        VkDrawIndexedIndirectCommand a;
+    int cpu = !nvn_gpu_only(d->ind);
+    VkDrawIndexedIndirectCommand a = {0};
+    if (cpu) {
         memcpy(&a, (const void *)(uintptr_t)d->ind, sizeof a);
         ind_stat[1]++, ind_stat[2] += !a.instanceCount, ind_stat[3] += !a.indexCount;
         ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
     }
-    vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
+    // A/B tests for objects that stay invisible (KarPur): TOTK_IND_CPU=1 draws with the arguments as the CPU sees them
+    // (vkCmdDrawIndexed) instead of letting the GPU read them from the pool buffer, which tells a stale GPU copy of
+    // the arguments apart; TOTK_IND_SHOW=1 also draws arguments with instance count 0 as one instance, which shows
+    // whether the missing objects are draws the game (or one of its compute shaders) culled.
+    static int ind_cpu = -1, ind_show = -1;
+    if (ind_cpu < 0) {
+        ind_cpu = rt_knob("IND_CPU", "0"), ind_show = rt_knob("IND_SHOW", "0");
+        if (ind_cpu) rt_log("vk_exec: indirect draws use the arguments the CPU sees (TOTK_IND_CPU=1)");
+        if (ind_show) rt_log("vk_exec: indirect draws with instance count 0 draw one instance (TOTK_IND_SHOW=1)");
+    }
+    if (cpu && (ind_cpu || ind_show)) {
+        uint32_t inst = a.instanceCount ? a.instanceCount : ind_show ? 1 : 0;
+        if (inst && a.indexCount) vkCmdDrawIndexed(ex->cb, a.indexCount, inst, a.firstIndex, a.vertexOffset, a.firstInstance);
+    } else {
+        vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
+    }
     ex->recorded += 2;
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndexedIndirectCommand));
     VK_MEM_BOUND(ip);

@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Weiterhin viele unsichtbare Objekte (Topf, Büsche, Zäune)
+- Nach dem Basis-Instanz-Fix fehlen weiter Objekte mit Kollision. Fehlende NVN-Zeichenfunktionen sind ausgeschlossen (würden mit `rt_fatal` abbrechen).
+- Die Hälfte der indirekten Draws hat in der CPU-Sicht Instanzzahl 0. A/B-Schalter: `TOTK_IND_CPU=1` zeichnet mit den Argumenten aus CPU-Sicht (vkCmdDrawIndexed statt Lesen aus dem GPU-Puffer, prüft veraltete GPU-Kopie/Spiegel), `TOTK_IND_SHOW=1` zeichnet zusätzlich Instanzzahl 0 als eine Instanz (prüft, ob die fehlenden Objekte vom Culling stammen). Dazu `MEMORY=import` (keine Spiegel).
+
 ### 2026-11-01: Basis-Instanz bei indirekten Draws (Verdacht für unsichtbare Objekte)
 - `OCCLUSION=0`: Objekte bleiben unsichtbar, Verdeckungsabfragen sind nicht die Ursache (das Spiel nutzt sie stark, ~4096 Berichte in wenigen Sekunden, viele mit 0, das ist normal).
 - Indirekte Draws: ~437 pro Frame, **alle** mit erster Instanz ≠ 0 (Argumente schreibt die CPU, die Hälfte mit Instanzzahl 0 = Culling des Spiels). Die Wiedergabe gab dem Shader aber immer Basis-Instanz 0 (c0+0x644). GLSLC-Shader addieren sie zum Instanzindex, um ihre Instanzdaten zu finden, also hat jedes Objekt die Daten eines anderen gelesen.
