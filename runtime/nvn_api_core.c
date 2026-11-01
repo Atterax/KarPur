@@ -499,7 +499,7 @@ NVN_API(nvnEventInitialize) {
         ret_x(c, 0);
         return;
     }
-    *(ev_t *)arg_p(c, 0) = (ev_t){EVENT_MAGIC, (volatile uint32_t *)(s->pool->mem + s->off)};
+    *(ev_t *)arg_p(c, 0) = (ev_t){EVENT_MAGIC, (volatile uint32_t *)(s->pool->mem + s->off), s->pool, s->off};
     ret_x(c, 1);
 }
 // void nvnEventFinalize(NVNevent *e)
@@ -525,6 +525,7 @@ NVN_API(nvnQueueBuilderSetDefaults) {
     b->comp_sz = 262144;
     b->ctl_sz = 16384;
     b->flush = 4096;
+    b->priority = 1;   // KarPur: NVN_QUEUE_PRIORITY_NORMAL
 }
 // void nvnQueueBuilderSetDevice(NVNqueueBuilder *b, NVNdevice *d)
 NVN_API(nvnQueueBuilderSetDevice) { ((queue_builder_t *)arg_p(c, 0))->dev = arg_p(c, 1); }

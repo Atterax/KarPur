@@ -27,7 +27,13 @@
 #undef nvnp_nvnDeviceGetProcAddress
 void nvnp_nvnDeviceGetProcAddress(Cpu *c);
 
-typedef struct { const char *name; uint64_t addr; } Proc;
+// KarPur: nvn_has_<name> is 0 here and 1 where NVN_API (nvn_api.h) defines the proc, so a lookup can tell a weak
+// stand-in from an implementation. nvnDeviceGetProcAddress is defined below without NVN_API.
+#define NVN_PROC(n) __attribute__((weak)) const char nvn_has_##n = 0;
+#include "nvn_procs.inc"
+#undef NVN_PROC
+
+typedef struct { const char *name; uint64_t addr; const volatile char *has; } Proc;
 
 #define NVN_PROC(n) +1
 enum { PROC_COUNT = 0
@@ -42,16 +48,35 @@ static int by_name(const void *a, const void *b) { return strcmp(((const Proc *)
 
 void nvn_procs_register(void) {
     if (nprocs) return;
-#define NVN_PROC(n) procs[nprocs++] = (Proc){#n, hostfn_register("nvn:" #n, nvnp_##n)};
+#define NVN_PROC(n) procs[nprocs++] = (Proc){#n, hostfn_register("nvn:" #n, nvnp_##n), &nvn_has_##n};
 #include "nvn_procs.inc"
 #undef NVN_PROC
     qsort(procs, (size_t)nprocs, sizeof *procs, by_name);
 }
 
+// KarPur: the game took the address of a proc without an implementation. Each such proc is logged once, with a running
+// count, so one run lists every missing proc the game resolves instead of stopping at the first one it calls.
+static void proc_missing(const Proc *p) {
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    static const Proc *seen[PROC_COUNT];
+    static int nseen;
+    int fresh = 1;
+    plat_mutex_lock(&lock);
+    for (int i = 0; i < nseen; i++)
+        if (seen[i] == p) fresh = 0;
+    if (fresh) seen[nseen++] = p;
+    int n = nseen;
+    plat_mutex_unlock(&lock);
+    if (fresh) rt_log("nvn: missing proc %s resolved by the game (%d so far)", p->name, n);
+}
+
 uint64_t nvn_proc_address(const char *name) {
     if (!name) return 0;
-    const Proc *p = bsearch(&(Proc){name, 0}, procs, (size_t)nprocs, sizeof *procs, by_name);
-    if (p) return p->addr;
+    const Proc *p = bsearch(&(Proc){name, 0, NULL}, procs, (size_t)nprocs, sizeof *procs, by_name);
+    if (p) {
+        if (!*p->has && strcmp(p->name, "nvnDeviceGetProcAddress")) proc_missing(p);
+        return p->addr;
+    }
     // Unknown names get NULL, as on hardware; each distinct one is logged once.
     static PlatMutex lock = PLAT_MUTEX_INIT;
     static char seen[32][96];

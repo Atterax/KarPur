@@ -9,7 +9,10 @@
 #include "nvn_obj.h"
 
 // NVN_API(nvnX) { body }: the strong nvnp_nvnX(Cpu *c); counts the call in gfx_counters, TOTK_TRACE=gfx logs the first.
+// KarPur: it also defines nvn_has_<name> = 1, which overrides the weak 0 in nvn_procs.c, so the proc table knows which
+// procs have an implementation and logs the ones the game asks for that do not.
 #define NVN_API(n)                                                                                                   \
+    const char nvn_has_##n = 1;                                                                                      \
     static void nvn_impl_##n(Cpu *c);                                                                                \
     void nvnp_##n(Cpu *c) {                                                                                          \
         static uint8_t seen;                                                                                         \
