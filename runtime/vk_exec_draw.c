@@ -2044,6 +2044,27 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
+    // KarPur diagnostic: the first draws whose vertex shader picks the layer (Violet's shadow cascades): the target's
+    // layers, viewport 0, scissor, depth range, polygon offset and whether a fragment shader is bound.
+    static int layer_logged;
+    if (layer_logged < 6 && vk_pipeline_vs_writes_layer(vs)) {
+        layer_logged++;
+        if (layer_logged == 1) {
+            VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+            VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
+            vkGetPhysicalDeviceFeatures2(vk_ctx()->phys, &f2);
+            rt_log("vk_exec: layered draws: device shaderOutputLayer %u, shaderOutputViewportIndex %u",
+                   f12.shaderOutputLayer, f12.shaderOutputViewportIndex);
+        }
+        const VkExecTarget *d = &ex->depth;
+        rt_log("vk_exec: layered draw %d: pass %ux%u, %u layers; depth target %s layers %u+%u of %u (format %#x), %u colour "
+               "targets; fragment shader %s; viewport %g,%g %gx%g; scissor %d,%d %dx%d; depth range %g..%g; polygon offset "
+               "%g %g %g; %d vertices",
+               layer_logged, ex->pass_w, ex->pass_h, ex->pass_layers, d->image ? "yes" : "no", d->base_layer, d->layers,
+               d->img ? d->img->layers : 0, d->nvn_format, ex->pass_ncolor, fs ? "yes" : "no", ex->vp[0][0], ex->vp[0][1],
+               ex->vp[0][2], ex->vp[0][3], ex->scissor.x, ex->scissor.y, ex->scissor.w, ex->scissor.h, ex->depth_range[0],
+               ex->depth_range[1], ex->poly_offset.factor, ex->poly_offset.units, ex->poly_offset.clamp, count);
+    }
     s.feedback = (uint8_t)((fbl & 0xff ? 1 : 0) | (fbl & 0x100 ? 2 : 0));
     s.prim = (uint8_t)prim;
     s.depth_minus_w = (uint8_t)(nvn_depth_minus_w() != 0);

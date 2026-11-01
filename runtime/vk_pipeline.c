@@ -1367,6 +1367,30 @@ static void note_vs_builtins(const uint32_t *w, uint64_t words) {
     if (vpi && ++n_vpi <= 3) rt_log("vk_pipeline: a vertex shader writes gl_ViewportIndex (%d so far): the replay sets one viewport", n_vpi);
 }
 
+// 1 when the vertex shader writes gl_Layer (BuiltIn 9), cached by shader (vk_exec_draw.c layered-pass diagnostic).
+int vk_pipeline_vs_writes_layer(const GfxShader *vs) {
+    static struct { const GfxShader *s; int v; } memo[256];
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    unsigned i = (unsigned)(((uintptr_t)vs >> 4) % 256);
+    plat_mutex_lock(&lock);
+    int hit = memo[i].s == vs, v = memo[i].v;
+    plat_mutex_unlock(&lock);
+    if (hit) return v;
+    uint64_t words = 0;
+    const uint32_t *w = vs ? gfx_shader_spirv(vs, &words) : NULL;
+    v = 0;
+    for (uint64_t j = 5; w && j < words;) {
+        uint32_t op = w[j] & 0xffff, n = w[j] >> 16;
+        if (!n || j + n > words || op == 54) break;
+        if ((op == 71 && n >= 4 && w[j + 2] == 11 && w[j + 3] == 9) || (op == 72 && n >= 5 && w[j + 3] == 11 && w[j + 4] == 9)) v = 1;
+        j += n;
+    }
+    plat_mutex_lock(&lock);
+    memo[i].s = vs, memo[i].v = v;
+    plat_mutex_unlock(&lock);
+    return v;
+}
+
 static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Layout *l, uint32_t fs_off) {
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
     uint64_t vw, fw;

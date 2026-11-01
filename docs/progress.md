@@ -21,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Wasser korrekt; Schatten nutzen gl_Layer
+- Wasser sieht nach der Tiefen-Stencil-Kopie normal aus.
+- Diagnose: mindestens 3 Vertex-Shader schreiben `gl_Layer` (Schatten-Kaskaden in eine Array-Textur in einem Durchgang); keine Meldung zu mehreren Viewports. Schatten weiter zu dunkel, unsichtbare Objekte weiter unsichtbar; keine „skipped“-Meldungen dazu.
+- Neue Diagnose `vk_exec_draw.c`: die ersten 6 Draws mit gl_Layer-Shader melden Pass-Größe und -Ebenen, Tiefenziel (Ebenen, Format), Viewport, Scissor, Tiefenbereich, Polygon-Offset, ob ein Fragment-Shader gebunden ist; dazu die Gerätefeatures shaderOutputLayer/ViewportIndex.
+- Andere Recomp-Projekte (alle MIT, in `refs/` zum Lesen): letsgo-recomp (raulzrrs, LAS-Recomp-Basis), KirbyRecomp, primerecomp. Keines setzt Transform Feedback um; letsgo zeichnet nur einlagig (layerCount 1). Für Schatten keine direkte Vorlage gefunden.
+
 ### 2026-11-01: Neue Bildfehler-Liste: Schatten, unsichtbare Objekte, Wasser
 - Maintainer-Befund (Startgebiet): Schatten zu dunkel/falsch (Kleidung, Fassade des Anwesens, Figuren in Zwischensequenz fast schwarz), teils sehr pixelig; ein Blumenbeet blockiert, ist aber unsichtbar; Wasser dunkelblau ohne Durchsicht.
 - Schatten: Seit dem Binden nach Stufen werden Draws ohne Fragment-Shader (Schattenkarten) gezeichnet statt übersprungen; vorher fehlten Schatten ganz. Verdacht: Kaskaden über mehrere Viewports/Scissors oder gl_Layer in einem Durchgang; die Wiedergabe setzt nur Viewport 0 und einen Scissor. Diagnose eingebaut: `vk_pipeline.c note_vs_builtins` (Vertex-Shader schreibt gl_Layer / gl_ViewportIndex), `vk_exec.c` meldet SetViewports mit unterschiedlichen Viewports.
