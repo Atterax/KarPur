@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Pixelanzahl ebenfalls nicht die Ursache; Test Tiefentest EQUAL
+- `OQ_CLAMP=1`: Objekte bleiben nah/mittig unsichtbar. Zusammen mit `OCCLUSION=0`: Die Abfrage-Ergebnisse steuern diese Objekte nicht. Größte Zählwerte ~0,5–0,9 Mio. (Box über das ganze 960×540-Bild, Vorder- und Rückseite).
+- Neuer Verdacht: Tiefen-Vorpass + Farbpass mit Tiefentest EQUAL; minimal andere Tiefe im Farbpass → keine Farbe (Objekt verdeckt trotzdem). Der frühere `DEPTH_ONLY=0`-Test erfasste nur Vorpass-Draws ohne Fragment-Shader.
+- Test-Schalter `TOTK_DEPTH_EQUAL=0`: EQUAL wird als GREATER_OR_EQUAL gezeichnet (Reverse-Z). Log `vk_pipeline: a draw tests depth EQUAL` zeigt, ob das Spiel EQUAL überhaupt nutzt.
+
 ### 2026-11-01: Nur Zeitstempel und Samples-Passed; Verdacht: Pixelanzahl steuert LOD/Ausblendung
 - Zählerarten in 1800 Frames: Typ 0 (Zeitstempel) 1801, Typ 1 (Samples-Passed) 736999 (~400/Frame), Typ 16 (Zeitstempel oben) 1802. Kein bedingtes Zeichnen, kein RenderEnable.
 - Neue Deutung: Das Spiel wertet die **Anzahl** der Pixel aus (Detailstufe oder Ausblenden nah/mittig), nicht nur 0/≠0. Passt zu allen Beobachtungen: nah + mittig → große Zahl → weg; Bildrand/fern → kleinere Zahl → sichtbar; `OCCLUSION=0` schrieb riesige Werte → kein Effekt. Mögliche Ursache: unsere Zählung ist größer als die der Switch (Einheit/Zählweise).

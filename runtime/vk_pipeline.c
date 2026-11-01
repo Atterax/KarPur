@@ -3165,7 +3165,16 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     vkCmdSetPrimitiveTopology(cb, vk_pipeline_topology(s->prim));
     vkCmdSetDepthTestEnable(cb, d->dt);
     vkCmdSetDepthWriteEnable(cb, d->dw);
-    vkCmdSetDepthCompareOp(cb, compare_op(d->df));
+    // TOTK_DEPTH_EQUAL=0 (KarPur test): a depth test EQUAL becomes GREATER_OR_EQUAL (Violet draws reverse-Z). A colour
+    // pass that tests EQUAL against the depth an earlier pass wrote draws nothing when the two vertex shaders compute a
+    // minimally different depth on this GPU; the object then hides what is behind it but shows no colour itself.
+    static int eq_mode = -1, eq_logged;
+    if (eq_mode < 0) {
+        eq_mode = rt_knob("DEPTH_EQUAL", "1");
+        if (!eq_mode) rt_log("vk_pipeline: depth test EQUAL is replayed as GREATER_OR_EQUAL (TOTK_DEPTH_EQUAL=0)");
+    }
+    if (d->df == 3 && d->dt && !eq_logged) eq_logged = 1, rt_log("vk_pipeline: a draw tests depth EQUAL");
+    vkCmdSetDepthCompareOp(cb, d->df == 3 && !eq_mode ? VK_COMPARE_OP_GREATER_OR_EQUAL : compare_op(d->df));
     vkCmdSetStencilTestEnable(cb, d->st);
     vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_BIT, stencil_op(d->fail_f), stencil_op(d->zpass_f), stencil_op(d->zfail_f),
                       compare_op(d->sf_f));
