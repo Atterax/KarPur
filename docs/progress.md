@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Bestätigt: Die CPU liest die Ergebnisse des GPU-Cullings zurück
+- `READ_WATCH=1` + `symbolize.py --log`: Spielcode `f_7000b88fc0` liest Puffer 0 (Storage 1 von Compute-Shader 1, 256 KiB) und `f_7000b89f1c` liest Puffer 2 (die indirekten Draw-Argumente, 256 KiB); beide aufgerufen von `f_7000b88d48`. Weitere Zugriffe: unsere Runtime (`vk_exec_op_draw`, `ov_memcpy`).
+- Folgerung: Die CPU entscheidet mit den Ergebnissen des GPU-Cullings (vermutlich den Instanzzahlen) aus dem vorigen Frame, welche Objekte sie überhaupt zeichnet. Rechnet Compute-Shader 1 falsch (0 statt sichtbar), fehlen die Objekte samt ihren direkten Draws.
+- Beweistest: `TOTK_ARGS_FORCE=1` setzt nach jeder Submission Instanzzahl 0 → 1 in allen bekannten Argument-Datensätzen (Gastspeicher). Erscheinen Zaun/Palme/Büsche, ist Compute-Shader 1 (bzw. seine Eingaben) die Ursache.
+
 ### 2026-11-01: Lesewächter für die Ausgaben der Compute-Shader
 - Neu: `TOTK_READ_WATCH=1`. Storage-Buffer ≥ 64 KiB, die ein Dispatch schreibt (GPU-Culling: 256 KiB, 1 MiB, Draw-Argumente), werden nach Abschluss der Submission unzugänglich gemacht (höchstens alle 30 Frames); der erste Zugriff je Seite wird mit Befehl und Rücksprungadressen in karpur.exe geloggt (`vk_exec: read watch: buffer N … accessed at karpur+… called from …`), dann läuft der Zugriff weiter. Windows: Vectored Exception Handler `read_watch_veh` (platform/win32.c), Linux ohne Funktion.
 - `tools/symbolize.py --log <log> --grep "read watch"` ersetzt alle karpur+0x… einer Logzeile durch Symbolnamen (f_<Gastadresse> = Spielcode).

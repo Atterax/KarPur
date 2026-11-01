@@ -2089,6 +2089,41 @@ static int pipe_memo_on(void) {
 
 static void rww_poll(void);   // read watch, below
 
+// TOTK_ARGS_FORCE=1 (KarPur test): once a submission is done, every indirect draw argument record seen so far that
+// holds instance count 0 gets 1 in guest memory. Violet's CPU reads these records (written by its GPU culling) back in
+// the next frame (read watch: f_7000b89f1c) and decides from them what it draws. Objects that then appear are ones the
+// culling shader counted as not visible. Draws themselves stay as the GPU wrote them.
+#define AF_N 65536
+static uint64_t af_addr[AF_N];   // open addressing, 0 empty
+static uint32_t af_n;
+static int af_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("ARGS_FORCE", "0");
+        if (on) rt_log("vk_exec: indirect draw arguments with instance count 0 are set to 1 after each submission (TOTK_ARGS_FORCE=1)");
+    }
+    return on;
+}
+static void af_add(uint64_t a) {
+    if (af_n >= AF_N / 2) return;
+    for (uint32_t i = (uint32_t)(a * 0x9e3779b97f4a7c15ull >> 48) % AF_N;; i = (i + 1) % AF_N) {
+        if (af_addr[i] == a) return;
+        if (!af_addr[i]) { af_addr[i] = a, af_n++; return; }
+    }
+}
+static void af_cb(void *arg) {
+    (void)arg;
+    uint64_t fixed = 0;
+    for (uint32_t i = 0; i < AF_N; i++) {
+        uint64_t a = af_addr[i];
+        if (!a) continue;
+        volatile uint32_t *ic = (volatile uint32_t *)(uintptr_t)(a + 4);
+        if (!*ic) *ic = 1, fixed++;
+    }
+    static int logs;
+    if (logs < 3 && fixed) logs++, rt_log("vk_exec: ARGS_FORCE set %llu instance counts to 1", (unsigned long long)fixed);
+}
+
 // ---- F8 draw snapshots (KarPur diagnostic)
 // F8 in the game window marks the next frame: its draws are collected as (mesh key, instances), where the key is the
 // index buffer, first index, index count and vertex offset (indirect: as the CPU sees the arguments, which a shader
@@ -2681,6 +2716,11 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
     }
     ind_stat[6] += shader_wrote(ex, d->ind, sizeof(VkDrawIndexedIndirectCommand));
+    if (cpu && af_on()) {
+        af_add(d->ind);
+        static uint64_t af_fence;
+        if (ex->fence != af_fence) af_fence = ex->fence, vk_completion_add(ex->fence, af_cb, NULL);
+    }
     snap_itype = (uint32_t)d->itype;
     if (cpu) snap_add(SNAP_IND, snap_mix(d->ibuf, a.firstIndex, a.indexCount, (uint64_t)(uint32_t)a.vertexOffset), a.instanceCount, a.indexCount);
     if (d->ind < ind_lo) ind_lo = d->ind;
