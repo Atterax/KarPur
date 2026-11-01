@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Treiberabsturz erklärt: leeres Fragment-Set im unabhängigen Layout
+- Paketbericht: Absturz in Op 47 = `vkCmdPushDescriptorSetWithTemplateKHR` (davor SetStencilReference/WriteMask/CompareMask), für die reine Vertex-Pipeline des TF-Durchgangs. Mit GPL an nutzt jede Pipeline ein INDEPENDENT_SETS-Layout (Set 0 Vertex, Set 1 Fragment); ohne Fragment-Shader ist Set 1 leer. Der NVIDIA-Treiber liest dann beim Push von Set 0 Adresse 0.
+- Fix (`vk_pipeline.c` `whole_only`): Pipelines ohne Fragment-Shader bekommen das einfache Ein-Set-Layout und werden immer ganz gebaut (keine Libraries, kein Fast-Link); XFB-Pipelines werden ebenfalls ganz gebaut. Reine Vertex-Draws gibt es erst seit dem Binden nach Stufen (vorher übersprungen) – betrifft evtl. auch Tiefen-/Schattendurchgänge.
+
 ### 2026-11-01: Absturz im Recorder-Thread
 - `symbolize.py` (Map mit bildrelativen Adressen, Basis 0): karpur+0xc8a6207 = `rec_main+0x5e7` (der Recorder führt ein Paket aus; Aufruf eingebettet), darüber `thread_main`, darunter unser `crash_veh`.
 - `vk_rec.c` merkt sich das laufende Paket (Op-Nummer laut Enum, erste drei Argumentwörter) und die sechs davor; `plat_fault_extra` gibt das bei einem Treiberfehler mit aus.

@@ -884,6 +884,16 @@ static int uses_xfb(const GfxShader *sh) {
     return 0;
 }
 
+// KarPur: pipelines that are built whole only. 1: a vertex shader with transform feedback (uses_xfb). 2: no fragment
+// shader (Violet's transform feedback passes, depth-only draws; draws without a fragment stage became possible with
+// binds by stage, vk_xfb.c): these also take the single-set layout, because NVIDIA's driver (621.01) faults reading
+// address 0 in vkCmdPushDescriptorSetWithTemplateKHR for set 0 of an INDEPENDENT_SETS layout whose fragment set 1 is
+// empty. Without libraries a pipeline needs no independent layout; 0: libraries and fast links as usual.
+static int whole_only(const VkPipeState *s) {
+    if (!s->fs) return 2;
+    return uses_xfb(s->vs) ? 1 : 0;
+}
+
 // Chain {size 32} into a stage create info when the stage uses subgroup ops and the driver allows the pin.
 static void pin_subgroup32(VkPipelineShaderStageCreateInfo *st, VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rq,
                            const uint32_t *w, uint64_t words) {
@@ -2048,7 +2058,7 @@ static void pipe_worker(void *arg) {
         }
         // Step 1 for a job a draw waits for: its stage libraries and the fast link. Step 2, the optimised build, goes to
         // the head of the low queue, so a burst of new pipelines gets every fast link before any optimised build.
-        if (P.gpl && !uses_xfb(j->s.vs) && (!j->prebuild || j->demanded) && !j->p->info.pipeline && !j->p->fast_tried &&
+        if (P.gpl && !whole_only(&j->s) && (!j->prebuild || j->demanded) && !j->p->info.pipeline && !j->p->fast_tried &&
             j->p->lay) {
             int final;
             VkPipeline f = gpl_link(&j->s, &j->k, j->p->lay, 1, &final);   // releases P.lock while building
@@ -2173,7 +2183,7 @@ static Pipe *pipe_miss(const VkPipeState *s, const GKey *k, uint64_t h, int mode
     uint32_t span = binding_span(s->vs);
     if (gfx_shader_stage(s->vs) != GFX_STAGE_VS || (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS)) why = "stage mismatch";
     else if (k->topo_class == 3) why = "patches need tessellation stages, which are not translated";
-    else if (P.indep) {
+    else if (P.indep && whole_only(s) != 2) {
         Bindings F = {0};
         if (!add_stage(&B, s->vs, 0) || (s->fs && !add_stage(&F, s->fs, 0))) why = "too many bindings";
         else if (!(l = layout_pair(&B, &F))) why = "descriptor layout creation failed";
@@ -2319,7 +2329,7 @@ static VkPipeline graphics(const VkPipeState *s, const VkPipeInfo **info, int as
                       : "builds its libraries itself (TOTK_PIPE_WAIT=draw)");
     }
     double end = wait_ms ? now_ms() + wait_ms : 0;
-    if (p && p->building && P.gpl && !uses_xfb(s->vs) && !p->info.pipeline && !p->fast_tried && p->lay) {
+    if (p && p->building && P.gpl && !whole_only(s) && !p->info.pipeline && !p->fast_tried && p->lay) {
         int final = 0, build = wait_ms != 0 && draw_build;
         uint64_t p0 = perf_begin(), t0 = qpc();
         if (build && U.on) {
