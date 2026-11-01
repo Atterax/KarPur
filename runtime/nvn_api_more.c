@@ -173,8 +173,18 @@ static const void *tf_ctrl_at[TF_KEEP];
 static int tf_count;
 static const void *seen_plain[SEEN_CAP];        // vertex shader controls already ORed into plain_nz
 static int nseen_plain;
-static _Thread_local const void *last_vs;       // vertex control of the program bound last on this thread
-static _Thread_local int last_vs_tf;            // a transform feedback began since that bind
+// Per command buffer: the vertex control of the program bound last and whether a transform feedback began since. Kept
+// per command buffer, not per host thread: guest threads and fibers move between host threads, and a game can record
+// several command buffers on one thread. Direct-mapped by the command buffer address; a collision forgets the older.
+#define CB_SLOTS 256
+static struct { const void *cb, *vs; int tf; } cbs[CB_SLOTS];
+static int tf_begins, tf_begins_without_vs;
+
+static typeof(cbs[0]) *cb_slot(const void *cb) {   // under tf_lock
+    typeof(cbs[0]) *s = &cbs[((uintptr_t)cb >> 4) * 0x9E3779B97F4A7C15ull >> 56];
+    if (s->cb != cb) *s = (typeof(cbs[0])){cb, NULL, 0};
+    return s;
+}
 
 static const uint8_t *vs_control(const prog_t *p) {
     if (!p || p->magic != NVN_PROG_MAGIC) return NULL;
@@ -239,27 +249,31 @@ static void tf_report(void) {   // under tf_lock
 }
 
 // Called by nvnCommandBufferBindProgram (nvn_api_cmd.c).
-void nvn_tf_note_program(const void *prog) {
+void nvn_tf_note_program(const void *cb, const void *prog) {
     const uint8_t *vs = vs_control(prog);
-    if (last_vs && !last_vs_tf && last_vs != vs) {
-        plat_mutex_lock(&tf_lock);
-        plain_add(last_vs);
-        plat_mutex_unlock(&tf_lock);
-    }
-    last_vs = vs;
-    last_vs_tf = 0;
+    plat_mutex_lock(&tf_lock);
+    typeof(cbs[0]) *s = cb_slot(cb);
+    if (s->vs && !s->tf && s->vs != vs) plain_add(s->vs);
+    s->vs = vs;
+    s->tf = 0;
+    plat_mutex_unlock(&tf_lock);
 }
 
-static void tf_begin_note(void) {
-    last_vs_tf = 1;
-    if (!last_vs) return;
+static void tf_begin_note(const void *cb) {
     plat_mutex_lock(&tf_lock);
-    int fresh = 1;
+    typeof(cbs[0]) *s = cb_slot(cb);
+    s->tf = 1;
+    const uint8_t *vs = s->vs;
+    tf_begins++;
+    if (!vs && ++tf_begins_without_vs <= 4)
+        rt_log("tf: BeginTransformFeedback without a known vertex shader (%d of %d begins)", tf_begins_without_vs,
+               tf_begins);
+    int fresh = vs != NULL;
     for (int i = 0; i < tf_count && i < TF_KEEP && fresh; i++)
-        if (tf_ctrl_at[i] == last_vs) fresh = 0;
+        if (tf_ctrl_at[i] == vs) fresh = 0;
     if (fresh && tf_count < TF_KEEP) {
-        memcpy(tf_ctrl[tf_count], last_vs, CTRL_SIZE);
-        tf_ctrl_at[tf_count] = last_vs;
+        memcpy(tf_ctrl[tf_count], vs, CTRL_SIZE);
+        tf_ctrl_at[tf_count] = vs;
         tf_count++;
         if (tf_count == 1 || tf_count == 4 || tf_count == TF_KEEP) tf_report();
     }
@@ -291,7 +305,7 @@ NVN_API(nvnCommandBufferBindTransformFeedbackBuffers) {
 NVN_API(nvnCommandBufferBeginTransformFeedback) {
     static int32_t n;
     if (tf_note(&n, 4)) rt_log("tf: BeginTransformFeedback(control %#llx)", (unsigned long long)arg_x(c, 1));
-    tf_begin_note();
+    tf_begin_note(arg_p(c, 0));
 }
 NVN_API(nvnCommandBufferEndTransformFeedback) {
     static int32_t n;

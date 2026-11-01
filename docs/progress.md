@@ -25,6 +25,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Erster TF-Diagnoselauf: kein Layout-Bericht, aber Puffergrößen
+- Kein `tf: layout report`: Der zuletzt gebundene Vertex-Shader wurde pro Host-Thread gemerkt (`_Thread_local`), Gastthreads/Fibers wechseln aber die Host-Threads. Jetzt pro Command Buffer gemerkt (Tabelle mit 256 Plätzen); ein `BeginTransformFeedback` ohne bekannten Vertex-Shader wird geloggt.
+- Puffer je TF-Durchgang: drei Puffer, Größen immer im Verhältnis 3:1:1 (0x255c/0xc74/0xc74 = 797 Vertices × 12/4/4 Bytes; 0x81c/0x2b4/0x2b4 = 173 × 12/4/4). Vermutung: Puffer 0 Position (3 × float, Stride 12), Puffer 1 und 2 je ein 32-Bit-Wert (gepackte Normale/Tangente, Stride 4). Passt zu GPU-Skinning.
+- **Kein `DrawTransformFeedback`**: Das Spiel liest die erfassten Puffer als normale Vertex-Puffer in späteren Draws. Weil TF nichts schreibt, stehen dort Nullen oder alte Daten: Figuren unsichtbar oder als „Stacheln“, je nach Speicherinhalt (Maintainer sieht jetzt Stachel-Figuren und stark flackernde Bäume, die vorher fehlten). Für die Umsetzung reicht also: Bind, Begin/End mit Zählerpuffer, XFB im Pipeline-Shader; die Draw-Variante ist zweitrangig.
+- Begin/End laufen auf mehreren Command Buffern gleichzeitig (verschachtelte Control-Adressen).
+
 ### 2026-11-01: Diagnose für das Transform-Feedback-Layout
 - `nvn_api_more.c`: Jedes `nvnCommandBufferBindProgram` merkt sich den Vertex-Shader-Control-Teil (Stufe 0 bei +0x714). Vertex-Shader, nach deren Bindung kein `BeginTransformFeedback` kommt, gelten als „normal“: ihre gesetzten 32-Bit-Wörter (unter +0x700) werden in eine Maske ODER-verknüpft. Die bei `BeginTransformFeedback` gebundenen werden kopiert (bis 16). Bei 1, 4 und 16 verschiedenen TF-Shadern loggt `tf: layout report` die Wörter, die in allen TF-Shadern und in keinem normalen gesetzt sind (mit Werten der ersten drei: kleine Zahlen wie Strides/Locations), dazu die, die nur in einigen TF-Shadern gesetzt sind.
 - Die TF-Einstiegspunkte loggen ihre ersten Aufrufe (Puffer-Index/Adresse/Größe, Control-Adressen, Draw-Modus). Sie bleiben No-ops.
