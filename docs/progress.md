@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Vergleich mit der echten Switch; Test auf Wettlauf zwischen CPU-Threads
+- Vergleichsbilder (gleiche Stelle, Switch vs. KarPur): Bei uns fehlen auch **entfernte** Objekte dauerhaft: Palme, großer Baum, zwei von drei weißen Büschen, roter Topf, der komplette blaue Zaun. Auf der Switch wird ein Baum nah an der Kamera leicht durchsichtig (gepunktet); bei uns erscheint er **nur** in genau dieser Kamera-Ausblendung und verschwindet bei der kleinsten Bewegung wieder.
+- Deutung: Die Sichtbarkeitsprüfung des Spiels auf der CPU sortiert normale Objekte fälschlich aus; Objekte in der Kamera-Ausblendung umgehen sie und werden gezeichnet. GPU-Abfragen und Zeitpunkt der Ergebnisse sind ausgeschlossen (OCCLUSION=0, OQ_FILL, SUBMIT_SYNC wartet auch auf die Abschluss-Callbacks).
+- Verdacht: Wettlauf in einer mehrfädigen Sichtbarkeitsprüfung (Atomics/Exklusivzugriffe der Kern-Nachbildung) oder ein falsch übersetzter SIMD-Befehl. Test-Schalter `TOTK_ONE_CPU=<n>`: Prozess nur auf n logischen Prozessoren (ab dem ersten Present).
+
 ### 2026-11-01: Korrektur: Das Spiel lässt die Draws selbst weg (CPU-Entscheidung)
 - F8 mit Layouts, 9 Aufnahmen (ungerade = Baum sichtbar, gerade = Kamera zum Baum, Baum weg): Beim Hinschauen werden die großen Meshes (26499/20628/17364/12960 … Indizes, Layouts 23/24/34) **nicht abgeschickt**, ohne Ersatz; beim Wegschauen wieder. Gleiche Layouts und Zustände in beiden Fällen. Die frühere Deutung „LOD0 unsichtbar“ war falsch herum.
 - Folgerung: Die Grafik-Übersetzung ist hier nicht schuld; die CPU des Spiels lässt das Objekt weg (Kamera nah und blickt darauf). Vermutung: Kamera-Hindernis-Ausblendung (Objekt zwischen Kamera und Figur), die auf der Switch weich/gepunktet sein könnte und hier sofort ganz verschwindet (Zeit/Fade-Berechnung?), oder eine andere CPU-seitige Eingabe.

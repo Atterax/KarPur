@@ -243,6 +243,25 @@ static void cpu_placement(void) {
         else
             mode = 0;
     }
+    // TOTK_ONE_CPU=<n> (KarPur A/B test): the whole process runs on the first n logical processors only (1: one), so
+    // guest threads never run truly in parallel. Objects that a racy multi-threaded visibility pass loses appear with it.
+    static int one_cpu = -1;
+    if (one_cpu < 0) {
+        const char *e = cfg_get("TOTK_ONE_CPU");
+        one_cpu = e && *e ? atoi(e) : 0;
+        if (one_cpu > 0) {
+            if (!all) plat_cpu_cores(&all, &one);
+            uint64_t m = 0;
+            for (int b = 0, k = 0; b < 64 && k < one_cpu; b++)
+                if (all >> b & 1) m |= 1ull << b, k++;
+            if (m) {
+                plat_process_affinity(m);
+                rt_log("cpu: the process runs on %d logical processor(s) only (TOTK_ONE_CPU)", one_cpu);
+                return;
+            }
+        }
+    }
+    if (one_cpu > 0) return;
     int on = RT_KNOB_ON(mode);
     if (on == applied) return;
     applied = on;
