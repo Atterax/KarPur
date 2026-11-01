@@ -1117,6 +1117,27 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 // KarPur: nn::fs::SetAllocator(alloc, free) hands the SDK's file-system client its heap. Every nn::fs call the game
 // makes is served by this file, so that client never runs; and the SDK's own SetAllocator would first ask fsp-srv
 // whether access logging is on (Scarlet/Violet's nninitStartup), a service the runtime does not serve.
+// KarPur, Scarlet/Violet's other nn::fs calls:
+// Result EnsureSaveData(const account::Uid &): MountSaveData creates the save directory on first use
+static void ov_ensure_save(Cpu *c) { (void)c; ret_x(c, 0); }
+// bool IsSaveDataExisting(const account::Uid &): the overload for the running application
+static void ov_save_exists_own(Cpu *c) { ret_x(c, save_exists(TOTK_APPLICATION_ID, arg_p(c, 0))); }
+// FsContext *GetCurrentThreadFsContext() / void SetCurrentThreadFsContext(const FsContext *): the context only
+// decides how the SDK's client handles failed calls; the host never consults it. One stored pointer for all threads.
+static uint8_t fs_context_default[16] __attribute__((aligned(16)));
+static uint64_t fs_context = 0;
+static void ov_get_fs_context(Cpu *c) {
+    uint64_t v = __atomic_load_n(&fs_context, __ATOMIC_ACQUIRE);
+    ret_x(c, v ? v : (uint64_t)(uintptr_t)fs_context_default);
+}
+static void ov_set_fs_context(Cpu *c) { __atomic_store_n(&fs_context, arg_x(c, 0), __ATOMIC_RELEASE); }
+// Add-on content: nn::aoc lists none (ov_system.c), so there is nothing to mount.
+static void ov_mount_aoc(Cpu *c) { (void)c; ret_x(c, FS_R_TARGET_NOT_FOUND); }
+static void ov_query_aoc_cache(Cpu *c) {
+    uint64_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
 static void ov_fs_set_allocator(Cpu *c) {
     rt_log("fs: SetAllocator(%#llx, %#llx): the host file system needs no guest allocator",
            (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
@@ -1193,6 +1214,12 @@ HOST_OVERRIDE(S_READ_CACHE_LIST, ov_read_cache_list);
 HOST_OVERRIDE(S_CLOSE_CACHE_LIST, ov_close_cache_list);
 HOST_OVERRIDE(S_SET_PRIORITY, ov_set_priority);
 HOST_OVERRIDE(S_SET_ALLOCATOR, ov_fs_set_allocator);
+HOST_OVERRIDE("_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ov_ensure_save);
+HOST_OVERRIDE("_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", ov_save_exists_own);
+HOST_OVERRIDE("_ZN2nn2fs25GetCurrentThreadFsContextEv", ov_get_fs_context);
+HOST_OVERRIDE("_ZN2nn2fs25SetCurrentThreadFsContextEPKNS0_9FsContextE", ov_set_fs_context);
+HOST_OVERRIDE("_ZN2nn2fs17MountAddOnContentEPKciPvm", ov_mount_aoc);
+HOST_OVERRIDE("_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", ov_query_aoc_cache);
 
 // ---- --probe-fs
 // Every check calls the overrides the way guest code does: by synthetic address through rt_call, with AAPCS64

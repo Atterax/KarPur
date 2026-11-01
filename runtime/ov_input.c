@@ -101,10 +101,12 @@ static void ov_states_full_key(Cpu *c) { npad_states(c, STYLE_FULL_KEY); }
 static void ov_states_handheld(Cpu *c) { npad_states(c, STYLE_HANDHELD); }
 static void ov_states_joycon(Cpu *c) { npad_states(c, 0); }
 
-// void SetNpadJoyHoldType(NpadJoyHoldType type)
+// void SetNpadJoyHoldType(NpadJoyHoldType type); KarPur keeps it for GetNpadJoyHoldType
+static int32_t hold_type;
 static void ov_hold_type(Cpu *c) {
     int64_t t = (int32_t)arg_x(c, 0);
     if (t < 0 || t > 1) rt_fatal("nn::hid::SetNpadJoyHoldType: invalid hold type %lld", (long long)t);
+    __atomic_store_n(&hold_type, (int32_t)t, __ATOMIC_RELAXED);
 }
 
 // void DisconnectNpad(const NpadIdType &id): only the controller in use (handheld mode disconnects player 1)
@@ -513,3 +515,129 @@ HOST_OVERRIDE("_ZN2nn3hid6detail22GetSixAxisSensorStatesEPiPNS0_18SixAxisSensorS
               ov_six_states);
 HOST_OVERRIDE("_ZN2nn3hid6detail21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE",
               ov_six_state);
+
+// ==== KarPur: SDK 13 names (Scarlet/Violet) of the calls above, and the npad calls TotK never makes
+// SDK 13 keeps the six-axis and vibration functions in nn::hid itself where SDK 20 has nn::hid::detail, with a count
+// return instead of an out parameter; GetNpadState (one state) sits beside GetNpadStates.
+
+// void GetNpadState(<State> *out, const NpadIdType &id): GetNpadStates(out, 1, id)
+static void npad_state_one(Cpu *c, uint32_t want) {
+    c->x[2] = c->x[1];
+    c->x[1] = 1;
+    npad_states(c, want);
+}
+static void ov_state_full_key(Cpu *c) { npad_state_one(c, STYLE_FULL_KEY); }
+static void ov_state_handheld(Cpu *c) { npad_state_one(c, STYLE_HANDHELD); }
+static void ov_state_joycon(Cpu *c) { npad_state_one(c, 0); }
+
+// int GetSixAxisSensorStates(SixAxisSensorState *out, int max, const SixAxisSensorHandle &)
+static void ov_six_states_13(Cpu *c) { ret_x(c, (uint64_t)six_fill(arg_p(c, 0), (int)arg_x(c, 1), arg_p(c, 2), "GetSixAxisSensorStates")); }
+// void GetSixAxisSensorState(SixAxisSensorState *out, const SixAxisSensorHandle &)
+static void ov_six_state_13(Cpu *c) { six_fill(arg_p(c, 0), 1, arg_p(c, 1), "GetSixAxisSensorState"); }
+
+static PlatMutex k_lock = PLAT_MUTEX_INIT;
+static int64_t k_comm_mode, k_handheld_mode, k_zero_drift = 1;   // k_lock
+static float k_fusion[2] = {0.03f, 0.4f};                                      // k_lock: revisePower, reviseRange
+
+static void ov_get_hold_type(Cpu *c) { ret_x(c, (uint64_t)__atomic_load_n(&hold_type, __ATOMIC_RELAXED)); }
+static void ov_get_comm_mode(Cpu *c) { plat_mutex_lock(&k_lock); ret_x(c, (uint64_t)k_comm_mode); plat_mutex_unlock(&k_lock); }
+static void ov_set_comm_mode(Cpu *c) { plat_mutex_lock(&k_lock); k_comm_mode = (int32_t)arg_x(c, 0); plat_mutex_unlock(&k_lock); }
+static void ov_get_handheld_mode(Cpu *c) { plat_mutex_lock(&k_lock); ret_x(c, (uint64_t)k_handheld_mode); plat_mutex_unlock(&k_lock); }
+static void ov_set_handheld_mode(Cpu *c) { plat_mutex_lock(&k_lock); k_handheld_mode = (int32_t)arg_x(c, 0); plat_mutex_unlock(&k_lock); }
+// NpadStyleSet GetSupportedNpadStyleSet()
+static void ov_get_supported_styles(Cpu *c) { plat_mutex_lock_shared(&lock); ret_x(c, styles); plat_mutex_unlock_shared(&lock); }
+// Joy-Con assignment, the strap guide and the L/R assignment mode concern Joy-Con only; the one controller is a
+// full-key (or handheld) controller, so these change nothing.
+static void ov_npad_nothing(Cpu *c) { (void)c; }
+// bool SetNpadJoyAssignmentModeSingle(NpadIdType *out, const NpadIdType &, NpadJoyDeviceType): no Joy-Con to split
+static void ov_npad_false(Cpu *c) { ret_x(c, 0); }
+// NpadJoyAssignmentMode GetNpadJoyAssignment(const NpadIdType &): Dual
+static void ov_npad_zero(Cpu *c) { ret_x(c, 0); }
+// LED pattern of player 1
+static void ov_led_pattern(Cpu *c) { ret_x(c, 1); }
+// Result GetNpadControllerColor(NpadControllerColor *out, const NpadIdType &) and the left/right overload: a grey
+// controller with black buttons, as a Pro Controller reports.
+static void ov_controller_color(Cpu *c) {
+    uint32_t *out = arg_p(c, 0);
+    if (out) out[0] = 0xFF323232u, out[1] = 0xFF0A0A0Au;
+    ret_x(c, 0);
+}
+static void ov_controller_color_lr(Cpu *c) {
+    uint32_t *l = arg_p(c, 0), *r = arg_p(c, 1);
+    if (l) l[0] = 0xFF323232u, l[1] = 0xFF0A0A0Au;
+    if (r) r[0] = 0xFF323232u, r[1] = 0xFF0A0A0Au;
+    ret_x(c, 0);
+}
+// void BindNpadStyleSetUpdateEvent(const NpadIdType &, os::SystemEventType *, os::EventClearMode): the style never
+// changes after start, so the event is created once and signalled once, which makes the game read the style.
+static void ov_bind_style_event(Cpu *c) {
+    uint64_t ev = arg_x(c, 1);
+    if (!ev) rt_fatal("nn::hid::BindNpadStyleSetUpdateEvent: null event");
+    kern_bind_system_event(c, ev, (int)arg_x(c, 2) == 1);
+    kern_signal_system_event(ev);
+}
+static void ov_touch_init(Cpu *c) { (void)c; }
+// Six-axis fusion settings: kept and returned, the host fusion (motion_fusion.c) has its own tuning.
+static void ov_fusion_enable(Cpu *c) { (void)c; }
+static void ov_fusion_enabled(Cpu *c) { ret_x(c, 1); }
+static void ov_at_rest(Cpu *c) { ret_x(c, six_running ? 0 : 1); }
+static void ov_set_fusion(Cpu *c) {
+    plat_mutex_lock(&k_lock);
+    memcpy(&k_fusion[0], &c->v[0], 4);
+    memcpy(&k_fusion[1], &c->v[1], 4);
+    plat_mutex_unlock(&k_lock);
+}
+static void ov_get_fusion(Cpu *c) {
+    float *p = arg_p(c, 0), *r = arg_p(c, 1);
+    plat_mutex_lock(&k_lock);
+    if (p) *p = k_fusion[0];
+    if (r) *r = k_fusion[1];
+    plat_mutex_unlock(&k_lock);
+}
+static void ov_get_zero_drift(Cpu *c) { plat_mutex_lock(&k_lock); ret_x(c, (uint64_t)k_zero_drift); plat_mutex_unlock(&k_lock); }
+static void ov_set_zero_drift(Cpu *c) {
+    const int32_t *m = arg_p(c, 1);
+    plat_mutex_lock(&k_lock);
+    if (m) k_zero_drift = *m;
+    plat_mutex_unlock(&k_lock);
+}
+
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", ov_state_full_key);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", ov_state_handheld);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", ov_state_joycon);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", ov_state_joycon);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj", ov_state_joycon);
+HOST_OVERRIDE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", ov_six_start);
+HOST_OVERRIDE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", ov_six_stop);
+HOST_OVERRIDE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", ov_six_states_13);
+HOST_OVERRIDE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", ov_six_state_13);
+HOST_OVERRIDE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", ov_vib_init);
+HOST_OVERRIDE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", ov_vib_send);
+HOST_OVERRIDE("_ZN2nn3hid18GetNpadJoyHoldTypeEv", ov_get_hold_type);
+HOST_OVERRIDE("_ZN2nn3hid24GetNpadCommunicationModeEv", ov_get_comm_mode);
+HOST_OVERRIDE("_ZN2nn3hid24SetNpadCommunicationModeENS0_21NpadCommunicationModeE", ov_set_comm_mode);
+HOST_OVERRIDE("_ZN2nn3hid29GetNpadHandheldActivationModeEv", ov_get_handheld_mode);
+HOST_OVERRIDE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE", ov_set_handheld_mode);
+HOST_OVERRIDE("_ZN2nn3hid24GetSupportedNpadStyleSetEv", ov_get_supported_styles);
+HOST_OVERRIDE("_ZN2nn3hid18SwapNpadAssignmentERKjS2_", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKj", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleEPjRKjNS0_17NpadJoyDeviceTypeE", ov_npad_false);
+HOST_OVERRIDE("_ZN2nn3hid20GetNpadJoyAssignmentERKj", ov_npad_zero);
+HOST_OVERRIDE("_ZN2nn3hid21StartLrAssignmentModeEv", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid20StopLrAssignmentModeEv", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid24ShowControllerStrapGuideEv", ov_npad_nothing);
+HOST_OVERRIDE("_ZN2nn3hid19GetPlayerLedPatternERKj", ov_led_pattern);
+HOST_OVERRIDE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorERKj", ov_controller_color);
+HOST_OVERRIDE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj", ov_controller_color_lr);
+HOST_OVERRIDE("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS3_14EventClearModeE", ov_bind_style_event);
+HOST_OVERRIDE("_ZN2nn3hid21InitializeTouchScreenEv", ov_touch_init);
+HOST_OVERRIDE("_ZN2nn3hid25EnableSixAxisSensorFusionERKNS0_19SixAxisSensorHandleEb", ov_fusion_enable);
+HOST_OVERRIDE("_ZN2nn3hid28IsSixAxisSensorFusionEnabledERKNS0_19SixAxisSensorHandleE", ov_fusion_enabled);
+HOST_OVERRIDE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", ov_at_rest);
+HOST_OVERRIDE("_ZN2nn3hid32SetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleEff", ov_set_fusion);
+HOST_OVERRIDE("_ZN2nn3hid32GetSixAxisSensorFusionParametersEPfS1_RKNS0_19SixAxisSensorHandleE", ov_get_fusion);
+HOST_OVERRIDE("_ZN2nn3hid25GetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleE", ov_get_zero_drift);
+HOST_OVERRIDE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE", ov_set_zero_drift);

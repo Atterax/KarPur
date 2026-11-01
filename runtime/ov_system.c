@@ -845,3 +845,163 @@ HOST_OVERRIDE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKN
 HOST_OVERRIDE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", ov_font_state);
 HOST_OVERRIDE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", ov_font_address);
 HOST_OVERRIDE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", ov_font_size);
+
+// ==== KarPur: Scarlet/Violet's calls in these namespaces that TotK never makes
+// Results with a module number and a description, as Horizon encodes them (module in bits 0-8, description above).
+#define KP_RESULT(module, desc) ((uint32_t)(module) | ((uint32_t)(desc) << 9))
+#define KP_R_ACCOUNT_NSA_UNAVAILABLE KP_RESULT(124, 280)   // network service account not available
+#define KP_R_TIME_NO_NETWORK_CLOCK KP_RESULT(116, 1)
+
+// int aoc::CountAddOnContent(): matches ListAddOnContent above, which lists none.
+static void ov_aoc_count(Cpu *c) { ret_x(c, 0); }
+// void aoc::GetAddOnContentListChangedEvent(os::SystemEvent *): an event that never fires (the list never changes)
+static void ov_aoc_changed_event(Cpu *c) {
+    uint64_t ev = arg_x(c, 0);
+    if (!ev) rt_fatal("nn::aoc::GetAddOnContentListChangedEvent: null event");
+    kern_bind_system_event(c, ev, 0);
+}
+
+// oe: capture and recording permissions have nothing to permit on the host; the exit-request section has no exit
+// request to hold back.
+static void ov_oe_nothing(Cpu *c) { (void)c; }
+static void ov_oe_false(Cpu *c) { ret_x(c, 0); }
+// void oe::GetPseudoDeviceId(util::Uuid *): a fixed id, the same every run, as one console's is
+static void ov_oe_pseudo_device_id(Cpu *c) {
+    static const uint8_t id[16] = {0x4b, 0x61, 0x72, 0x50, 0x75, 0x72, 0x40, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+    void *out = arg_p(c, 0);
+    if (out) memcpy(out, id, 16);
+}
+
+// void pl::RequestSharedFontLoad(SharedFontType): the shared fonts are always loaded (GetSharedFontLoadState above)
+static void ov_pl_request_load(Cpu *c) { (void)c; }
+
+// err: the game's error dialogs and application error screens are logged, as ShowError(Result) above.
+static void ov_show_error_code(Cpu *c) {
+    char lr[96];
+    uint64_t v = arg_x(c, 0);   // ErrorCode {u32 category, u32 number}, 8 bytes passed in x0
+    rt_log("err: game error dialog %04u-%04u from %s", (unsigned)(v & 0xffffffff), (unsigned)(v >> 32), caller(c, lr, sizeof lr));
+}
+static void ov_show_error_variant(Cpu *c) {
+    char lr[96];
+    rt_log("err: game error dialog (ErrorResultVariant at %#llx) from %s", (unsigned long long)arg_x(c, 0), caller(c, lr, sizeof lr));
+}
+static void ov_show_application_error(Cpu *c) {
+    char lr[96];
+    rt_log("err: game application error screen (argument at %#llx) from %s", (unsigned long long)arg_x(c, 0), caller(c, lr, sizeof lr));
+    ret_x(c, 0);
+}
+// Result err::UpdateResultWithContext<NplnContext>(Result, const NplnContext &): the context goes to the error report
+// service on hardware; here the result passes through unchanged.
+static void ov_update_result_context(Cpu *c) { ret_x(c, arg_x(c, 0) & 0xffffffff); }
+static void ov_report_multimedia_error(Cpu *c) { rt_log("err: multimedia error %#x reported", (unsigned)arg_x(c, 0)); }
+
+// time: the device's time zone is the host's. LocationName is 0x24 bytes; the rule is the SDK's opaque TimeZoneRule,
+// which only ToPosixTime below reads (it ignores the content and uses the host's zone).
+static void ov_device_location(Cpu *c) {
+    char *out = arg_p(c, 0);
+    if (out) {
+        memset(out, 0, 0x24);
+        memcpy(out, "UTC", 3);
+    }
+}
+static void ov_load_rule(Cpu *c) { ret_x(c, arg_p(c, 0) ? 0 : TIME_R_INVALID); }
+// Result ToPosixTime(int *count, PosixTime *out, int max, const CalendarTime &local, const TimeZoneRule &): the local
+// calendar time in the host's zone. One answer (no time falls in a DST gap or overlap twice in this model).
+static void ov_to_posix_rule(Cpu *c) {
+    int32_t *count = arg_p(c, 0);
+    int64_t *out = arg_p(c, 1);
+    int max = (int)arg_x(c, 2);
+    const CalendarTime *ct = arg_p(c, 3);
+    if (!count || !out || max < 1 || !ct) { ret_x(c, TIME_R_INVALID); return; }
+    int64_t mon = ct->month - 1, y = ct->year + floor_div(mon, 12);
+    mon -= floor_div(mon, 12) * 12;
+    int64_t as_utc = (days_from_civil(y, (unsigned)mon + 1, 1) + ct->day - 1) * 86400 + ct->hour * 3600 + ct->minute * 60 +
+                     ct->second;
+    CalendarTime probe;
+    CalendarInfo info;
+    int32_t offset = local_calendar(as_utc, &probe, &info) ? info.utc_offset : 0;
+    *out = as_utc - offset;
+    *count = 1;
+    ret_x(c, 0);
+}
+// AsyncEnsureNetworkClockAvailabilityTask: there is no network clock to make available. The task finishes at once with
+// a failure; its finish event is one shared event that stays signalled.
+static uint8_t net_clock_event[0x40] __attribute__((aligned(16)));
+static void ov_net_clock_nothing(Cpu *c) { (void)c; }
+static void ov_net_clock_ok(Cpu *c) { ret_x(c, 0); }
+static void ov_net_clock_fail(Cpu *c) { ret_x(c, KP_R_TIME_NO_NETWORK_CLOCK); }
+static void ov_net_clock_event(Cpu *c) {
+    uint64_t ev = (uint64_t)(uintptr_t)net_clock_event;
+    kern_bind_system_event(c, ev, 0);
+    kern_signal_system_event(ev);
+    ret_x(c, ev);
+}
+
+// account: the network service account (Nintendo Account online features) is not available. The async contexts finish
+// at once with that failure.
+static uint8_t account_event[0x40] __attribute__((aligned(16)));
+static void ov_nsa_available(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+static void ov_nsa_fail(Cpu *c) { ret_x(c, KP_R_ACCOUNT_NSA_UNAVAILABLE); }
+static void ov_nsa_nothing(Cpu *c) { (void)c; }
+static void ov_nsa_this(Cpu *c) { (void)c; }   // operator=: x0 already holds this
+static void ov_nsa_zero(Cpu *c) { ret_x(c, 0); }
+static void ov_async_has_done(Cpu *c) {
+    uint8_t *out = arg_p(c, 1);
+    if (out) *out = 1;
+    ret_x(c, 0);
+}
+static void ov_async_event(Cpu *c) {
+    uint64_t ev = arg_x(c, 1) ? arg_x(c, 1) : (uint64_t)(uintptr_t)account_event;
+    kern_bind_system_event(c, ev, 0);
+    kern_signal_system_event(ev);
+    ret_x(c, 0);
+}
+
+HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
+HOST_OVERRIDE("_ZN2nn3aoc31GetAddOnContentListChangedEventEPNS_2os11SystemEventE", ov_aoc_changed_event);
+HOST_OVERRIDE("_ZN2nn2oe15EnableRecordingEv", ov_oe_nothing);
+HOST_OVERRIDE("_ZN2nn2oe16DisableRecordingEv", ov_oe_nothing);
+HOST_OVERRIDE("_ZN2nn2oe16EnableScreenShotEv", ov_oe_nothing);
+HOST_OVERRIDE("_ZN2nn2oe17DisableScreenShotEv", ov_oe_nothing);
+HOST_OVERRIDE("_ZN2nn2oe17GetPseudoDeviceIdEPNS_4util4UuidE", ov_oe_pseudo_device_id);
+HOST_OVERRIDE("_ZN2nn2oe31EnterExitRequestHandlingSectionEv", ov_oe_nothing);
+HOST_OVERRIDE("_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", ov_oe_nothing);
+HOST_OVERRIDE("_ZN2nn2oe37IsUserInactivityDetectionTimeExtendedEv", ov_oe_false);
+HOST_OVERRIDE("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", ov_pl_request_load);
+HOST_OVERRIDE("_ZN2nn3err9ShowErrorENS0_9ErrorCodeE", ov_show_error_code);
+HOST_OVERRIDE("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", ov_show_error_variant);
+HOST_OVERRIDE("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", ov_show_application_error);
+HOST_OVERRIDE("_ZN2nn3err23UpdateResultWithContextINS0_11NplnContextEEENS_6ResultES3_RKT_", ov_update_result_context);
+HOST_OVERRIDE("_ZN2nn3err21ReportMultimediaErrorENS_6ResultERKN5movie25MultimediaTelemetryReportE", ov_report_multimedia_error);
+HOST_OVERRIDE("_ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE", ov_device_location);
+HOST_OVERRIDE("_ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE", ov_load_rule);
+HOST_OVERRIDE("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE", ov_to_posix_rule);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTaskC1Ev", ov_net_clock_nothing);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTaskD1Ev", ov_net_clock_nothing);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask10InitializeENS_2os14EventClearModeE", ov_net_clock_ok);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9StartTaskEv", ov_net_clock_ok);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9GetResultEv", ov_net_clock_fail);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask14GetFinishEventEv", ov_net_clock_event);
+HOST_OVERRIDE("_ZN2nn7account32IsNetworkServiceAccountAvailableEPbRKNS0_10UserHandleE", ov_nsa_available);
+HOST_OVERRIDE("_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE", ov_nsa_fail);
+HOST_OVERRIDE("_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE", ov_nsa_fail);
+HOST_OVERRIDE("_ZN2nn7account40ShowLicenseRequirementsForNetworkServiceERKNS0_10UserHandleE", ov_nsa_fail);
+HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE", ov_nsa_fail);
+HOST_OVERRIDE("_ZN2nn7account34LoadNetworkServiceLicenseInfoAsyncEPNS0_37AsyncNetworkServiceLicenseInfoContextERKNS0_10UserHandleE", ov_nsa_fail);
+HOST_OVERRIDE("_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE", ov_nsa_fail);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContextC1Ev", ov_nsa_nothing);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContextD1Ev", ov_nsa_nothing);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContextD2Ev", ov_nsa_nothing);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContextaSEOS1_", ov_nsa_this);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext7HasDoneEPb", ov_async_has_done);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext9GetResultEv", ov_nsa_fail);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext6CancelEv", ov_nsa_zero);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext14GetSystemEventEPNS_2os11SystemEventE", ov_async_event);
+HOST_OVERRIDE("_ZN2nn7account37AsyncNetworkServiceLicenseInfoContextC1Ev", ov_nsa_nothing);
+HOST_OVERRIDE("_ZN2nn7account37AsyncNetworkServiceLicenseInfoContextC1EOS1_", ov_nsa_nothing);
+HOST_OVERRIDE("_ZN2nn7account37AsyncNetworkServiceLicenseInfoContextaSEOS1_", ov_nsa_this);
+HOST_OVERRIDE("_ZN2nn7account37AsyncNetworkServiceLicenseInfoContext28GetNetworkServiceLicenseKindEv", ov_nsa_zero);
