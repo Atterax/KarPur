@@ -96,6 +96,42 @@ cd C:\KarPur\repo
 git pull
 ```
 
+## 6. Python-Umgebung einrichten (einmalig)
+
+Die Werkzeuge brauchen zwei Zusatzpakete (`cryptography` zum Entschlüsseln, `lz4` zum Entpacken). Damit sie nicht mit anderen Python-Programmen auf deinem PC durcheinanderkommen, bekommen sie eine eigene, abgeschlossene Umgebung im Ordner `.venv`:
+
+```
+cd C:\KarPur\repo
+```
+
+```
+python -m venv .venv
+```
+
+```
+.venv\Scripts\python -m pip install -r tools\requirements.txt
+```
+
+Am Ende sollte `Successfully installed ...` stehen.
+
+Ab jetzt startest du die Werkzeuge immer mit `.venv\Scripts\python` statt nur `python`.
+
+## 7. Spiel analysieren (Meilenstein M1)
+
+```
+.venv\Scripts\python tools\extract.py
+```
+
+Das Tool:
+- öffnet Basisspiel, Update und DLC mit deinen Keys,
+- entpackt die Programmdateien nach `C:\KarPur\repo\game\` (das ist Git-ignoriert, es wird nie hochgeladen),
+- prüft dabei jede Prüfsumme,
+- gibt einen **Bericht** aus, der zwischen zwei Linien aus `=====` steht.
+
+Es dauert je nach Festplatte etwa eine Minute. Der Bericht enthält nur Kennungen, Größen, Prüfsummen und Funktionsnamen, also keine Spieldaten und keine Keys. **Diesen Bericht kannst du kopieren und schicken.** Er wird außerdem in `game\report\m1-report.txt` gespeichert.
+
+Wenn statt des Berichts eine Zeile mit `error:` kommt, schick einfach diese Zeile.
+
 ## Was später noch dazukommt
 
 Für den Lifter (Meilenstein M2) kommen MSYS2 mit Clang, Ninja und das Vulkan SDK dazu. Diese Anleitung wird dann erweitert.

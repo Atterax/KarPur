@@ -4,9 +4,9 @@ Code taken from other projects is listed here with its source, the upstream comm
 Only MIT, BSD, ISC, zlib or Apache-2.0 code may be copied. GPL projects (yuzu, suyu and others) may be read
 to understand behaviour, but never copied.
 
-| What | From | Upstream commit | License |
+| What | From | Upstream commit | License / where |
 |---|---|---|---|
-| *(nothing copied yet)* | | | |
+| XCI/NSP/NCA3/ticket reading and ExeFS extraction (`extract_exefs.py`), Copyright (c) 2026 MacNativeGames contributors | [MacNativeGames](https://github.com/ly05010419/MacNativeGames), as vendored unmodified by [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) | `b75be8cfa704df3701e86130c8ced268e79d6b11` | MIT, adapted in `tools/switchfs.py` |
 
 ## Planned sources
 

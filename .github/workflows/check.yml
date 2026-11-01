@@ -11,6 +11,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Refuse game files, keys and generated game code
         run: python tools/check_content.py
+      - name: Install tool dependencies
+        run: python -m pip install -r tools/requirements.txt
+      - name: End-to-end test on a fake game
+        run: python tests/test_extract.py
