@@ -2,3 +2,4 @@
 #   .venv\Scripts\python -m pip install -r tools\requirements.txt
 cryptography>=44
 lz4>=4.3
+numpy>=2.1

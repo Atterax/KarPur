@@ -42,6 +42,10 @@ __pycache__/
 *.lib
 *.a
 
+# Ninja state
+.ninja_log
+.ninja_deps
+
 # Logs, editor and OS files
 *.log
 .vs/

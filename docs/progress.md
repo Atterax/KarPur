@@ -5,14 +5,21 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M2, Lifter läuft
 
 ### Nächste Schritte
-1. Maintainer installiert MSYS2 mit Clang, LLD und Ninja ([setup-windows.md](setup-windows.md), Schritt 8).
-2. Lifter von TotK Recomp (`recomp/`, MIT) nach `recomp/` übernehmen: NSO-Laden, ARM64-Decoder, NEON-Lowering, Sprungtabellen, Generator. TotK-Spezifisches (Patches, Versionstabellen) weglassen.
-3. Werkzeug, das den Lifter auf `main`, `sdk`, `subsdk0` laufen lässt und berichtet: Funktionen, nicht unterstützte Instruktionen, Sprungtabellen; danach Kompiliertest mit Clang.
+1. Maintainer führt `tools/lift.py` aus ([setup-windows.md](setup-windows.md), Schritt 9) und schickt den M2-Bericht.
+2. Nicht unterstützte Instruktionen und Kompilierfehler aus dem Bericht beheben, bis beides 0 ist. Dann ist M2 erledigt.
+3. Danach M3: Runtime aus TotK übernehmen (Loader, Speicher, Kernel/Threads, SVCs, Dateisystem auf die RomFS) und die Module verlinken.
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
 
 ## Protokoll
+
+### 2026-11-01: Lifter übernommen und getestet
+- MSYS2 beim Maintainer installiert: Clang 23.1.4, LLD, Ninja (UCRT64).
+- Lifter aus TotK Recomp unverändert übernommen (`recomp/`: lifter, simd_c, nso, module, layout, jumptables, flags, regs, gen, patches; `runtime/cpu.h`, `simd.h`, `simd_fp.h`). Ursprung: LAS Recomp und TotK Recomp (MIT), siehe `THIRD_PARTY_NOTICES.md`.
+- Neuer Differenztest `tests/lifter/`: Ein C-Testprogramm (Arithmetik, Division, Bitoperationen, Schleifen, Rekursion, Sprungtabelle, Funktionszeiger mit RELATIVE-Relocations, double/float, Sonderwerte wie NaN/Inf/Denormal, NEON-Vektorschleifen, Atomics mit LDXR/STXR, 128-Bit-Multiplikation, Sortieren) wird für AArch64 (ARMv8.0 wie der A57 der Switch) gebaut, als NSO verpackt, geliftet, auf x86-64 ausgeführt und mit dem nativ kompilierten Original verglichen: 16 Tests × 400 Eingaben, 0 Abweichungen. Läuft in der CI.
+- Erkenntnis: Clang fasst `a*b+c` auf AArch64 zu FMADD zusammen (eine Rundung), auf x86 ohne FMA nicht. Der Lifter bildet FMADD korrekt nach; der Test baut beide Seiten mit `-ffp-contract=off`.
+- `tools/lift.py`: lässt `recomp/gen.py` auf `main`, `subsdk0`, `sdk` laufen, kompiliert alles mit Clang über Ninja und gibt einen Bericht aus (Compilermeldungen ohne Quelltextzeilen).
 
 ### 2026-11-01: TotK-Vergleich, M1 erledigt
 - **Alle 210 SDK-Symbole, die die TotK-Runtime behandelt, gibt es in Purpur unter demselben Namen.** Das Ersatzkonzept (Austausch auf `nn::*`-Funktionsebene) lässt sich direkt übertragen.

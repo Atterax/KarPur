@@ -8,6 +8,10 @@ to understand behaviour, but never copied.
 |---|---|---|---|
 | XCI/NSP/NCA3/ticket reading and ExeFS extraction (`extract_exefs.py`), Copyright (c) 2026 MacNativeGames contributors | [MacNativeGames](https://github.com/ly05010419/MacNativeGames), as vendored unmodified by [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) | `b75be8cfa704df3701e86130c8ced268e79d6b11` | MIT, adapted in `tools/switchfs.py` |
 | List of SDK symbol names the TotK runtime handles, with the runtime file of each | [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) `runtime/` | `f469c5a7745502357fc1664c04e02522fe92c42a` | MIT, `tools/data/totk_sdk_symbols.txt` |
+| ARM64 lifter, C code generator, FP/SIMD lowering, NSO loader, module model, CPU headers (Copyright (c) 2026 Peiikai), as adapted by TotK Recomp | [LAS Recomp](https://github.com/peiikai/LASRecomp) @ `da35b83a9611d046a9a681aae668d7085954d37f`, via [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) @ `f469c5a7745502357fc1664c04e02522fe92c42a` | MIT, `recomp/lifter.py`, `recomp/simd_c.py`, `recomp/nso.py`, `recomp/gen.py`, `recomp/module.py`, `runtime/cpu.h`, `runtime/simd.h`, `runtime/simd_fp.h` (unmodified copies) |
+| Jump-table resolution, function-local flags and registers, module layout, code patch table, free-memory query (Copyright (c) 2026 Valiantsin Dzerakh) | [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) | `f469c5a7745502357fc1664c04e02522fe92c42a` | MIT, `recomp/jumptables.py`, `recomp/flags.py`, `recomp/regs.py`, `recomp/layout.py`, `recomp/patches.py`, `tools/hostmem.py` (unmodified copies) |
+
+The full license texts are in [licenses/](licenses/).
 
 ## Planned sources
 
