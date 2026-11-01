@@ -680,6 +680,38 @@ static uint8_t type_of_handle(uint64_t h) {   // texture lock held
     return img ? (uint8_t)gfx_type_of(img, &v, hv) : 0;
 }
 
+// KarPur: the shared memory size a compute shader is translated with. The NVN control section's field for it is not
+// known yet, so the answer is 0 and Ryujinx declares 4096 bytes; a shader that uses more reads and writes outside the
+// array. TOTK_CS_SHARED=<bytes> (test, e.g. 49152, the device limit) declares that much in every compute shader that
+// uses shared memory. cs_control_note logs the control words around the local size of the first 24 compute
+// programs, to find the real field.
+static uint32_t cs_shared_bytes(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = cfg_get("TOTK_CS_SHARED");
+        v = e && *e ? atoi(e) : 0;
+        if (v < 0) v = 0;
+        if (v) rt_log("vk_exec: compute shaders are translated with %d bytes of shared memory (TOTK_CS_SHARED)", v);
+    }
+    return (uint32_t)v;
+}
+
+static void cs_control_note(const uint8_t *ctl) {
+    static uint32_t seen[24];
+    static int n;
+    if (n >= 24 || !ctl) return;
+    uint32_t w[24];
+    memcpy(w, ctl + 0x720, sizeof w);
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 24; i++) h = (h ^ w[i]) * 16777619u;
+    for (int i = 0; i < n; i++)
+        if (seen[i] == h) return;
+    seen[n++] = h;
+    char line[24 * 12], *o = line;
+    for (int i = 0; i < 24; i++) o += sprintf(o, " %x", w[i]);
+    rt_log("vk_exec: compute control %d, words from +0x720:%s", n, line);
+}
+
 // The answers of stage st for the slots in mask; the types of other slots stay zero.
 static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, GfxShaderAnswers *a) {
     memset(a, 0, sizeof *a);
@@ -691,6 +723,7 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
             memcpy(&l, ctl + 0x748 + 4 * k, 4);
             a->local[k] = (uint16_t)(l ? l : 1);
         }
+    if (st == NVN_STAGE_CS) a->shared_bytes = cs_shared_bytes(), cs_control_note(ctl);
     typeof(AC[0]) *c = &AC[st];
     // The generation and tokens are read before the lookups (one that creates an entry changes them) and unlocked: a
     // registration racing with them is ordered after this draw, and a slot stored under older ones is only looked up

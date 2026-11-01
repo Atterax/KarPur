@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: OCCLUSION=0 hilft auch mit gl_BaseInstance nicht; Verdacht Shared Memory der Compute-Shader
+- `OCCLUSION=0` (jetzt mit gl_BaseInstance): Objekte ploppen weiter. Die Tiefe der Prüf-Boxen ist plausibel (pro Frame gelöscht, skalierte Kopie aus 1920x1080 D24S8, ein Vollbild-Draw schreibt Tiefe).
+- Fund: Compute-Shader werden immer mit Shared-Memory-Größe 0 übersetzt (`answers_for` setzt `shared_bytes` nie; TotK holte sie aus dem gepaarten PC-Shader). Ryujinx deklariert dann 4096 Bytes; braucht das Culling/Kompaktieren mehr, liegen Zugriffe außerhalb des Arrays → falsche Instanzzahlen/-listen.
+- Test-Schalter `TOTK_CS_SHARED=<Bytes>` (z. B. 49152, Gerätegrenze). Bericht `vk_exec: compute control N, words from +0x720: …` (24 Wörter um die Local-Size bei +0x748), um das echte Feld zu finden.
+
 ### 2026-11-01: Compute liest die Abfrage-Ergebnisse nicht; ~1000 Abfragen pro Frame, 95 % „verdeckt“
 - `buffer bindings over them: compute 0` in allen Fenstern: kein Compute-Shader liest die Ergebnisse (die „draws“-Treffer kommen von der großen Spanne von 0x5652b00 Bytes). Verdacht OQ_GPU vom Tisch.
 - Das Spiel macht ~1000 Samples-Passed-Abfragen pro Frame (Boxen gegen die 960x540-Tiefe, Reverse-Z GREATER), davon 90–97 % mit 0. Die CPU entscheidet pro Objekt. `OCCLUSION=0` wurde nie zusammen mit dem gl_BaseInstance-Fix getestet: erneut testen.
