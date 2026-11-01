@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Korrektur: Das Spiel lässt die Draws selbst weg (CPU-Entscheidung)
+- F8 mit Layouts, 9 Aufnahmen (ungerade = Baum sichtbar, gerade = Kamera zum Baum, Baum weg): Beim Hinschauen werden die großen Meshes (26499/20628/17364/12960 … Indizes, Layouts 23/24/34) **nicht abgeschickt**, ohne Ersatz; beim Wegschauen wieder. Gleiche Layouts und Zustände in beiden Fällen. Die frühere Deutung „LOD0 unsichtbar“ war falsch herum.
+- Folgerung: Die Grafik-Übersetzung ist hier nicht schuld; die CPU des Spiels lässt das Objekt weg (Kamera nah und blickt darauf). Vermutung: Kamera-Hindernis-Ausblendung (Objekt zwischen Kamera und Figur), die auf der Switch weich/gepunktet sein könnte und hier sofort ganz verschwindet (Zeit/Fade-Berechnung?), oder eine andere CPU-seitige Eingabe.
+- Offen: Vergleich auf der echten Switch (gleicher Baum, Kamera dazwischen; Beet und Topf an der Tür sichtbar?).
+
 ### 2026-11-01: LOD0-Modelle haben einen anderen Vertex-Aufbau
 - F8 mit Indextyp und Puffergrößen (alle Indizes 16 Bit): Die beim Hinschauen gezeichneten detailreichen Modelle (20628/16014/12225/10239 … Indizes) haben alle Vertex-Puffer 1 mit **760 Bytes**; die einfachen Modelle beim Wegschauen 2696/2780/9564 Bytes. `VB_WHOLE=1` änderte nichts, die Größe ist es nicht.
 - Werkzeug zeigt jetzt das Vertex-Layout der gelisteten Meshes: `vk_exec: layout N: shader inputs …; aK fmt … sS +Offset; stream S stride … divisor …` (Attribut K = Location K des Vertex-Shaders).
