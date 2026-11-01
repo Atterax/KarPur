@@ -23,8 +23,11 @@ enum { T_CLOSE = 2, T_REQUEST = 4, T_CONTROL = 5, T_REQUEST_CTX = 6, T_CONTROL_C
        T_TIPC_BASE = 16 };
 
 // Services sm: hands out. Anything else is a named fatal.
+void settings_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);   // KarPur: settings_service.c
+
 static const struct { const char *name; IpcHandler handler; } services[] = {
     {"audren:u", audren_manager_handler},
+    {"set", settings_handler},   // KarPur: language and region (Violet's nn::settings::operator==)
 };
 
 static volatile int32_t g_live;

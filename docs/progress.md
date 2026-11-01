@@ -5,8 +5,8 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe` erneut mit Fenster starten. Im Log nach `nvn: missing proc` suchen: Diese Zeilen listen alle noch fehlenden NVN-Funktionen, die das Spiel anfordert, auf einmal.
-2. Je nach Ergebnis: die angeforderten Command-Buffer-Funktionen umsetzen (siehe Liste unten), oder, falls das Spiel alle Funktionen pauschal anfordert, nur die tatsächlich aufgerufenen.
+1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe` erneut starten, Log-Ende schicken. Erwartung: Das Spiel kommt über die Sprachabfrage hinaus; nächster Abbruch entweder an einem weiteren Systemdienst oder an einer der 36 fehlenden NVN-Funktionen, sobald sie aufgerufen wird.
+2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden (das Spiel fordert pauschal fast alle an, siehe Protokoll).
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
 ### Offene Fragen
@@ -19,6 +19,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Grafik-Initialisierung durch, Abbruch am Dienst `set`
+- Nach den 65 neuen NVN-Funktionen läuft die Grafik-Initialisierung durch; danach öffnet das Spiel `audren:u` zweimal (Ton über SDL auf dem Standardgerät, 48 kHz) und fragt die Sprache ab.
+- Das Spiel fordert beim Start 36 der 39 fehlenden NVN-Funktionen an (alle außer GL-/NvRm-Interop-Resten). Es lädt also pauschal fast die ganze Tabelle; die Liste sagt nichts darüber, was wirklich aufgerufen wird. Diese Funktionen bleiben Platzhalter mit Abbruch beim Aufruf.
+- Abbruch: `sm: service "set" is not implemented`, aus `nn::settings::operator==(LanguageCode, Language)` → `MakeLanguageCode` → `CreateSettingsServerProxy` (Aufrufer `main+0x16cf42c`, aus `nnMain`). Die frühere Annahme, die settings-LanguageCode-Funktionen seien reine Datenfunktionen, war falsch: Das SDK fragt dafür den Dienst.
+- Neu `runtime/settings_service.c`: Dienst `set` mit GetLanguageCode, GetAvailableLanguageCodes(2), MakeLanguageCode, GetAvailableLanguageCodeCount(2), GetRegionCode (Europa), GetQuestFlag. Die Sprache folgt `ov_language()` (wie `nn::oe::GetDesiredLanguage`).
 
 ### 2026-11-01: Erster Fensterstart, NVN-Lücken
 - `karpur.exe` ohne `--boot`: Vulkan auf der RTX 5080 (Treiber 621.01, API 1.4.357), Übersetzer gefunden (Identität `9a14dc0c`), Spielcode läuft wie bei M3 bis in die Grafik-Initialisierung (ASTC-Decoder, erste Speicherblöcke). Kein Fenster: Abbruch vorher mit `FATAL: NVN nvnTexturePoolGetSize is not implemented`.
