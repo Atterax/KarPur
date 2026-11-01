@@ -2027,6 +2027,10 @@ static int pipe_memo_on(void) {
 enum { SK_RENDER_OFF, SK_SCISSOR, SK_SHADER_WAIT, SK_SHADER_FAIL, SK_PIPE_WAIT, SK_PIPE_FAIL, SK_N };
 static uint64_t skips[SK_N], skip_draws, skip_frame0;
 static int skip_logs;
+// KarPur diagnostic: indirect indexed draws over the same window: all, arguments readable by the CPU (they may be
+// stale when a shader writes them), instance count 0, index count 0, first instance not 0, instance count above 1.
+static uint64_t ind_stat[6];
+static int ind_logs;
 static int skip_note(int why) {
     skips[why]++;
     return 0;
@@ -2047,7 +2051,16 @@ static void skip_tick(void) {
                (unsigned long long)skips[SK_SHADER_WAIT], (unsigned long long)skips[SK_SHADER_FAIL],
                (unsigned long long)skips[SK_PIPE_WAIT], (unsigned long long)skips[SK_PIPE_FAIL]);
     }
+    if (ind_stat[0] && ind_logs < 30) {
+        ind_logs++;
+        rt_log("vk_exec: indirect indexed draws in frames %llu-%llu: %llu, arguments CPU-readable %llu: instance count 0 "
+               "%llu, index count 0 %llu, first instance not 0 %llu (shader sees base instance 0), instance count above 1 %llu",
+               (unsigned long long)skip_frame0, (unsigned long long)f, (unsigned long long)ind_stat[0],
+               (unsigned long long)ind_stat[1], (unsigned long long)ind_stat[2], (unsigned long long)ind_stat[3],
+               (unsigned long long)ind_stat[4], (unsigned long long)ind_stat[5]);
+    }
     memset(skips, 0, sizeof skips);
+    memset(ind_stat, 0, sizeof ind_stat);
     skip_draws = 0, skip_frame0 = f;
 }
 
@@ -2322,6 +2335,13 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     VK_MEM_USE(ip);
     VK_MEM_USE(ib);
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+    ind_stat[0]++;
+    if (!nvn_gpu_only(d->ind)) {
+        VkDrawIndexedIndirectCommand a;
+        memcpy(&a, (const void *)(uintptr_t)d->ind, sizeof a);
+        ind_stat[1]++, ind_stat[2] += !a.instanceCount, ind_stat[3] += !a.indexCount;
+        ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
+    }
     vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndexedIndirectCommand));

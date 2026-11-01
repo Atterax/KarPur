@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Tiefen-Vorpass und GPL ausgeschlossen; Verdacht Verdeckungsabfragen
+- `DEPTH_ONLY=0` und `GPL=0`: kein verstecktes Objekt taucht auf. Vorpass/EQUAL-Tiefe und der GPL-Weg sind nicht die Ursache. Auch keine `draws in frames`-Zeile, also schaltet auch kein `RENDER_COND` Draws ab.
+- Neuer Verdacht 1: Das Spiel liest Samples-Passed-Zähler (Verdeckungsabfragen) auf der CPU zurück und blendet Objekte mit Zähler 0 aus (wie TotK). Bericht: `vk: first samples-passed report …` und alle 4096 Berichte `vk: occlusion: … of those 0`. A/B-Schalter `TOTK_OCCLUSION=0`: jeder Bericht meldet „sichtbar“ (wachsender großer Wert).
+- Neuer Verdacht 2: Indirekte Draws (`DrawElementsIndirect`). Die Wiedergabe gibt dem Shader immer Basis-Instanz 0, die Argumente können eine andere erste Instanz haben; dann liest der Shader falsche Instanzdaten. Bericht alle 600 Frames: `vk_exec: indirect indexed draws …` (Instanzzahl 0, erste Instanz ≠ 0 usw.).
+
 ### 2026-11-01: Keine unbekannten Vertex-Formate; Verdacht Tiefen-Vorpass
 - Keine `vertex attribute ... read as zeros`-Meldung: die Formate sind nicht die Ursache.
 - Neuer Verdacht: Tiefen-Vorpass (Draws ohne Fragment-Shader, erst seit Binden nach Stufen gezeichnet) und Farbpass mit Tiefentest EQUAL. Vorpass-Pipelines werden ganz und mit Ein-Set-Layout gebaut, Farbpass-Pipelines mit Libraries/unabhängigen Layouts und Vertex-Ausgabe-Union – minimal andere Tiefe lässt EQUAL scheitern, das Objekt verschwindet (Kollision bleibt).

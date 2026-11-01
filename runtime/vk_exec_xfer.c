@@ -201,6 +201,42 @@ void vk_exec_xfer_shutdown(void) {
     memset((void *)oq_busy, 0, sizeof oq_busy);
 }
 
+// TOTK_OCCLUSION=0 (A/B test, KarPur): every samples-passed report the CPU can read gets a large count that grows with
+// each report, so whatever the game culls on a 0 count (or on a 0 difference of two reports) stays visible. Objects
+// that appear with it are culled because the replay's occlusion counts say "hidden".
+static int oq_fake(void) {
+    static int mode = -1;
+    if (mode < 0) {
+        mode = !rt_knob("OCCLUSION", "1");
+        if (mode) rt_log("vk: samples-passed reports always say visible (TOTK_OCCLUSION=0)");
+    }
+    return mode;
+}
+
+static uint64_t oq_fake_next(void) {
+    static uint64_t v;
+    return v += 0x10000;
+}
+
+// Report: how many samples-passed reports reached CPU-visible memory and how many of them said 0 (hidden), every
+// 4096 reports, plus the first one. Counts only, completion thread.
+static void oq_stat(int cpu, uint64_t count, uint32_t queries) {
+    static uint64_t reports, cpu_reports, zeros, no_query, total;
+    reports++, total++;
+    cpu_reports += cpu;
+    zeros += cpu && !count;
+    no_query += cpu && !queries;
+    if (total == 1)
+        rt_log("vk: first samples-passed report: %s memory, count %llu from %u queries", cpu ? "CPU-visible" : "GPU-only",
+               (unsigned long long)count, queries);
+    if (reports < 4096) return;
+    rt_log("vk: occlusion: %llu samples-passed reports (%llu total), %llu to CPU-visible memory, %llu of those 0 "
+           "(%llu without any query)%s", (unsigned long long)reports, (unsigned long long)total,
+           (unsigned long long)cpu_reports, (unsigned long long)zeros, (unsigned long long)no_query,
+           oq_fake() ? ", written as visible (TOTK_OCCLUSION=0)" : "");
+    reports = cpu_reports = zeros = no_query = 0;
+}
+
 static void oq_cb(void *arg) {
     OqSegment *s = arg;
     VkDevice dev = vk_ctx()->device;
@@ -231,7 +267,8 @@ static void oq_cb(void *arg) {
     else {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
-        if (s->addr) write_counter(s->addr, oq_count);
+        if (s->addr) write_counter(s->addr, oq_fake() ? oq_fake_next() : oq_count);
+        oq_stat(s->addr != 0, oq_count, s->n);
     }
     free(s);
 }
