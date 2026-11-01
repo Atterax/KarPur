@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Ausblendung nahe der Bildmitte (Kamera-Fade) verdächtig
+- `RECONVERGE=1` (Erweiterung verfügbar und aktiv): ploppt weiter.
+- Beobachtung des Maintainers: Ein Baum nah an der Kamera ist sichtbar, solange er am Bildrand steht (Blätter oben mit Punktmuster), verschwindet, wenn man ihn direkt anschaut, und ist aus der Ferne wieder da. Passt zu einer Kamera-/Distanz-Ausblendung per Alpha (Dither) bzw. Discard, die bei uns zu stark greift.
+- Test-Schalter: `TOTK_A2C=0` (Alpha-to-Coverage aus; NVN kann A2C dithern, Vulkan mit 1 Sample verwirft alles unter 0,5) mit Bericht `vk_pipeline: alpha to coverage requested (dither …, samples …)`; `TOTK_NO_DISCARD=1` (OpKill → OpReturn in Fragment-Shadern).
+
 ### 2026-11-01: SSBO_WHOLE ohne Wirkung; Test maximale Rekonvergenz
 - `SSBO_WHOLE=1`: ploppt weiter; Grenzprüfung der Storage-Buffer ist nicht die Ursache.
 - Neu: `VK_KHR_shader_maximal_reconvergence` (+ subgroup uniform control flow) wird aktiviert, wenn der Treiber es anbietet (Log `vk: maximal reconvergence …`). Test-Schalter `TOTK_RECONVERGE=1`: Shader mit Subgroup-Operationen bekommen `SPV_KHR_maximal_reconvergence` und `MaximallyReconvergesKHR` (vk_pipeline.c `reconverge`). Hintergrund: Ballot → Atomic des gewählten Lanes → Shuffle braucht dieselben aktiven Lanes; Maxwell rekonvergiert explizit, Vulkan ohne den Modus nach Ermessen des Treibers.
