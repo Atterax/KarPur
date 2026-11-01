@@ -1,11 +1,16 @@
 # Copy this file to config.local.toml (git ignores that one) and fill in YOUR paths.
 # The files themselves stay outside the repository. Never paste key values anywhere.
+# Keep the single quotes around every path: they let Windows backslashes through unchanged.
 
 [game]
 # Base game dump (NSP or XCI) from your own console
 base = 'D:\Switch\Dumps\Scarlet-or-Violet-base.nsp'
 # Latest update (NSP) from your own console
 update = 'D:\Switch\Dumps\Scarlet-or-Violet-update.nsp'
+# DLC (add-on content) from your own console: as many files as you have, or leave the list empty: dlc = []
+dlc = [
+    'D:\Switch\Dumps\Scarlet-or-Violet-dlc.nsp',
+]
 
 [keys]
 # prod.keys dumped from your own console (Lockpick_RCM). Tools read it themselves.
