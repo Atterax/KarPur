@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Keine unbekannten Vertex-Formate; Verdacht Tiefen-Vorpass
+- Keine `vertex attribute ... read as zeros`-Meldung: die Formate sind nicht die Ursache.
+- Neuer Verdacht: Tiefen-Vorpass (Draws ohne Fragment-Shader, erst seit Binden nach Stufen gezeichnet) und Farbpass mit Tiefentest EQUAL. Vorpass-Pipelines werden ganz und mit Ein-Set-Layout gebaut, Farbpass-Pipelines mit Libraries/unabhängigen Layouts und Vertex-Ausgabe-Union – minimal andere Tiefe lässt EQUAL scheitern, das Objekt verschwindet (Kollision bleibt).
+- A/B-Schalter `TOTK_DEPTH_ONLY=0`: Draws ohne Fragment-Shader wieder überspringen (außer TF). Test zusätzlich mit `GPL=0` (alle Pipelines auf demselben Weg).
+
 ### 2026-11-01: Fehlende Objekte werden nicht übersprungen
 - Zählung: in mehreren Minuten kein einziger übersprungener Draw (keine `draws in frames`-Zeile). Die Draws laufen, die Objekte sind trotzdem unsichtbar.
 - Verdacht: Vertex-Attribut in einem NVN-Format ohne Eintrag in `vtx_formats` → liest lautlos Nullen (Positionen in einem Punkt). Diagnose in `vk_pipeline.c vertex_input`: jedes solche Format einmal. Weitere Kandidaten danach: GPU-Culling (indirekte Draws mit Anzahl 0), Instanz-Divisor.

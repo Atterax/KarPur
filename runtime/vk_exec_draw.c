@@ -2087,6 +2087,14 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
             memo_key(ex, gen, &SM.k), SM.vs = vs, SM.fs = fs, SM.has_fs = has_fs, SM.valid = 1;
     }
     if (!has_vs) return warn_once(W_NO_VS, "a draw with a program that has no vertex stage is skipped"), 0;
+    // KarPur A/B switch: TOTK_DEPTH_ONLY=0 skips draws without a fragment stage (depth prepasses, shadow casters), as
+    // before binds by stage made them reach the replay; transform feedback draws still run.
+    static int depth_only = -1;
+    if (depth_only < 0) {
+        depth_only = rt_knob("DEPTH_ONLY", "1");
+        if (!depth_only) rt_log("vk_exec: draws without a fragment shader are skipped (TOTK_DEPTH_ONLY=0)");
+    }
+    if (!has_fs && !depth_only && !ex->xfb_active) return 0;
     // A draw into a target the previous frame did not render (or into none) waits for a pending shader or pipeline:
     // one-shot draws (volumes and LUTs generated once, later only sampled) would leave their target empty for the
     // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
