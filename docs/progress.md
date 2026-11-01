@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: normaler Lauf; alle `svc ... failed`-Zeilen schicken. Gesucht: welcher svc in `ThreadManagerImplByHorizon::CreateThread` (vor `sdk+0x3783c0`) einen Fehler liefert.
+1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; Log-Ende und `svc ... failed`-Zeilen schicken.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Ursache des CreateThread-Abbruchs: MapMemory aus .bss
+- Mit dem entdoppelten svc-Log steht direkt vor dem Abbruch `svc 0x4 failed with 0xdc01 (x1=0x70046fd000 x2=0x2000)`: MapMemory des Vibrations-Thread-Stacks in die Stack-Region. Das SDK verschiebt jeden Thread-Stack dorthin (Schutzseiten) und bricht ab, wenn das scheitert.
+- Ursache: `memory.c stack_move` nahm als Quelle nur Heap und Alias-Region. Purpurs Stack liegt in main-.bss. Behoben: der beschreibbare Teil (.data/.bss) jedes geladenen Moduls ist ebenfalls eine zulässige Quelle.
 
 ### 2026-11-01: svc-Fehlerlog, erste Ergebnisse
 - `svc 0x2c` MapPhysicalMemory 0x10801 (bekannt, das Spiel macht weiter). Sehr häufig `svc 0x34` WaitForAddress und `svc 0x35` SignalToAddress mit 0xFA01 (InvalidState: Wert hat sich geändert, erwartet) und einmal `svc 0x17` ResetSignal mit 0xFA01 (nicht signalisiert, erwartet). Diese haben die 100 Zeilen aufgebraucht, bevor der CreateThread-Abbruch kam.
