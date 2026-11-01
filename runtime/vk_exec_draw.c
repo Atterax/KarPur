@@ -1987,7 +1987,14 @@ static void bind_vertex_buffers(VkExec *ex) {
         VkMemSpan sp;
         if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
         VK_MEM_USE(sp);
-        uint64_t n = r->size && r->size < sp.avail ? r->size : sp.avail;
+        // TOTK_VB_WHOLE=1 (KarPur A/B test): vertex buffers bound up to the end of their memory instead of the size the
+        // game gave; robust vertex fetch reads zeros past the binding where Maxwell reads on.
+        static int vb_whole = -1;
+        if (vb_whole < 0) {
+            vb_whole = rt_knob("VB_WHOLE", "0");
+            if (vb_whole) rt_log("vk_exec: vertex buffers are bound up to the end of their memory (TOTK_VB_WHOLE=1)");
+        }
+        uint64_t n = r->size && r->size < sp.avail && !vb_whole ? r->size : sp.avail;
         vb[b] = sp.buffer, vo[b] = sp.offset, vsz[b] = n, vcls[b] = sp.cls, vpool[b] = sp.pool;
     }
     memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
@@ -2087,12 +2094,13 @@ static int pipe_memo_on(void) {
 // frame with the one before: meshes drawn then that now have no instances (culled) or no draw at all (not issued), and
 // the largest of them. Press it once where a missing object is visible and once where it is not. Counts only.
 enum { SNAP_IND, SNAP_IDX, SNAP_ARR };
-typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; uint32_t chmask, misc, blend0, prog; } SnapEnt;
+typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; uint32_t chmask, misc, blend0, prog, vb0, vb1, itype; } SnapEnt;
 #define SNAP_N 32768
 static SnapEnt *snap_cur, *snap_prev;
 static uint32_t snap_ncur, snap_nprev;
 static int snap_state, snap_key_was, snap_no;
 static uint64_t snap_frame;
+static uint32_t snap_itype;   // index type of the draw being added (op_draw_idx*), 9 for arrays
 
 static uint64_t snap_mix(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
     uint64_t h = 0xcbf29ce484222325ull;
@@ -2116,7 +2124,8 @@ static void snap_add_ex(const VkExec *ex, int kind, uint64_t key, uint32_t inst,
     memcpy(&b0, &p->blend[0], sizeof b0);
     uint64_t pr = (uint64_t)(uintptr_t)p->vs * 31 + (uint64_t)(uintptr_t)p->fs;
     snap_cur[snap_ncur++] = (SnapEnt){key, inst, count, 1, (uint8_t)kind, p->chmask.mask, misc, b0,
-                                      (uint32_t)(pr ^ pr >> 32)};
+                                      (uint32_t)(pr ^ pr >> 32), (uint32_t)ex->vbuf[0].size, (uint32_t)ex->vbuf[1].size,
+                                      snap_itype};
 }
 #define snap_add(kind, key, inst, count) snap_add_ex(ex, kind, key, inst, count)
 
@@ -2185,9 +2194,9 @@ static void snap_finish(void) {
             rt_log("vk_exec:   now without instances: %s, %u indices, %u instances before, %u draws", kn[big_c[k].kind],
                    big_c[k].count, big_c[k].inst, big_c[k].draws);
         for (int k = 0; k < 8 && big_g[k].count; k++)
-            rt_log("vk_exec:   now not issued: %s, %u indices, %u instances before, %u draws; state %#x, mask %#x, "
-                   "blend %#x, shaders %08x", kn[big_g[k].kind], big_g[k].count, big_g[k].inst, big_g[k].draws,
-                   big_g[k].misc, big_g[k].chmask, big_g[k].blend0, big_g[k].prog);
+            rt_log("vk_exec:   now not issued: %s, %u indices (type %u), %u instances before, %u draws; state %#x, "
+                   "vertex buffers %u/%u bytes", kn[big_g[k].kind], big_g[k].count, big_g[k].itype, big_g[k].inst,
+                   big_g[k].draws, big_g[k].misc, big_g[k].vb0, big_g[k].vb1);
         SnapEnt big_n[10] = {0};
         for (uint32_t i = 0; i < snap_ncur; i++) {
             const SnapEnt *c = &snap_cur[i];
@@ -2202,9 +2211,9 @@ static void snap_finish(void) {
                 }
         }
         for (int k = 0; k < 10 && big_n[k].count; k++)
-            rt_log("vk_exec:   newly drawn: %s, %u indices, %u instances, %u draws; state %#x, mask %#x, blend %#x, "
-                   "shaders %08x", kn[big_n[k].kind], big_n[k].count, big_n[k].inst, big_n[k].draws, big_n[k].misc,
-                   big_n[k].chmask, big_n[k].blend0, big_n[k].prog);
+            rt_log("vk_exec:   newly drawn: %s, %u indices (type %u), %u instances, %u draws; state %#x, vertex buffers "
+                   "%u/%u bytes", kn[big_n[k].kind], big_n[k].count, big_n[k].itype, big_n[k].inst, big_n[k].draws,
+                   big_n[k].misc, big_n[k].vb0, big_n[k].vb1);
     }
     SnapEnt *t = snap_prev;
     snap_prev = snap_cur, snap_nprev = snap_ncur;
@@ -2492,6 +2501,7 @@ static void op_draw(VkExec *ex, const p_draw *d) {
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, 0)) return;
     vk_exec_frame.draws++;
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
+    snap_itype = 9;
     snap_add(SNAP_ARR, snap_mix((uint64_t)(uintptr_t)ex->prog, first, n, 2), inst, n);
     if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
@@ -2546,6 +2556,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     int restart = restart_for(ex, d->prim, d->itype);
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
     vk_exec_frame.draws++;
+    snap_itype = (uint32_t)d->itype;
     snap_add(SNAP_IDX, snap_mix(d->ibuf, (uint64_t)d->count, (uint64_t)(uint32_t)d->base_vertex, 1),
              d->instances > 0 ? (uint32_t)d->instances : 1, (uint32_t)d->count);
     uint64_t bytes = (uint64_t)d->count * isize[d->itype];
@@ -2624,6 +2635,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
     }
     ind_stat[6] += shader_wrote(ex, d->ind, sizeof(VkDrawIndexedIndirectCommand));
+    snap_itype = (uint32_t)d->itype;
     if (cpu) snap_add(SNAP_IND, snap_mix(d->ibuf, a.firstIndex, a.indexCount, (uint64_t)(uint32_t)a.vertexOffset), a.instanceCount, a.indexCount);
     if (d->ind < ind_lo) ind_lo = d->ind;
     if (d->ind + 20 > ind_hi) ind_hi = d->ind + 20;

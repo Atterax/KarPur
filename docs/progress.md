@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Ursache eingegrenzt: Die detailreichsten Modelle (LOD0) sind unsichtbar
+- F8-Vergleich mit Zustand: „not issued“ und „newly drawn“ haben dieselben Zustände (Tiefe GREATER + Schreiben, Stencil, 4 Farbziele, teils A2C). Es ist ein **LOD-Tausch**: Beim Hinschauen ersetzt das Spiel 6270/2553-Index-Modelle durch 25359/18462/12288-Index-Modelle, beim Wegdrehen umgekehrt. Die hochdetaillierten Modelle kommen unsichtbar heraus.
+- Nächster Test: `TOTK_VB_WHOLE=1` (Vertex-Puffer bis zum Ende des Speichers binden; robuster Vertex-Abruf liefert sonst Nullen hinter der Bindung). Snapshot zeigt jetzt Indextyp (0 Byte, 1 16 Bit, 2 32 Bit, 9 ohne Index) und die Größen der Vertex-Puffer 0/1.
+
 ### 2026-11-01: F8-Vergleich: Die CPU des Spiels schickt die Draws nicht mehr ab
 - Kamera vom Baum weg (Blätter sichtbar) → zum Baum hin (weg): pro Vergleich 13–34 Meshes „now not issued“ (auch direkte indizierte Draws, z. B. 11805/3930/2694 Indizes), nur 0–2 „now without instances“, dafür 16–37 „newly drawn“. Das GPU-Culling ist es nicht; das Spiel wechselt auf der CPU zu anderen Draws, sobald das Objekt zwischen Kamera und Figur steht (Kamera-Ausblendung; auf der Switch gepunktet durchsichtig).
 - Verdacht: Die neuen Draws der Ausblendung kommen unsichtbar heraus. Das Werkzeug zeigt jetzt für „not issued“ und „newly drawn“ den Zustand: Bits von `state` (0 Tiefentest, 1 Tiefe schreiben, 2–5 Tiefenfunktion, 6 Stencil, 7 A2C, 8 A2C-Dither, 9 Fragment-Shader, 10–11 Cull, 12–19 Blend-Maske, 20–23 Farbziele, 24 Raster-Discard, 25 Tiefenziel), Kanalmaske, Blend-Zustand von Ziel 0, Shader-Kennung.
