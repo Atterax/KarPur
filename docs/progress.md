@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe` starten; Log-Ende schicken. Erwartung: Das Spiel kommt über die Schriftarten hinaus.
+1. Maintainer: `calls.py main+0x26ca4` und ein Lauf mit `KARPUR_WATCH=__cxa_throw,__cxa_rethrow,_Unwind_Resume,__cxa_allocate_exception`. Gesucht: wer die C++-Exception wirft (Ort und type_info), und ob das an einer unserer Ersatzfunktionen liegt.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Fonts angenommen, erster C++-Exception-Sprung
+- Mit decodierten Fonts kommt das Spiel weiter: lokales Konto angelegt (`build/profile/account.uid`), Spielstand gemountet (`save0`, leer), `bcat::Initialize` (offline), `oe::SetPerformanceConfiguration` zweimal.
+- Abbruch: `rt_dispatch: no function at guest pc main+0x26ca4: not a function start (lr main+0x26ca4)`. `lr == pc` ist das Muster von libunwinds `jumpto` (setzt lr auf die Zieladresse und springt mit `ret`): Eine C++-Exception wurde geworfen und soll im Landing Pad `main+0x26ca4` gefangen werden. Die Runtime kann nur Funktionsanfänge anspringen.
+- Zwei Wege: (a) herausfinden, wer wirft, und die Ursache beheben (vielleicht eine Ersatzfunktion); (b) Exceptions allgemein unterstützen (Landing Pads aus `.gcc_except_table` als Einsprungpunkte im Lifter, Host-Stack bis zum Rahmen der fangenden Funktion abwickeln). (b) ist aufwendig; zuerst (a).
+- `watch.c`: loggt jetzt vor dem Aufruf (für Funktionen ohne Rückkehr wie `__cxa_throw`) und benennt x1, wenn es eine Moduladresse ist (type_info, vtable).
 
 ### 2026-11-01: Shared Fonts geladen, Absturz in der Font-Verarbeitung
 - `extract_fonts.py` aus der Basis-XCI: alle sechs Fonts bestanden die Prüfungen (Standard 2.053.628, Chinesisch vereinfacht 7.814.744, Erweiterung 106.320, traditionell 3.580.260, Koreanisch 3.672.868, Nintendo-Erweiterung 180.236 Bytes Font).

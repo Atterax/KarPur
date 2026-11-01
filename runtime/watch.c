@@ -4,8 +4,8 @@
 // _ZN2nn2os11GetTlsValueENS0_7TlsSlotE). Each import of such a symbol through a JUMP_SLOT gets a host observer
 // (hostfn.c, the HOST_OBSERVER mechanism) that calls the guest definition and logs caller, x0-x4, the 16 bytes x0
 // points to (a search key or a name; only 16 bytes, so no game data of any size reaches a report), the result and the
-// guest thread's TLS address. A line is written only for a new (symbol, caller, result) combination, at most
-// WATCH_MAX lines a run, so hot functions stay readable.
+// guest thread's TLS address. A line is written before the call for each new (symbol, caller), so functions that never
+// return (__cxa_throw) show up too, and one after it for each new result; at most WATCH_MAX lines a run.
 //
 // KARPUR_WATCH_FROM limits the lines to callers in the listed ranges, comma-separated as module+0xLO-0xHI (offsets in
 // the module, HI exclusive), e.g. main+0x14ff4dc-0x14ff9ac: one function's calls among thousands elsewhere.
@@ -20,7 +20,7 @@
 #define WATCH_MAX 600
 #define SEEN_CAP 4096
 
-static struct { const char *name; uint64_t lr, ret; } seen[SEEN_CAP];
+static struct { const char *name; uint64_t lr, ret; int pre; } seen[SEEN_CAP];
 static int nseen, nlines;
 static PlatMutex lock = PLAT_MUTEX_INIT;
 
@@ -63,44 +63,66 @@ static int caller_wanted(uint64_t at) {
     return 0;
 }
 
+// 1 if (name, lr, ret, pre) is new and a line may be written; the line number then goes to *n.
+static int fresh_line(const char *name, uint64_t lr, uint64_t ret, int pre, int *n) {
+    int fresh = 1;
+    plat_mutex_lock(&lock);
+    for (int i = 0; i < nseen && fresh; i++)
+        if (seen[i].name == name && seen[i].lr == lr && seen[i].ret == ret && seen[i].pre == pre) fresh = 0;
+    if (fresh && nseen < SEEN_CAP) seen[nseen++] = (typeof(seen[0])){name, lr, ret, pre};
+    *n = fresh && nlines < WATCH_MAX ? ++nlines : 0;
+    plat_mutex_unlock(&lock);
+    if (*n == WATCH_MAX) rt_log("watch: %d lines written, no more this run", WATCH_MAX);
+    return *n != 0;
+}
+
+// Two lines per new caller: one before the call (arguments; also for functions that never return, such as
+// __cxa_throw), one after it for each new result.
 static void watch_fn(Cpu *c) {
     const char *name = hostfn_name(c->pc);
     uint64_t lr = c->x[30], a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], a3 = c->x[3], a4 = c->x[4];
-    // The first 16 bytes x0 points to, before the call (a search key, a name): hex, and as text when printable.
-    char mem[80] = "";
-    if (a0 >= 0x10000 && plat_mem_readable(a0, 16)) {
-        const uint8_t *b = (const uint8_t *)(uintptr_t)a0;
-        char hex[40], txt[17];
-        int printable = 1;
-        for (int i = 0; i < 16; i++) {
-            snprintf(hex + 2 * i, 3, "%02x", b[i]);
-            txt[i] = b[i] >= 32 && b[i] < 127 ? (char)b[i] : '.';
-            if (i < 4 && (b[i] < 32 || b[i] >= 127)) printable = 0;
-        }
-        txt[16] = 0;
-        snprintf(mem, sizeof mem, ", [x0] %s%s%s%s", hex, printable ? " \"" : "", printable ? txt : "",
-                 printable ? "\"" : "");
-    }
-    uint64_t ret = rt_original(c);
-    int fresh = 1;
     plat_mutex_lock(&lock);
     if (nranges < 0) read_ranges();
-    if (!caller_wanted(lr - 4)) {
-        plat_mutex_unlock(&lock);
+    int wanted = caller_wanted(lr - 4);
+    plat_mutex_unlock(&lock);
+    if (!wanted) {
+        rt_original(c);
         return;
     }
-    for (int i = 0; i < nseen && fresh; i++)
-        if (seen[i].name == name && seen[i].lr == lr && seen[i].ret == ret) fresh = 0;
-    if (fresh && nseen < SEEN_CAP) seen[nseen++] = (typeof(seen[0])){name, lr, ret};
-    int n = fresh && nlines < WATCH_MAX ? ++nlines : 0;
-    plat_mutex_unlock(&lock);
-    if (!n) return;
     char from[160];
-    rt_log("watch %d: %s(%#llx, %#llx, %#llx, %#llx, %#llx) -> %#llx from %s, tls %#llx%s", n, name ? name : "?",
-           (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3,
-           (unsigned long long)a4, (unsigned long long)ret, ldr_describe(lr - 4, from, sizeof from),
-           (unsigned long long)c->tpidrro, mem);
-    if (n == WATCH_MAX) rt_log("watch: %d lines written, no more this run", WATCH_MAX);
+    ldr_describe(lr - 4, from, sizeof from);
+    int n;
+    if (fresh_line(name, lr, 0, 1, &n)) {
+        // The first 16 bytes x0 points to (a search key, a name): hex, and as text when printable. x1 named when it
+        // is a module address (the type_info of __cxa_throw, a vtable).
+        char mem[80] = "", x1[160] = "";
+        if (a0 >= 0x10000 && plat_mem_readable(a0, 16)) {
+            const uint8_t *b = (const uint8_t *)(uintptr_t)a0;
+            char hex[40], txt[17];
+            int printable = 1;
+            for (int i = 0; i < 16; i++) {
+                snprintf(hex + 2 * i, 3, "%02x", b[i]);
+                txt[i] = b[i] >= 32 && b[i] < 127 ? (char)b[i] : '.';
+                if (i < 4 && (b[i] < 32 || b[i] >= 127)) printable = 0;
+            }
+            txt[16] = 0;
+            snprintf(mem, sizeof mem, ", [x0] %s%s%s%s", hex, printable ? " \"" : "", printable ? txt : "",
+                     printable ? "\"" : "");
+        }
+        for (int i = 0; i < ldr_count(); i++) {
+            const RtLoaded *m = ldr_module(i);
+            if (a1 >= m->base && a1 < m->base + m->size) {
+                char d[140];
+                snprintf(x1, sizeof x1, ", x1 = %s", ldr_describe(a1, d, sizeof d));
+            }
+        }
+        rt_log("watch %d: %s(%#llx, %#llx, %#llx, %#llx, %#llx) from %s, tls %#llx%s%s", n, name ? name : "?",
+               (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3,
+               (unsigned long long)a4, from, (unsigned long long)c->tpidrro, mem, x1);
+    }
+    uint64_t ret = rt_original(c);
+    if (fresh_line(name, lr, ret, 0, &n))
+        rt_log("watch %d: %s from %s -> %#llx", n, name ? name : "?", from, (unsigned long long)ret);
 }
 
 // The observer for name if KARPUR_WATCH lists it, else NULL.
