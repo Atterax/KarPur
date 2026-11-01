@@ -339,6 +339,13 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && w == h && samples == 1 &&
         (d->target == NVN_TEXTURE_TARGET_CUBEMAP || d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY))
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    // KarPur: Violet samples a square 2D array of 6 layers (its 32x32 ambient light cube) through a cube view; without
+    // the flag the replay bound a black stand-in (no ambient light in shade, black metal). Square arrays of 6n layers get
+    // it too, except on AMD (the layout issue above).
+    int cube_ok = 0;
+    if (!(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && !vk_caps.amd && type == VK_IMAGE_TYPE_2D && layers >= 6 &&
+        layers % 6 == 0 && w == h && samples == 1)
+        flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, cube_ok = 1;
     // NVN renders into a 3D texture slice by slice (a view's min layer is the depth plane, nvn_mtl.m), e.g. the
     // grading LUT of the menu background blur. Vulkan needs a 2D view of the slice for that.
     if (type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
@@ -419,6 +426,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
                  : d->target == NVN_TEXTURE_TARGET_CUBEMAP_ARRAY && (flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
                  : layers > 1 || d->target == NVN_TEXTURE_TARGET_2D_ARRAY || d->target == NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY
                      ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    p->cube_ok = (uint8_t)cube_ok;
     p->alpha_one = f.alpha_one;
     memcpy(p->chan, f.chan, sizeof p->chan);
     p->swz[0] = (uint8_t)d->swizzle_r, p->swz[1] = (uint8_t)d->swizzle_g;
