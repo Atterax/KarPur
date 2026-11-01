@@ -356,7 +356,7 @@ int probe_cfg(void) {
     plat_setenv("TOTK_MOUSE_SENS", NULL);
     plat_setenv("TOTK_FREE_CORES", NULL);
     CHECK(cfg_bool("TOTK_FPS60") == 1, "default: unset FPS60 is on");
-    CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_DRAWS") == 64, "default: text and integer");
+    CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_US") == 1000, "default: text and integer");
     plat_setenv("TOTK_MOUSE_SENS", "2.5");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 2.5, "double: the environment value");
     plat_setenv("TOTK_MOUSE_SENS", "fast");

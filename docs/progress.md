@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-2. **Als Nächstes: Bildfehler.** Schatten flackern, Bäume flackern bzw. erscheinen als verformte Klumpen (kein TF). Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
+2. **Bildfehler.** Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -20,6 +20,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Baum-Flackern: Aufteilen der Command Buffer abgeschaltet
+- A/B-Ergebnisse: ohne Schalter Bäume flackern stark; `MEMORY=import` kein Flackern; `VK_RECORDER=0` wie ohne; `TEX_ALIAS=0` noch stärker; Memo-Caches aus: gelegentlich Büsche/Blumen; `SPLIT_DRAWS=0` kein Flackern und auch der „Matsch-Baum“ korrekt. Schatten flackerten in diesem Lauf nicht mehr.
+- Folgerung: Zusammenspiel von VRAM-Spiegeln und Teil-Submits. Vermutung: Pro Teil lädt der Spiegel-Prolog CPU-geschriebene Bereiche hoch, Rückschreiben von GPU-Ergebnissen erst am Ende der Submission – GPU-Schreibzugriffe (z. B. Compute für Vegetation) eines Teils werden vom Prolog des nächsten überschrieben.
+- Umgesetzt: `TOTK_SPLIT_DRAWS` Standard 0 (vorher 64), Kommentar in `vk_exec.c`. Die eigentliche Ursache in `vk_memory.c` (Spiegel-Prolog pro Teil) ist nicht behoben; erst angehen, wenn die GPU-Startverzögerung messbar stört.
+- `TEX_ALIAS=0` verschlimmert: Textur-Aliase („neues Bild übernimmt Inhalt“) sind nötig, bleiben an.
 
 ### 2026-11-01: Flackern – A/B-Tests mit vorhandenen Schaltern
 - Schatten und Bäume flackerten schon vor den TF-Arbeiten (frühe Läufe). Kandidaten: Daten, die das Spiel für das nächste Bild überschreibt, während die (bei uns spätere) GPU-Ausführung sie noch liest (TotK hatte das bei Uniforms: `LOD_GUARD`, `vk_usnap`); VRAM-Spiegel (`MEMORY=mirror`), Recorder-Thread, Textur-Aliase, Memo-Caches, Aufteilung der Command Buffer.

@@ -769,7 +769,7 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 
 // ---- command buffer parts
 // NVN starts the GPU as soon as commands are submitted; one Vulkan command buffer per submission starts it only after
-// the whole replay. Between passes, once TOTK_SPLIT_DRAWS (64; 0 off) draws and dispatches were recorded since the
+// the whole replay. Between passes, once TOTK_SPLIT_DRAWS (KarPur default 0: off; TotK 64) draws and dispatches were recorded since the
 // last part, the part goes to the queue (vk_sync_split) and the replay continues in a new command buffer. Only
 // command-buffer state is lost there (bindings and dynamic state: vk_exec_draw_new_cb, ex->dirty); barriers, layouts and
 // queries are not: a barrier's first scope is everything earlier in submission order, image layouts belong to the image,
@@ -778,6 +778,10 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 // A part also spans at least TOTK_SPLIT_US (1000) of replay time: a split costs about 40 us of the render thread
 // (vkQueueSubmit2, a command buffer, the mirror prologue), and a fight frame of 2,000 draws made 15 parts on the 7900X;
 // a millisecond of recording is a fraction of a millisecond of GPU work, so the GPU still starts early.
+// KarPur: off by default. With parts, Violet's trees flicker and one tree draws from wrong data; with TOTK_SPLIT_DRAWS=0
+// or TOTK_MEMORY=import (no VRAM mirrors) they draw correctly (maintainer A/B tests, docs/progress.md 2026-11-01). The
+// likely cause is the mirrors' per-part prologue (uploads of CPU-written ranges) and their write-backs at the end of the
+// submission, which do not order GPU writes of one part against the next part's prologue. Not fixed yet.
 static int split_n = -1, split_draws, part_start;
 static uint64_t split_ns, part_t0;
 static uint64_t n_parts, n_subs;
