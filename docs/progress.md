@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Basis-Instanz bei indirekten Draws (Verdacht für unsichtbare Objekte)
+- `OCCLUSION=0`: Objekte bleiben unsichtbar, Verdeckungsabfragen sind nicht die Ursache (das Spiel nutzt sie stark, ~4096 Berichte in wenigen Sekunden, viele mit 0, das ist normal).
+- Indirekte Draws: ~437 pro Frame, **alle** mit erster Instanz ≠ 0 (Argumente schreibt die CPU, die Hälfte mit Instanzzahl 0 = Culling des Spiels). Die Wiedergabe gab dem Shader aber immer Basis-Instanz 0 (c0+0x644). GLSLC-Shader addieren sie zum Instanzindex, um ihre Instanzdaten zu finden, also hat jedes Objekt die Daten eines anderen gelesen.
+- Behoben: die erste Instanz wird beim Aufzeichnen aus den Argumenten gelesen und nach c0 geschrieben. A/B-Schalter `TOTK_IND_BASE=0` (altes Verhalten).
+
 ### 2026-11-01: Tiefen-Vorpass und GPL ausgeschlossen; Verdacht Verdeckungsabfragen
 - `DEPTH_ONLY=0` und `GPL=0`: kein verstecktes Objekt taucht auf. Vorpass/EQUAL-Tiefe und der GPL-Weg sind nicht die Ursache. Auch keine `draws in frames`-Zeile, also schaltet auch kein `RENDER_COND` Draws ab.
 - Neuer Verdacht 1: Das Spiel liest Samples-Passed-Zähler (Verdeckungsabfragen) auf der CPU zurück und blendet Objekte mit Zähler 0 aus (wie TotK). Bericht: `vk: first samples-passed report …` und alle 4096 Berichte `vk: occlusion: … of those 0`. A/B-Schalter `TOTK_OCCLUSION=0`: jeder Bericht meldet „sichtbar“ (wachsender großer Wert).

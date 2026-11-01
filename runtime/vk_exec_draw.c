@@ -2054,7 +2054,7 @@ static void skip_tick(void) {
     if (ind_stat[0] && ind_logs < 30) {
         ind_logs++;
         rt_log("vk_exec: indirect indexed draws in frames %llu-%llu: %llu, arguments CPU-readable %llu: instance count 0 "
-               "%llu, index count 0 %llu, first instance not 0 %llu (shader sees base instance 0), instance count above 1 %llu",
+               "%llu, index count 0 %llu, first instance not 0 %llu, instance count above 1 %llu",
                (unsigned long long)skip_frame0, (unsigned long long)f, (unsigned long long)ind_stat[0],
                (unsigned long long)ind_stat[1], (unsigned long long)ind_stat[2], (unsigned long long)ind_stat[3],
                (unsigned long long)ind_stat[4], (unsigned long long)ind_stat[5]);
@@ -2321,6 +2321,22 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
 // DrawElementsIndirect: the arguments are read by the GPU from the pool buffer (they are often written by an earlier
 // dispatch), as nxnative nvn_mtl.m does. The base instance stays out of c0 (0x644): c0 cannot be patched by a transfer
 // inside a pass; gl_BaseInstance of the Vulkan draw is the argument's. Byte indices need the count to be widened: skipped.
+// The base instance GLSLC shaders read from c0 (0x644) is the firstInstance of the arguments: the shader adds it to the
+// instance index to find its per-instance data. Violet's indirect draws all have a nonzero one (written by the CPU);
+// with 0 every instance read another instance's data and objects disappeared (vases, a flower bed). The arguments are
+// read when the draw is recorded; arguments in GPU-only memory cannot be read and keep 0. TOTK_IND_BASE=0: always 0.
+static uint32_t ind_first_instance(uint64_t ind) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("IND_BASE", "1");
+        if (!on) rt_log("vk_exec: indirect draws tell the shader base instance 0 (TOTK_IND_BASE=0)");
+    }
+    if (!on || nvn_gpu_only(ind)) return 0;
+    VkDrawIndexedIndirectCommand a;
+    memcpy(&a, (const void *)(uintptr_t)ind, sizeof a);
+    return a.firstInstance;
+}
+
 static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     c0_binst = 0;
     if (d->itype != NVN_INDEX_TYPE_UNSIGNED_SHORT && d->itype != NVN_INDEX_TYPE_UNSIGNED_INT)
@@ -2330,6 +2346,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         return warn_once(W_INDIRECT, "indirect draw arguments at %#llx are not backed or not aligned: draws skipped", (unsigned long long)d->ind);
     if (!vk_mem_resolve(d->ibuf, 1, &ib) || ib.offset % (d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? 2 : 4))
         return warn_once(W_INDEX, "index buffer %#llx is not backed or not aligned: indirect draws skipped", (unsigned long long)d->ibuf);
+    c0_binst = ind_first_instance(d->ind);
     if (!prepare_draw(ex, d->prim, 0x7fffffff, restart_for(ex, d->prim, d->itype))) return;
     vk_exec_frame.draws++;
     VK_MEM_USE(ip);
