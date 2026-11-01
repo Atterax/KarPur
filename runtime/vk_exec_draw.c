@@ -2078,6 +2078,7 @@ static uint64_t skips[SK_N], skip_draws, skip_frame0;
 static int skip_logs;
 // KarPur diagnostic: indirect indexed draws over the same window: all, arguments readable by the CPU (they may be
 // stale when a shader writes them), instance count 0, index count 0, first instance not 0, instance count above 1.
+static uint64_t ind_lo = ~0ull, ind_hi;   // addresses of the indirect draw arguments seen so far (cs_note)
 static uint64_t ind_stat[7];   // [6]: arguments a shader of the same command buffer stored into
 
 static int ind_logs;
@@ -2466,6 +2467,8 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
     }
     ind_stat[6] += shader_wrote(ex, d->ind, sizeof(VkDrawIndexedIndirectCommand));
+    if (d->ind < ind_lo) ind_lo = d->ind;
+    if (d->ind + 20 > ind_hi) ind_hi = d->ind + 20;
     // A/B tests for objects that stay invisible (KarPur): TOTK_IND_CPU=1 draws with the arguments as the CPU sees them
     // (vkCmdDrawIndexed) instead of letting the GPU read them from the pool buffer, which tells a stale GPU copy of
     // the arguments apart; TOTK_IND_SHOW=1 also draws arguments with instance count 0 as one instance, which shows
@@ -2490,6 +2493,62 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
+// KarPur diagnostic: what the first dispatches of each compute shader (up to 4 shaders, 3 dispatches each) read and
+// write: group counts, local size, sampled textures and storage images (size, format, layers; "occlusion depth" marks
+// the target the proxies test against, "depth" any depth image), storage buffers (size, written) and whether a written
+// one covers the arguments of the indirect draws seen so far (ind_lo/ind_hi). A GPU culling pass that reads a depth
+// texture or writes the draw arguments shows up here.
+static void cs_note(VkExec *ex, const GfxShader *cs, const p_dispatch *d) {
+    static const GfxShader *seen[4];
+    static int nseen[4], n;
+    if (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) < 900) return;   // in the field, indirect draws seen
+    int k = 0;
+    while (k < n && seen[k] != cs) k++;
+    if (k == n) {
+        if (n == 4) return;
+        seen[n++] = cs;
+    }
+    if (nseen[k] >= 3) return;
+    nseen[k]++;
+    uint32_t l[3];
+    gfx_shader_local_size(cs, l);
+    char buf[1400], *o = buf, *end = buf + sizeof buf;
+    o += snprintf(o, (size_t)(end - o), "vk_exec: compute shader %d dispatch %d: groups %dx%dx%d, local %ux%ux%u", k + 1,
+                  nseen[k], d->x, d->y, d->z, l[0], l[1], l[2]);
+    const GfxShaderRes *res;
+    vk_texture_lock();
+    for (int kind = GFX_RES_TEX; kind <= GFX_RES_IMG; kind++) {
+        int nr = gfx_shader_resources(cs, kind, &res);
+        for (int r = 0; r < nr && end - o > 120; r++) {
+            int slot = res[r].slot;
+            uint64_t h = slot < 0 ? 0 : kind == GFX_RES_TEX ? (slot < 128 ? ex->tex[NVN_STAGE_CS][slot] : 0)
+                                                           : (slot < 32 ? ex->img[NVN_STAGE_CS][slot] : 0);
+            view_t v;
+            int hv;
+            const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv) : NULL;
+            if (!img) {
+                o += snprintf(o, (size_t)(end - o), "; %s %d unbound", kind == GFX_RES_TEX ? "texture" : "image", slot);
+                continue;
+            }
+            o += snprintf(o, (size_t)(end - o), "; %s %d %ux%u layers %u fmt %d type %#x%s%s",
+                          kind == GFX_RES_TEX ? "texture" : "image", slot, img->width, img->height, img->layers,
+                          (int)img->format, res[r].type, img->image == vk_oq_depth.img ? " (occlusion depth)" : "",
+                          img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? " depth" : "");
+        }
+    }
+    vk_texture_unlock();
+    int nr = gfx_shader_resources(cs, GFX_RES_SSBO, &res);
+    for (int r = 0; r < nr && end - o > 100; r++) {
+        int ubo, slot = ssbo_slot(&res[r], NVN_STAGE_CS, &ubo);
+        const p_bind_buf *b = slot >= 0 && slot < 16 ? (ubo ? &ex->ubo[NVN_STAGE_CS][slot] : &ex->ssbo[NVN_STAGE_CS][slot]) : NULL;
+        int args = b && (res[r].flags & 1) && ind_hi && b->addr < ind_hi && ind_lo < b->addr + b->size;
+        o += snprintf(o, (size_t)(end - o), "; storage %d %s %llu bytes%s%s", r, b ? "bound" : "via pointer",
+                      b ? (unsigned long long)b->size : 0ull, res[r].flags & 1 ? " written" : "",
+                      args ? " (covers indirect draw arguments)" : "");
+    }
+    rt_log("%s", buf);
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
@@ -2507,6 +2566,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
+    cs_note(ex, cs, d);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);

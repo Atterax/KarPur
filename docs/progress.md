@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Shader lesen die Abfrage-Ergebnisse nicht; Verdeckung endgültig ausgeschlossen
+- `OQ_FILL=1`: ploppt weiter. Berichte liegen in 9–10 Seiten; kein Compute- und kein Storage-Zugriff darauf, nur ~0,5 Uniform-Bindungen pro Frame (Nachbarn auf derselben Seite). Verdeckungsabfragen sind nicht die Ursache.
+- Nächste Diagnose: `vk_exec: compute shader N dispatch M: …` (ab Frame 900, je Shader 3 Dispatches): Gruppen, Local-Size, gelesene Texturen/Images (Größe, Format, „occlusion depth“/„depth“), Storage-Buffer (Größe, geschrieben, „covers indirect draw arguments“). Zeigt, ob ein GPU-Culling ein Tiefenbild liest und die Argumente schreibt.
+
 ### 2026-11-01: Kein Wettlauf nach dem Submit; Verdacht: Zeichen-Shader lesen Abfrage-Ergebnisse im selben Frame
 - `SUBMIT_SYNC=1` (auch mit `MEMORY=import`): Objekte ploppen unverändert. Datenwettlauf ausgeschlossen.
 - Erklärung, die zu allen Tests passt: Ein Vertex-/Fragment-Shader liest das Samples-Passed-Ergebnis auf der GPU im selben Befehlspuffer (auf der Switch schreibt die GPU den Bericht der Reihe nach) und blendet das Objekt bei 0 aus. `OCCLUSION=0` wirkt erst nach dem Fence über die CPU, daher ohne Effekt.
