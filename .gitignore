@@ -1,0 +1,52 @@
+# Personal paths to game files and keys (see config.example.toml)
+/config.local.toml
+
+# Game inputs and everything derived from them. NEVER commit these.
+# tools/check_content.py enforces the same rule in CI and in the pre-commit hook.
+/game/
+/build/
+/generated/
+/refs/
+*.xci
+*.xcz
+*.nsp
+*.nsz
+*.nca
+*.ncz
+*.tik
+*.cert
+*.keys
+*.nso
+*.nro
+*.npdm
+*.trpak
+*.trpfs
+*.trpfd
+*.bntx
+*.bnsh
+*.sarc
+*.zs
+*.webm
+
+# Python environments and caches
+/.venv/
+/.venv-*/
+__pycache__/
+
+# Build outputs
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+*.lib
+*.a
+
+# Logs, editor and OS files
+*.log
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuses commits that contain game files, keys or generated game code.
+# Enable once per clone: git config core.hooksPath .githooks
+exec python tools/check_content.py --staged

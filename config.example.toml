@@ -1,0 +1,12 @@
+# Copy this file to config.local.toml (git ignores that one) and fill in YOUR paths.
+# The files themselves stay outside the repository. Never paste key values anywhere.
+
+[game]
+# Base game dump (NSP or XCI) from your own console
+base = 'D:\Switch\Dumps\Scarlet-or-Violet-base.nsp'
+# Latest update (NSP) from your own console
+update = 'D:\Switch\Dumps\Scarlet-or-Violet-update.nsp'
+
+[keys]
+# prod.keys dumped from your own console (Lockpick_RCM). Tools read it themselves.
+prod = 'D:\Switch\Keys\prod.keys'
