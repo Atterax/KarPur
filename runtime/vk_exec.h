@@ -190,5 +190,6 @@ void vk_xfb_draw_end(VkExec *ex, int prim, uint32_t n, uint32_t inst);
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
-int vk_exec_oq_counting(void);   // a samples-passed query is open: the draw being recorded is counted
+int vk_exec_oq_counting(void);
+void vk_exec_oq_range(uint64_t *lo, uint64_t *hi, int reset);   // samples-passed report addresses of the window (diagnostic)   // a samples-passed query is open: the draw being recorded is counted
 void vk_exec_oq_pass_end(VkExec *ex);

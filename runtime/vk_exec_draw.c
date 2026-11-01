@@ -779,6 +779,12 @@ static void count_use(int cls, int use, uint64_t n) {
     else RS.cnt_over = 1;
 }
 
+static int twin_dispatch;                // op_dispatch*: the resources being bound are a dispatch's
+// KarPur diagnostic: buffer bindings that overlap the window's samples-passed report addresses, by compute dispatches
+// and by draws. Nonzero: shaders read occlusion results on the GPU (the replay writes them from the CPU after the
+// fence, too late for a shader in the same submission).
+static uint64_t oq_bind[2];
+
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
 // aligned, a copy in transient memory when the backing is host memory with an unaligned offset. 0 when neither works.
 // written: the shader stores into it (a mirror's range goes back to guest memory at the end of the submission).
@@ -789,6 +795,11 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     uint64_t n = size && size < sp.avail ? size : sp.avail;
     if (n > max) n = max;
     if (!n) return 0;
+    {
+        uint64_t olo, ohi;
+        vk_exec_oq_range(&olo, &ohi, 0);
+        if (addr < ohi && olo < addr + n) oq_bind[twin_dispatch ? 0 : 1]++;
+    }
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
@@ -1262,7 +1273,6 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
 typedef struct { VkImage src, img; VmaAllocation mem; VkImageView view[2]; uint32_t w, h, layers; VkFormat fmt; } Twin;
 static Twin twins[TWINS];
 static unsigned twin_next;
-static int twin_dispatch;                // op_dispatch*: the resources being bound are a dispatch's
 static VkBuffer twin_buf;
 static VmaAllocation twin_buf_mem;
 static VkDeviceSize twin_buf_cap;
@@ -2038,6 +2048,7 @@ static int skip_logs;
 // KarPur diagnostic: indirect indexed draws over the same window: all, arguments readable by the CPU (they may be
 // stale when a shader writes them), instance count 0, index count 0, first instance not 0, instance count above 1.
 static uint64_t ind_stat[7];   // [6]: arguments a shader of the same command buffer stored into
+
 static int ind_logs;
 static int skip_note(int why) {
     skips[why]++;
@@ -2059,6 +2070,13 @@ static void skip_tick(void) {
                (unsigned long long)skips[SK_SHADER_WAIT], (unsigned long long)skips[SK_SHADER_FAIL],
                (unsigned long long)skips[SK_PIPE_WAIT], (unsigned long long)skips[SK_PIPE_FAIL]);
     }
+    uint64_t olo, ohi;
+    vk_exec_oq_range(&olo, &ohi, 1);
+    if (ohi && ind_logs < 30)
+        rt_log("vk_exec: frames %llu-%llu: samples-passed reports span %#llx bytes; buffer bindings over them: compute %llu, "
+               "draws %llu", (unsigned long long)skip_frame0, (unsigned long long)f, (unsigned long long)(ohi - olo),
+               (unsigned long long)oq_bind[0], (unsigned long long)oq_bind[1]);
+    memset(oq_bind, 0, sizeof oq_bind);
     if (ind_stat[0] && ind_logs < 30) {
         ind_logs++;
         rt_log("vk_exec: indirect indexed draws in frames %llu-%llu: %llu, arguments CPU-readable %llu: instance count 0 "

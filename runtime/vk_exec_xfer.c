@@ -276,9 +276,51 @@ static void oq_cb(void *arg) {
     free(s);
 }
 
+// Report ranges of the current 600-frame window, for the diagnostic in vk_exec_draw.c (a shader binding them reads
+// samples-passed results on the GPU).
+static uint64_t oq_lo = ~0ull, oq_hi;
+void vk_exec_oq_range(uint64_t *lo, uint64_t *hi, int reset) {
+    *lo = oq_lo, *hi = oq_hi;
+    if (reset) oq_lo = ~0ull, oq_hi = 0;
+}
+
+// TOTK_OQ_GPU=1 (KarPur test): a report of a segment with exactly one query (reset, proxy draws in one pass, report)
+// also writes the count into the counter word on the GPU (vkCmdCopyQueryPoolResults, waiting for the result), so a
+// shader later in the same submission reads it, as on the Switch where the GPU writes reports in order. The completion
+// thread still writes the same value for the CPU. Ends the open pass. Segments with several queries, or cumulative
+// counting, keep the CPU write only (counted in oq_gpu_miss).
+static uint64_t oq_gpu_done, oq_gpu_miss;
+static int oq_gpu(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("OQ_GPU", "0");
+        if (on) rt_log("vk: samples-passed reports with one query are also written by the GPU (TOTK_OQ_GPU=1)");
+    }
+    return on;
+}
+
 // Hands the segment to the completion thread with a report (addr; 0: no CPU-visible memory) or a reset.
-static void oq_segment(VkExec *ex, uint64_t addr, int reset) {
+static void oq_segment(VkExec *ex, uint64_t addr, int reset, VkMemSpan *m) {
     oq_close(ex);
+    if (addr && !reset) {
+        if (addr < oq_lo) oq_lo = addr;
+        if (addr + 16 > oq_hi) oq_hi = addr + 16;
+    }
+    if (m && oq_gpu()) {
+        if (oq_nseg == 1 && !oq_keep && !oq_lost && m->offset % 8 == 0) {
+            vk_exec_barrier(ex);
+            VK_MEM_USE(*m);
+            vkCmdCopyQueryPoolResults(ex->cb, oq_pool, oq_seg[0], 1, m->buffer, m->offset, 8,
+                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+            ex->recorded++;
+            vk_mem_gpu_wrote(m, 8);
+            note_gpu_write(ex, addr, 8);
+            oq_gpu_done++;
+        } else oq_gpu_miss++;
+        if ((oq_gpu_done + oq_gpu_miss) % 65536 == 1)
+            rt_log("vk: GPU-written samples-passed reports: %llu, left to the CPU: %llu", (unsigned long long)oq_gpu_done,
+                   (unsigned long long)oq_gpu_miss);
+    }
     OqSegment *s = malloc(sizeof *s + sizeof *s->q * oq_nseg);
     if (!s) rt_fatal("vk: out of memory");
     s->addr = addr, s->reset = reset, s->lost = oq_lost, s->n = oq_nseg;
@@ -289,14 +331,14 @@ static void oq_segment(VkExec *ex, uint64_t addr, int reset) {
 
 static void reset_counter(VkExec *ex, const p_reset_counter *p) {
     if (p->type != NVN_COUNTER_TYPE_SAMPLES_PASSED || !oq_ready()) return;
-    oq_segment(ex, 0, 1);
+    oq_segment(ex, 0, 1, NULL);
     oq_counting = 1, oq_reported = 0;
 }
 
 // A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
 // reset, unless reports came without resets before.
-static void oq_report(VkExec *ex, uint64_t addr) {
-    oq_segment(ex, addr, 0);
+static void oq_report(VkExec *ex, uint64_t addr, VkMemSpan *m) {
+    oq_segment(ex, addr, 0, m);
     if (oq_reported && !oq_keep) {
         oq_keep = 1;
         rt_log("vk: samples passed reported twice without a reset: counting every draw from now on");
@@ -315,14 +357,14 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
 static void report_counter(VkExec *ex, const p_report_counter *p) {
     int samples = p->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && oq_ready();
     if (nvn_gpu_only(p->addr)) {   // CPU-invisible pool: no host memory behind it
-        if (samples) oq_report(ex, 0);
+        if (samples) oq_report(ex, 0, NULL);
         return;
     }
     VkMemSpan m;
     if (!vk_mem_resolve(p->addr, sizeof(NVNcounterData), &m))
         rt_fatal("vk: counter report at %#llx is in no memory pool", (unsigned long long)p->addr);
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
-    if (samples) oq_report(ex, p->addr);
+    if (samples) oq_report(ex, p->addr, &m);
     else {
         uint64_t *a = malloc(sizeof *a);
         if (!a) rt_fatal("vk: out of memory");

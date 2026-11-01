@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: gl_BaseInstance allein behebt das Ploppen nicht
+- Übersetzer gebaut (neue ID `1170d8f8…`), Objekte ploppen weiter (Zaun, Büsche je nach Kamera). Barriere zwischen Compute und indirektem Draw ist voll (ALL→ALL), daran liegt es nicht.
+- Neuer Verdacht: Der Culling-Compute-Shader liest die Samples-Passed-Ergebnisse direkt auf der GPU (auf der Switch schreibt die GPU sie der Reihe nach in den Speicher). Die Wiedergabe schreibt sie erst nach dem Fence von der CPU, für den Shader zu spät. Diagnose: `vk_exec: frames …: samples-passed reports span …; buffer bindings over them: compute N, draws M`. Test-Schalter `TOTK_OQ_GPU=1`: Berichte mit genau einer Abfrage schreibt zusätzlich die GPU (`vkCmdCopyQueryPoolResults`).
+
 ### 2026-11-01: Indirekte Argumente kommen von einem Compute-Shader → gl_BaseInstance
 - Zählung: **alle** indirekten Argumente schreibt ein Shader im selben Befehlspuffer vor dem Draw (GPU-Culling mit Kompaktierung). Die erste Instanz ändert sich also je nach Sichtbarkeit pro Frame; der Wert, den die Wiedergabe beim Aufzeichnen aus dem Speicher liest, ist veraltet. Darum ploppen Objekte mit Abstand und Kamera.
 - Fix im Übersetzer: `QueryHasConstantBufferDrawParameters() => true` (Ryujinx `DrawParametersReplace`): Vertex-Shader lesen c0+0x640/0x644/0x648 als `gl_BaseVertex`/`gl_BaseInstance`/`gl_DrawID`, die GPU nimmt den Wert direkt aus den Argumenten. Neuer Übersetzer = neue Übersetzer-ID = Shader-Cache wird neu aufgebaut. `shaderDrawParameters` ist eingeschaltet (vk_device.c schaltet alle gemeldeten Features ein).
