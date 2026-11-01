@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: Lauf mit `KARPUR_WATCH=_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mi` und `KARPUR_WATCH_FROM=main+0x7836fc-0x783a5c`. Gesucht: Stack-Adresse (x3), Stack-Größe (x4) und Priorität (x5) des Vibrations-Threads; welche Eingangsprüfung sie verletzen.
+1. Maintainer: normaler Lauf; alle `svc ... failed`-Zeilen schicken. Gesucht: welcher svc in `ThreadManagerImplByHorizon::CreateThread` (vor `sdk+0x3783c0`) einen Fehler liefert.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Argumente des Vibrations-Threads gültig
+- `nn::os::CreateThread(ThreadType 0x70046fc460 (main-.bss, genullt), Funktion main+0x783fc4, arg 0, Stack 0x70046fd000, Größe 0x2000, Priorität 16, x6 0x10)` vom Thread mit TLS `0x7010060000`. Stack 4-KiB-ausgerichtet, Größe Vielfaches von 4 KiB, Priorität im nn::os-Bereich: die Argumente sind in Ordnung.
+- Also scheitert etwas im SDK-Inneren (Funktion direkt vor `sdk+0x3783c0`), vermutlich ein svc mit Fehler-Result. Neu in `svc.c`: jeder svc mit Fehler-Result in x0 wird geloggt (Nummer, Ort, Ergebnis, x1–x3; ohne Timeout/Cancelled und svcs, deren x0 kein Result ist; höchstens 100 Zeilen).
 
 ### 2026-11-01: CreateThread-Abbruch kommt vom Vibrations-Thread
 - `calls.py`: `sdk+0x3783c0` ist der Anfang der Funktion *nach* `ThreadManager::CreateThread` (der Thread-Start: Thread-Funktion, TLS-Destruktoren, Broadcast). Die Rücksprungadresse zeigt dorthin, weil `CreateThread` mit einem nie zurückkehrenden Abbruch endet: eine Eingangsprüfung schlägt fehl. `sdk+0x16ba20` ruft `nn::diag::detail::VAbortImpl`.
