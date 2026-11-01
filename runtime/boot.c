@@ -5,7 +5,7 @@
 // with three host callbacks, the second of which runs DT_INIT of main, subsdk0 and sdk; Start then calls nnMain.
 // --boot logs two checkpoints on the way and ends at the first nvnBootstrapLoader call:
 //   SetFocusHandlingMode   in nnMain; every module's constructor flag must read 2 by then
-//   nvnBootstrapLoader     the graphics bring-up; logs the run statistics, exits 0
+//   nvnBootstrapLoader     the graphics bring-up; logs the run statistics, exits 0. The two may come in either order.
 // KarPur: TotK Recomp checked both return addresses and the init_array sizes against measured TotK values. For another
 // game those numbers are unknown, so this version logs where each checkpoint was reached instead of comparing.
 // With --seconds S the run continues past that call; rt_frame_presented ends it once the world clock passed S.
@@ -104,8 +104,10 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
         return;
     }
     if (!strcmp(what, "nvn")) {
-        if (!plat_cas32(&checkpoint_seen, 0, 0))
-            rt_fatal("boot: first NVN call before the SetFocusHandlingMode checkpoint");
+        // TotK calls SetFocusHandlingMode before its graphics; Scarlet/Violet start the graphics first. The order is
+        // the game's own choice, so it is logged, not checked.
+        rt_logf("boot: SetFocusHandlingMode %s the first NVN call\n",
+                plat_cas32(&checkpoint_seen, 0, 0) ? "came before" : "has not come yet at");
         rt_logf("boot: first NVN call nvnBootstrapLoader(\"%s\") from %s\n", detail, at);
         if (rt_config()->seconds) return;   // --seconds: the run goes on into the world
         if (rt_trace & RT_TRACE_HOSTCALL) hostfn_report();

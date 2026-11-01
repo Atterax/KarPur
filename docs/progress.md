@@ -5,9 +5,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M3, erstes Lebenszeichen
 
 ### Nächste Schritte
-1. Maintainer baut neu (nur Runtime, ~1 min), startet `--boot`, schickt das Log-Ende und die neue `uncovered-imports.txt`.
-2. Nächste Absturzstelle beheben. Offen aus der Liste: `codec::HardwareOpusDecoder` (Klassen-API, noch Spielcode), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
-3. Absturz- und Fehlerstellen aus dem Log nacheinander beheben (fehlende/abweichende SDK-Ersatzfunktionen, Strukturlayouts von SDK 13, Dienste, die Purpur zusätzlich nutzt).
+1. Maintainer bestätigt, dass `--boot` jetzt mit `boot: passed` endet. Dann ist M3 erledigt.
+2. M4 vorbereiten: Shader-Übersetzer (TotK `tools/xlate` + Ryujinx-Shader-Übersetzer, .NET 10 NativeAOT) übernehmen, dann ohne `--boot` starten und das Grafik-Log auswerten.
+3. Offen aus der Liste: `codec::HardwareOpusDecoder` (Klassen-API, noch Spielcode), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
+4. Absturz- und Fehlerstellen aus dem Log nacheinander beheben (fehlende/abweichende SDK-Ersatzfunktionen, Strukturlayouts von SDK 13, Dienste, die Purpur zusätzlich nutzt).
 4. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
 
 ### Offene Fragen
@@ -18,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Dritter Start erreicht die Grafik
+- Liste der Lücken von 331 auf 99 geschrumpft. Übrig sind fast nur reine Rechen-/Datenfunktionen (bleiben Spielcode), Audio-Renderer und Audio-Device (laufen per IPC zu `audren:u`) und `codec::HardwareOpusDecoder`.
+- `--boot` läuft durch `nnMain`, oe, hid, RomFS-Mount und `nv::InitializeGraphics` („graphics work memory recorded“) bis zum **ersten NVN-Aufruf**. Keine `offline:`-Zeile bis dahin: Die Online-Funktionen werden beim Start nicht berührt.
+- Abbruch nur an einer TotK-Annahme in `boot.c` (SetFocusHandlingMode vor NVN). Purpur startet die Grafik zuerst; die Reihenfolge wird jetzt nur geloggt.
 
 ### 2026-11-01: Zweiter Start bis nnMain, 331 Lücken sortiert
 - Zweiter `--boot`: `nninitStartup` läuft durch (SetAllocator-Ersatz greift), alle DT_INITs laufen (main 2133, subsdk0 45, sdk 112 init_array-Einträge), `nnMain` startet, oe/hid/RomFS-Mount werden genutzt. Absturz in `nn::aoc::CountAddOnContent` (SDK-Code mit nicht initialisiertem aoc-Dienst, weil TotKs `aoc::Initialize`-Ersatz nichts anlegt).
