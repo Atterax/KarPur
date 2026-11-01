@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: EQUAL-Tiefentest nicht die Ursache; Vergleichswerkzeug F8
+- `DEPTH_EQUAL=0`: Das Spiel nutzt EQUAL, aber die Objekte ploppen weiter. Bisher ausgeschlossen: übersprungene Draws, Vertex-Formate, Ersatztexturen, Vorpass, GPL, Verdeckungsabfragen (Wert, Größe, GPU-seitig), Datenwettläufe, Spiegel, Shared Memory, Grenzprüfung, Rekonvergenz, A2C, Discard, EQUAL.
+- Neues Werkzeug: **F8** im Spielfenster nimmt den nächsten Frame auf (Meshes: Indexpuffer/erster Index/Anzahl/Vertex-Offset → Instanzen); das zweite F8 vergleicht mit dem vorigen: `vk_exec: snapshot N vs N-1: drawn in both …; drawn before, now without instances …; now not issued …` plus die 8 größten je Gruppe. Zeigt, ob ein fehlender Baum vom Culling 0 Instanzen bekommt, gar nicht gezeichnet wird oder gezeichnet, aber unsichtbar ist.
+
 ### 2026-11-01: Pixelanzahl ebenfalls nicht die Ursache; Test Tiefentest EQUAL
 - `OQ_CLAMP=1`: Objekte bleiben nah/mittig unsichtbar. Zusammen mit `OCCLUSION=0`: Die Abfrage-Ergebnisse steuern diese Objekte nicht. Größte Zählwerte ~0,5–0,9 Mio. (Box über das ganze 960×540-Bild, Vorder- und Rückseite).
 - Neuer Verdacht: Tiefen-Vorpass + Farbpass mit Tiefentest EQUAL; minimal andere Tiefe im Farbpass → keine Farbe (Objekt verdeckt trotzdem). Der frühere `DEPTH_ONLY=0`-Test erfasste nur Vorpass-Draws ohne Fragment-Shader.

@@ -23,6 +23,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "input.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "vk.h"
@@ -2079,6 +2080,117 @@ static int pipe_memo_on(void) {
     return PM.on;
 }
 
+// ---- F8 draw snapshots (KarPur diagnostic)
+// F8 in the game window marks the next frame: its draws are collected as (mesh key, instances), where the key is the
+// index buffer, first index, index count and vertex offset (indirect: as the CPU sees the arguments, which a shader
+// wrote one or two frames earlier) or the index buffer, count and base vertex (direct). The second F8 compares the new
+// frame with the one before: meshes drawn then that now have no instances (culled) or no draw at all (not issued), and
+// the largest of them. Press it once where a missing object is visible and once where it is not. Counts only.
+enum { SNAP_IND, SNAP_IDX, SNAP_ARR };
+typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; } SnapEnt;
+#define SNAP_N 32768
+static SnapEnt *snap_cur, *snap_prev;
+static uint32_t snap_ncur, snap_nprev;
+static int snap_state, snap_key_was, snap_no;
+static uint64_t snap_frame;
+
+static uint64_t snap_mix(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    uint64_t v[4] = {a, b, c, d};
+    for (int i = 0; i < 4; i++) h = (h ^ v[i]) * 0x100000001b3ull, h ^= h >> 29;
+    return h;
+}
+
+static void snap_add(int kind, uint64_t key, uint32_t inst, uint32_t count) {
+    if (snap_state != 2 || snap_ncur >= SNAP_N) return;
+    snap_cur[snap_ncur++] = (SnapEnt){key, inst, count, 1, (uint8_t)kind};
+}
+
+static int snap_cmp(const void *a, const void *b) {
+    uint64_t x = ((const SnapEnt *)a)->key, y = ((const SnapEnt *)b)->key;
+    return x < y ? -1 : x > y;
+}
+
+static uint32_t snap_merge(SnapEnt *e, uint32_t n) {   // sorted by key; one entry per mesh with summed instances
+    qsort(e, n, sizeof *e, snap_cmp);
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (o && e[o - 1].key == e[i].key) e[o - 1].inst += e[i].inst, e[o - 1].draws++;
+        else e[o++] = e[i];
+    }
+    return o;
+}
+
+static const SnapEnt *snap_find(const SnapEnt *e, uint32_t n, uint64_t key) {
+    uint32_t lo = 0, hi = n;
+    while (lo < hi) {
+        uint32_t m = (lo + hi) / 2;
+        if (e[m].key < key) lo = m + 1;
+        else hi = m;
+    }
+    return lo < n && e[lo].key == key ? &e[lo] : NULL;
+}
+
+static void snap_finish(void) {
+    snap_ncur = snap_merge(snap_cur, snap_ncur);
+    uint32_t drawn = 0, ind = 0, ind0 = 0;
+    for (uint32_t i = 0; i < snap_ncur; i++) {
+        drawn += snap_cur[i].inst > 0;
+        ind += snap_cur[i].kind == SNAP_IND, ind0 += snap_cur[i].kind == SNAP_IND && !snap_cur[i].inst;
+    }
+    snap_no++;
+    rt_log("vk_exec: snapshot %d (frame %llu): %u meshes, %u with instances; indirect %u, of them %u without instances",
+           snap_no, (unsigned long long)snap_frame, snap_ncur, drawn, ind, ind0);
+    if (snap_nprev) {
+        static const char *kn[] = {"indirect", "indexed", "arrays"};
+        uint32_t kept = 0, culled = 0, gone = 0, fresh = 0;
+        SnapEnt big_c[8] = {0}, big_g[8] = {0};
+        for (uint32_t i = 0; i < snap_nprev; i++) {
+            const SnapEnt *p = &snap_prev[i];
+            if (!p->inst) continue;
+            const SnapEnt *c = snap_find(snap_cur, snap_ncur, p->key);
+            SnapEnt *big = c ? big_c : big_g;
+            if (c && c->inst) { kept++; continue; }
+            if (c) culled++;
+            else gone++;
+            for (int k = 0; k < 8; k++)
+                if (p->count > big[k].count) {
+                    memmove(big + k + 1, big + k, sizeof *big * (size_t)(7 - k));
+                    big[k] = *p;
+                    break;
+                }
+        }
+        for (uint32_t i = 0; i < snap_ncur; i++) {
+            if (!snap_cur[i].inst) continue;
+            const SnapEnt *p = snap_find(snap_prev, snap_nprev, snap_cur[i].key);
+            fresh += !p || !p->inst;
+        }
+        rt_log("vk_exec: snapshot %d vs %d: drawn in both %u; drawn before, now without instances %u, now not issued %u; "
+               "newly drawn %u", snap_no, snap_no - 1, kept, culled, gone, fresh);
+        for (int k = 0; k < 8 && big_c[k].count; k++)
+            rt_log("vk_exec:   now without instances: %s, %u indices, %u instances before, %u draws", kn[big_c[k].kind],
+                   big_c[k].count, big_c[k].inst, big_c[k].draws);
+        for (int k = 0; k < 8 && big_g[k].count; k++)
+            rt_log("vk_exec:   now not issued: %s, %u indices, %u instances before, %u draws", kn[big_g[k].kind],
+                   big_g[k].count, big_g[k].inst, big_g[k].draws);
+    }
+    SnapEnt *t = snap_prev;
+    snap_prev = snap_cur, snap_nprev = snap_ncur;
+    snap_cur = t, snap_ncur = 0;
+}
+
+static void snap_frame_edge(uint64_t f) {
+    if (!snap_cur) {
+        snap_cur = calloc(SNAP_N, sizeof *snap_cur), snap_prev = calloc(SNAP_N, sizeof *snap_prev);
+        if (!snap_cur || !snap_prev) rt_fatal("vk_exec: out of memory (snapshots)");
+    }
+    if (snap_state == 2 && f > snap_frame) snap_finish(), snap_state = 0;
+    int key = input_flight_key();
+    if (key && !snap_key_was && !snap_state) snap_state = 1;
+    snap_key_was = key;
+    if (snap_state == 1) snap_state = 2, snap_frame = f, snap_ncur = 0;
+}
+
 // KarPur diagnostic: draws skipped, by reason, summed over 600 presented frames and logged when any were (at most 30
 // times a run). Objects missing on screen without a warning (Violet: some vases, a flower bed) show up here.
 enum { SK_RENDER_OFF, SK_SCISSOR, SK_SHADER_WAIT, SK_SHADER_FAIL, SK_PIPE_WAIT, SK_PIPE_FAIL, SK_N };
@@ -2097,6 +2209,8 @@ static int skip_note(int why) {
 static void skip_tick(void) {
     skip_draws++;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    static uint64_t edge_f;
+    if (f != edge_f) edge_f = f, snap_frame_edge(f);
     if (!skip_frame0) skip_frame0 = f ? f : 1;
     if (f < skip_frame0 + 600) return;
     uint64_t any = 0;
@@ -2346,6 +2460,7 @@ static void op_draw(VkExec *ex, const p_draw *d) {
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, 0)) return;
     vk_exec_frame.draws++;
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
+    snap_add(SNAP_ARR, snap_mix((uint64_t)(uintptr_t)ex->prog, first, n, 2), inst, n);
     if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
@@ -2399,6 +2514,8 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     int restart = restart_for(ex, d->prim, d->itype);
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
     vk_exec_frame.draws++;
+    snap_add(SNAP_IDX, snap_mix(d->ibuf, (uint64_t)d->count, (uint64_t)(uint32_t)d->base_vertex, 1),
+             d->instances > 0 ? (uint32_t)d->instances : 1, (uint32_t)d->count);
     uint64_t bytes = (uint64_t)d->count * isize[d->itype];
     VkMemSpan sp;
     if (!vk_mem_resolve(d->ibuf, bytes, &sp)) return warn_once(W_INDEX, "index buffer %#llx is not backed: draws with it are skipped", (unsigned long long)d->ibuf);
@@ -2475,6 +2592,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
     }
     ind_stat[6] += shader_wrote(ex, d->ind, sizeof(VkDrawIndexedIndirectCommand));
+    if (cpu) snap_add(SNAP_IND, snap_mix(d->ibuf, a.firstIndex, a.indexCount, (uint64_t)(uint32_t)a.vertexOffset), a.instanceCount, a.indexCount);
     if (d->ind < ind_lo) ind_lo = d->ind;
     if (d->ind + 20 > ind_hi) ind_hi = d->ind + 20;
     // A/B tests for objects that stay invisible (KarPur): TOTK_IND_CPU=1 draws with the arguments as the CPU sees them
