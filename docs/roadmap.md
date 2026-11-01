@@ -4,10 +4,10 @@ Jeder Meilenstein hat ein klares, prüfbares Ziel. Ein Meilenstein gilt erst als
 
 | | Ziel | Fertig, wenn … |
 |---|---|---|
-| **M0** | Repo-Grundgerüst | Regeln, Lizenzen, Schutz vor Spieldateien und CI stehen |
-| **M1** | Werkzeuge & Extraktion | Die Toolchain läuft unter Windows, und ein Skript entpackt den eigenen Dump (Basis + Update) nach `game/` und gibt einen Bericht aus: Spielversion, Hashes, Module, SDK-Version |
-| **M2** | Lifter läuft | Der aus `main`, `sdk` und `subsdk*` erzeugte C-Code kompiliert vollständig; ein Bericht listet nicht unterstützte Instruktionen (Ziel: 0) |
-| **M3** | Erstes Lebenszeichen | `karpur.exe` startet den Spielcode, liest Dateien aus der RomFS und schreibt Logs, noch ohne Bild |
+| ✅ **M0** | Repo-Grundgerüst | Regeln, Lizenzen, Schutz vor Spieldateien und CI stehen |
+| ✅ **M1** | Werkzeuge & Extraktion | Die Toolchain läuft unter Windows, und ein Skript entpackt den eigenen Dump (Basis + Update) nach `game/` und gibt einen Bericht aus: Spielversion, Hashes, Module, SDK-Version |
+| ✅ **M2** | Lifter läuft | Der aus `main`, `sdk` und `subsdk*` erzeugte C-Code kompiliert vollständig; ein Bericht listet nicht unterstützte Instruktionen (Ziel: 0) |
+| ✅ **M3** | Erstes Lebenszeichen | `karpur.exe` startet den Spielcode, liest Dateien aus der RomFS und schreibt Logs, noch ohne Bild |
 | **M4** | Erstes Bild | Der Titelbildschirm wird über Vulkan gerendert |
 | **M5** | Spielbar | Herumlaufen, Kämpfe, Speichern und Laden funktionieren |
 | **M6** | PC-Extras | Höhere Auflösung, höhere Framerate, Einstellungsmenü, Installer |

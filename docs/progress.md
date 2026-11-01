@@ -2,14 +2,12 @@
 
 Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. Neueste Einträge oben.
 
-## Aktueller Meilenstein: M3, erstes Lebenszeichen
+## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer bestätigt, dass `--boot` jetzt mit `boot: passed` endet. Dann ist M3 erledigt.
-2. M4 vorbereiten: Shader-Übersetzer (TotK `tools/xlate` + Ryujinx-Shader-Übersetzer, .NET 10 NativeAOT) übernehmen, dann ohne `--boot` starten und das Grafik-Log auswerten.
-3. Offen aus der Liste: `codec::HardwareOpusDecoder` (Klassen-API, noch Spielcode), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
-4. Absturz- und Fehlerstellen aus dem Log nacheinander beheben (fehlende/abweichende SDK-Ersatzfunktionen, Strukturlayouts von SDK 13, Dienste, die Purpur zusätzlich nutzt).
-4. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
+1. Shader-Übersetzer aus TotK Recomp übernehmen (`tools/xlate`, `tools/vendor/ryujinx`, `tools/build_xlate.py`, MIT; .NET 10 NativeAOT, braucht Visual Studio Build Tools für den Linker) und Einrichtungsschritt für .NET und Build Tools schreiben.
+2. `karpur.exe` ohne `--boot` starten (Fenster, Vulkan) und das Grafik-Log auswerten: fehlende NVN-Funktionen, Strukturunterschiede SDK 13/20, Shader-Fehler.
+3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
@@ -19,6 +17,9 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: M3 erledigt
+- `karpur.exe --boot` endet mit `boot: passed (920 SVCs, 11 threads, 622 host calls)`. Erster NVN-Aufruf: `nvnBootstrapLoader("nvnDeviceInitialize")` aus `main+0x14c0060`; `SetFocusHandlingMode` kommt bei Purpur erst danach.
 
 ### 2026-11-01: Dritter Start erreicht die Grafik
 - Liste der Lücken von 331 auf 99 geschrumpft. Übrig sind fast nur reine Rechen-/Datenfunktionen (bleiben Spielcode), Audio-Renderer und Audio-Device (laufen per IPC zu `audren:u`) und `codec::HardwareOpusDecoder`.

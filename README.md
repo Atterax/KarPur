@@ -9,7 +9,7 @@
 
 ## Status
 
-**Very early (milestone M0).** There is nothing to play yet. The roadmap is in [docs/roadmap.md](docs/roadmap.md), the current state in [docs/progress.md](docs/progress.md).
+**Early (milestone M4 of 6).** The recompiled game boots on Windows up to its graphics start-up (M3); there is no picture yet and nothing to play. The roadmap is in [docs/roadmap.md](docs/roadmap.md), the current state in [docs/progress.md](docs/progress.md).
 
 ## How it is meant to work
 
