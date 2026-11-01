@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Nur Zeitstempel und Samples-Passed; Verdacht: Pixelanzahl steuert LOD/Ausblendung
+- Zählerarten in 1800 Frames: Typ 0 (Zeitstempel) 1801, Typ 1 (Samples-Passed) 736999 (~400/Frame), Typ 16 (Zeitstempel oben) 1802. Kein bedingtes Zeichnen, kein RenderEnable.
+- Neue Deutung: Das Spiel wertet die **Anzahl** der Pixel aus (Detailstufe oder Ausblenden nah/mittig), nicht nur 0/≠0. Passt zu allen Beobachtungen: nah + mittig → große Zahl → weg; Bildrand/fern → kleinere Zahl → sichtbar; `OCCLUSION=0` schrieb riesige Werte → kein Effekt. Mögliche Ursache: unsere Zählung ist größer als die der Switch (Einheit/Zählweise).
+- Test-Schalter `TOTK_OQ_CLAMP=<n>`: Zählerwerte über n werden als n gemeldet. Occlusion-Bericht zeigt jetzt auch „of 10000 samples or more“ und „largest“.
+
 ### 2026-11-01: A2C/Discard nicht die Ursache; Hinweis von yuzu auf Zählerabfragen
 - `A2C=0` (das Spiel fordert A2C mit Dither an, 1 Sample) und `NO_DISCARD=1`: Baum verschwindet weiter beim direkten Hinschauen aus der Nähe, sichtbar am Bildrand und aus der Ferne. Die Objekte werden also gar nicht gezeichnet (Culling/LOD), nicht weggeblendet.
 - Web: yuzus Fortschrittsbericht August 2023 nennt für Karmesin/Purpur behobene Detailstufen und Baum-Flackern (nur mit GPU-Genauigkeit „Hoch“) durch die Überarbeitung des Query-Caches (Zählerabfragen, Host Conditional Rendering). Seite aus der Sitzung nicht abrufbar (yuzu-mirror.github.io nicht auflösbar).

@@ -38,6 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
@@ -215,6 +216,20 @@ static int oq_fake(void) {
     return mode;
 }
 
+// TOTK_OQ_CLAMP=<n> (KarPur test): a samples-passed count above n is reported as n (0: off). The game may pick level of
+// detail or hide objects close to the camera by how many pixels its proxy covers, so too large a count would hide what
+// fills the middle of the screen; OQ_CLAMP=1 reports every visible proxy as one pixel.
+static uint64_t oq_clamp(uint64_t v) {
+    static int64_t max = -1;
+    if (max < 0) {
+        const char *e = cfg_get("TOTK_OQ_CLAMP");
+        max = e && *e ? strtoll(e, NULL, 10) : 0;
+        if (max < 0) max = 0;
+        if (max) rt_log("vk: samples-passed counts above %lld are reported as %lld (TOTK_OQ_CLAMP)", (long long)max, (long long)max);
+    }
+    return max && v > (uint64_t)max ? (uint64_t)max : v;
+}
+
 static uint64_t oq_fake_next(void) {
     static uint64_t v;
     return v += 0x10000;
@@ -223,8 +238,10 @@ static uint64_t oq_fake_next(void) {
 // Report: how many samples-passed reports reached CPU-visible memory and how many of them said 0 (hidden), every
 // 4096 reports, plus the first one. Counts only, completion thread.
 static void oq_stat(int cpu, uint64_t count, uint32_t queries) {
-    static uint64_t reports, cpu_reports, zeros, no_query, total;
+    static uint64_t reports, cpu_reports, zeros, no_query, total, largest, big;
     reports++, total++;
+    if (cpu && count > largest) largest = count;
+    big += cpu && count >= 10000;
     if (reports > 16 * 4096) reports = cpu_reports = zeros = no_query = 0;
     cpu_reports += cpu;
     zeros += cpu && !count;
@@ -234,10 +251,11 @@ static void oq_stat(int cpu, uint64_t count, uint32_t queries) {
                (unsigned long long)count, queries);
     if (reports < 4096 || (total > 3 * 4096 && total % (16 * 4096))) return;   // the first three, then every 16th
     rt_log("vk: occlusion: %llu samples-passed reports (%llu total), %llu to CPU-visible memory, %llu of those 0 "
-           "(%llu without any query)%s", (unsigned long long)reports, (unsigned long long)total,
-           (unsigned long long)cpu_reports, (unsigned long long)zeros, (unsigned long long)no_query,
+           "(%llu without any query), %llu of 10000 samples or more, largest %llu%s", (unsigned long long)reports,
+           (unsigned long long)total, (unsigned long long)cpu_reports, (unsigned long long)zeros,
+           (unsigned long long)no_query, (unsigned long long)big, (unsigned long long)largest,
            oq_fake() ? ", written as visible (TOTK_OCCLUSION=0)" : "");
-    reports = cpu_reports = zeros = no_query = 0;
+    reports = cpu_reports = zeros = no_query = largest = big = 0;
 }
 
 static void oq_cb(void *arg) {
@@ -270,7 +288,7 @@ static void oq_cb(void *arg) {
     else {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
-        if (s->addr) write_counter(s->addr, oq_fake() ? oq_fake_next() : oq_count);
+        if (s->addr) write_counter(s->addr, oq_fake() ? oq_fake_next() : oq_clamp(oq_count));
         oq_stat(s->addr != 0, oq_count, s->n);
     }
     free(s);
