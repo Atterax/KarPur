@@ -182,6 +182,7 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // Transform feedback (vk_xfb.c): OP_BIND_XFB, OP_XFB, OP_DRAW_XFB; vk_xfb_note_draw runs before every draw.
 void vk_exec_op_xfb(VkExec *ex, uint32_t op, const void *payload);
 void vk_xfb_note_draw(VkExec *ex, uint32_t op, const void *payload);
+void vk_xfb_note_bind(const p_bind_program *b);   // before vk_exec_op_draw handles OP_BIND_PROGRAM
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);

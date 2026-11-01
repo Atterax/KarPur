@@ -25,6 +25,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: TF-Draws ohne gebundenes Programm – Stufenmaske von BindProgram
+- Dritter Lauf: Die TF-Draws laufen mit `ex->prog == NULL` und Rasterizer-Discard an. Vertexzahlen passen genau zu den Puffergrößen: 88 Vertices → 0x420 = 88 × 12 Bytes, 173 → 0x81c, 797 → 0x255c (hier alle drei Puffer je 12 Bytes pro Vertex; in einem früheren Lauf 12/4/4, das Layout hängt also vom Shader ab).
+- Ursache (Vermutung, Lauf soll es bestätigen): `nvnCommandBufferBindProgram(cb, prog, stages)` bindet nur die Stufen in der Maske; Stufen in der Maske, die das Programm nicht hat, werden gelöst (prog darf NULL sein); andere Stufen bleiben. Purpur löst so für TF den Fragment-Shader und behält den Vertex-Shader. `vk_exec_draw.c` ersetzt bei jedem Bind alle Stufen (`ex->prog = b->prog`), ignoriert die Maske. Folge: TF-Draws werden übersprungen (`a draw without a bound program is skipped`). Möglicherweise trifft das auch andere Draws (z. B. Compute-Bind zwischen Grafik-Draws) und erklärt Bildfehler.
+- `vk_xfb.c` verfolgt jetzt die Vertex-Stufe selbst und loggt jede neue Kombination (Programm ja/nein, Stufenmaske).
+- Nächster Schritt nach dem Lauf: Stufenmaske im Back-End umsetzen. Idee ohne großen Umbau: bei Teil-Binds ein zusammengesetztes `prog_t` (Host-Objekt, Stufen aus mehreren Programmen, eigene Serial, zwischengespeichert nach Serial-Paar) als `ex->prog` setzen.
+
 ### 2026-11-01: TF-Diagnose ins Abspielen verlegt
 - Zweiter Lauf: Bei jedem `BeginTransformFeedback` war im selben Command Buffer kein Vertex-Shader gebunden („without a known vertex shader“, 4 von 4). Das Programm kommt also aus einem früheren Command Buffer (NVN-Zustand gilt über Command Buffer hinweg) oder wird erst nach Begin gebunden. Auffällig im selben Lauf: `vk: a draw without a bound program is skipped`.
 - Deshalb sind die TF-Aufrufe jetzt echte Records, und `vk_xfb.c` wertet beim Abspielen aus, wo der gebundene Shader sicher bekannt ist: Jeder Draw meldet seinen Vertex-Shader (`vk_xfb_note_draw`). Draws bei aktivem TF loggen die ersten 6 Male Programm, Stufen-IDs, Rasterizer-Discard, Vertexzahl und Puffergrößen. Der Layout-Bericht (bei 1, 4, 16 TF-Shadern) vergleicht jetzt den ganzen Control-Teil (0x880 Bytes).

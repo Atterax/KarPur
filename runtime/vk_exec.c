@@ -868,7 +868,8 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND)
                 vk_exec_frame.draws_seen++, split_draws++, vk_xfb_note_draw(ex, h->op, a);
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) vk_exec_frame.dispatches++, split_draws++;
-        case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
+        case OP_BIND_PROGRAM: if (h->op == OP_BIND_PROGRAM) vk_xfb_note_bind(a);   // fall through
+        case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
             vk_exec_op_draw(ex, h->op, a);
             break;

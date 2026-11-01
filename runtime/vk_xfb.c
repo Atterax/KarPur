@@ -14,6 +14,12 @@
 // counts, output locations; never code). The first transform feedback draws are logged with their program and buffer
 // sizes.
 //
+// Program binds have a stage mask (NVNshaderStageBits): the stages in it take the program's shaders, a stage in the
+// mask the program lacks is unbound (the program may be NULL), stages outside the mask keep theirs. Violet unbinds the
+// fragment stage this way for its transform feedback draws (rasterizer discard on), keeping the vertex shader of an
+// earlier bind. vk_exec_draw.c still treats every bind as replacing all stages, so those draws have no program there
+// and are skipped; this file tracks the vertex stage itself.
+//
 // Runs on the replay thread under vk_sync_submit's lock (vk_exec.h): no locking inside.
 #include <stdint.h>
 #include <stdio.h>
@@ -121,10 +127,25 @@ static int draw_count(uint32_t op, const void *a) {
     return -1;   // indirect
 }
 
+static const prog_t *vs_prog;   // program whose vertex shader is bound (per-stage tracking, see above)
+
+void vk_xfb_note_bind(const p_bind_program *b) {
+    static struct { int null_prog; int32_t stages; } seen[12];
+    static int nseen;
+    int null_prog = b->prog == NULL, fresh = 1;
+    for (int i = 0; i < nseen && fresh; i++)
+        if (seen[i].null_prog == null_prog && seen[i].stages == b->stages) fresh = 0;
+    if (fresh && nseen < 12) {
+        seen[nseen].null_prog = null_prog, seen[nseen++].stages = b->stages;
+        rt_log("tf: program bind seen: %s program, stage mask %#x", null_prog ? "no" : "a", b->stages);
+    }
+    if (b->stages & NVN_SHADER_STAGE_VERTEX_BIT) vs_prog = vs_control(b->prog) ? b->prog : NULL;
+}
+
 void vk_xfb_note_draw(VkExec *ex, uint32_t op, const void *payload) {
     static const prog_t *last;
     static uint64_t last_serial;
-    const prog_t *p = ex->prog;
+    const prog_t *p = vs_prog;
     if (!ex->xfb_active) {
         if (p && (p != last || p->serial != last_serial)) {   // one note per program bind, not per draw
             last = p, last_serial = p->serial;
@@ -144,9 +165,9 @@ void vk_xfb_note_draw(VkExec *ex, uint32_t op, const void *payload) {
             if (p->sd[i].control) memcpy(&id, (const uint8_t *)p->sd[i].control + 0x714, 4);
             o += (uint32_t)snprintf(st + o, sizeof st - o, " %u", id);
         }
-        rt_log("tf: draw %d with transform feedback: program %p (%u stages, ids%s), vertex shader %s, raster discard "
-               "%d, %d vertices, buffers %#llx %#llx %#llx %#llx bytes",
-               tf_draws, (const void *)p, p ? p->nstage : 0, st, vs ? "found" : "missing", ex->pipe.raster_discard,
+        rt_log("tf: draw %d with transform feedback: vertex program %p (%u stages, ids%s), vertex shader %s, bound "
+               "program %s, raster discard %d, %d vertices, buffers %#llx %#llx %#llx %#llx bytes",
+               tf_draws, (const void *)p, p ? p->nstage : 0, st, vs ? "found" : "missing", ex->prog ? "set" : "none", ex->pipe.raster_discard,
                draw_count(op, payload), (unsigned long long)ex->xfb_buf[0].size,
                (unsigned long long)ex->xfb_buf[1].size, (unsigned long long)ex->xfb_buf[2].size,
                (unsigned long long)ex->xfb_buf[3].size);
