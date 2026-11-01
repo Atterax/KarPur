@@ -1,43 +1,45 @@
 # KarPur
 
-**KarPur** ist ein Fanprojekt mit dem Ziel, *Pokémon Karmesin & Purpur* (Nintendo Switch, 2022) per **statischer Recompilation** in ein natives Windows-Programm (x86-64, Vulkan) zu übersetzen: kein Emulator, sondern echter PC-Code.
-
-*KarPur is a fan project aiming to statically recompile Pokémon Scarlet & Violet (Nintendo Switch) into a native Windows x86-64 application with a Vulkan renderer.*
+**KarPur** is a fan project that aims to statically recompile *Pokémon Scarlet & Violet* (Nintendo Switch, 2022) into a native Windows x86-64 application with a Vulkan renderer: real PC code, not emulation.
 
 > [!IMPORTANT]
-> **Dieses Repository enthält keine Spieldateien und wird nie welche enthalten.** Du brauchst eine eigene, legal erworbene Kopie des Spiels und die Keys deiner eigenen Konsole. Wie man diese beschafft, wird hier nicht erklärt.
+> **This repository contains no game files and never will.** You need your own legally obtained copy of the game and the keys of your own console. Instructions for obtaining those will not be provided.
 >
-> Alles, was aus dem Spiel erzeugt wird, entsteht auf deinem eigenen Rechner und ist nur für dich. Teile es nicht.
+> Everything built from the game is built from your files on your machine, for your own use. Do not share it.
 
 ## Status
 
-**Ganz am Anfang (Meilenstein M0).** Es gibt noch nichts zum Spielen. Den Fahrplan findest du in [docs/roadmap.md](docs/roadmap.md), den aktuellen Stand in [docs/progress.md](docs/progress.md).
+**Very early (milestone M0).** There is nothing to play yet. The roadmap is in [docs/roadmap.md](docs/roadmap.md), the current state in [docs/progress.md](docs/progress.md).
 
-## Wie es funktionieren soll
+## How it is meant to work
 
-1. Die ARM64-Programmdateien des Spiels werden automatisch in C-Code übersetzt („Lifting“).
-2. Eine eigene Laufzeitumgebung ersetzt das Switch-Betriebssystem (Threads, Dateien, Eingabe, Audio).
-3. Die Grafikaufrufe der Switch (NVN) werden auf Vulkan umgesetzt, die Shader mit dem Shader-Übersetzer von Ryujinx.
-4. Das Ganze wird mit Clang zu einer `.exe` kompiliert, und zwar auf dem Rechner des Spielers.
+1. The game's ARM64 executables are translated into C code automatically ("lifting").
+2. A runtime of our own stands in for the Switch operating system: threads, files, input, audio.
+3. The Switch graphics API (NVN) is mapped to Vulkan, and the game's shaders are translated with the Ryujinx shader translator.
+4. Everything is compiled with Clang into an `.exe`, on the player's own machine.
 
-Geplante Grundlage sind die MIT-lizenzierten Projekte [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) und [LAS Recomp](https://github.com/peiikai/LASRecomp). Übernommener Code wird in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) aufgeführt.
+The planned foundation is the MIT-licensed [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) and [LAS Recomp](https://github.com/peiikai/LASRecomp). Code taken from other projects is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Mitmachen
+## Built with AI
 
-Lies zuerst [CLAUDE.md](CLAUDE.md) (Projektregeln). Vor jedem Commit:
+This project would not exist without AI. Most of the code and documentation is written by an AI coding agent ([Claude Code](https://claude.com/claude-code) by Anthropic), which also plans the work, explains every step and analyzes the reports and crash logs. The maintainer owns the game and the console, runs and tests every build on real hardware, and decides what goes in. The rules the agent works under are in [CLAUDE.md](CLAUDE.md).
+
+## Contributing
+
+Read [CLAUDE.md](CLAUDE.md) first for the project rules. Before every commit, run:
 
 ```
 python tools/check_content.py --staged
 ```
 
-Einmalig pro Klon den Schutz-Hook aktivieren:
+Enable the protective hook once per clone:
 
 ```
 git config core.hooksPath .githooks
 ```
 
-## Lizenz
+## License
 
-Der eigene Code des Projekts steht unter der [MIT-Lizenz](LICENSE). Fremder Code behält seine eigene Lizenz. Die Lizenz gewährt keinerlei Rechte am Spiel.
+The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license. The license grants nothing for the game.
 
-KarPur ist ein unabhängiges, nicht-kommerzielles Fanprojekt und steht in keiner Verbindung zu Nintendo, The Pokémon Company, Game Freak oder Creatures Inc. *Pokémon*, *Pokémon Karmesin*, *Pokémon Purpur* und *Nintendo Switch* sind Marken ihrer jeweiligen Inhaber.
+KarPur is an independent, non-commercial fan project and is not affiliated with or endorsed by Nintendo, The Pokémon Company, Game Freak or Creatures Inc. *Pokémon*, *Pokémon Scarlet*, *Pokémon Violet* and *Nintendo Switch* are trademarks of their respective owners.

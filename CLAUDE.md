@@ -28,8 +28,9 @@ This repository is public. Nothing from the game may enter it.
 
 - Generated C is never edited by hand: change the generator.
 - Generated C needs Clang (GNU extensions such as `__int128` and `musttail`); MSVC `cl.exe` cannot build it.
+- Python 3.14 or newer (the maintainer has 3.14.7). Use `compression.zstd` from the standard library; avoid third-party packages where the standard library suffices.
 - Comments say what the code does and why.
 
 ## Writing
 
-Code, comments, commit messages and `CLAUDE.md` are in English. Documents the maintainer reads (`README.md`, `docs/*.md`) are in German. Commit messages are plain sentences without type prefixes.
+Code, comments, commit messages and `CLAUDE.md` are in English. `README.md` is in English. Documents the maintainer reads (`docs/*.md`) are in German. Commit messages are plain sentences without type prefixes.

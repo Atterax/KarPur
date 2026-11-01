@@ -15,7 +15,7 @@ winget install --id Git.Git -e
 ```
 
 ```
-winget install --id Python.Python.3.12 -e
+winget install --id Python.Python.3.14 -e
 ```
 
 Bestätige Nachfragen mit `Y`. **Danach das Terminal schließen und neu öffnen**, damit Windows die neuen Programme findet.
@@ -30,7 +30,7 @@ git --version
 python --version
 ```
 
-Beide sollten eine Versionsnummer ausgeben (Python: `3.12.x`).
+Beide sollten eine Versionsnummer ausgeben. Python muss **3.14 oder neuer** sein, weil die Spieldaten mit zstd komprimiert sind und erst Python 3.14 das von Haus aus kann. Wenn du schon Python 3.14 hast, überspringst du die Installation einfach.
 
 ## 3. Projektordner anlegen und das Repo holen
 
