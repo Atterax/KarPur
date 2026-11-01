@@ -5,14 +5,25 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M3, erstes Lebenszeichen
 
 ### Nächste Schritte
-1. Runtime aus TotK Recomp übernehmen, zuerst nur das, was zum Starten nötig ist: Loader (Module an ihre Basis legen, Relocations, dynamisches Linken zwischen main/subsdk0/sdk), Speicher (Reservierung ab `0x7000000000`), `rt_dispatch`, Kernel/Threads, SVCs, `HOST_OVERRIDE`-Mechanismus, Dateisystem auf die RomFS, Boot. Grafik, Audio und Eingabe zunächst als Stubs.
-2. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
+1. Maintainer baut `karpur.exe` und startet `--selftest` und `--boot` ([setup-windows.md](setup-windows.md), Schritt 11), schickt das Ende von `game/report/boot.log`.
+2. Absturz- und Fehlerstellen aus dem Log nacheinander beheben (fehlende/abweichende SDK-Ersatzfunktionen, Strukturlayouts von SDK 13, Dienste, die Purpur zusätzlich nutzt).
+3. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
+- Spin-Wait-Patches: TotK leitet ~860 Warteschleifen über `rt_spin_gate` (Patch-Set `spin`, `tools/spin_waits.py`). Wir haben keine Patch-Datei; die asynchrone Präemption (`TOTK_ASYNC_PREEMPT`, Standard an) sollte Hänger abfangen, aber das Spiel kann dadurch langsamer sein. Bei Hängern beim Start zuerst hier ansetzen.
+- `nn::aoc::ListAddOnContent` meldet noch keine DLC (TotK-Verhalten). Für Purpur später die vorhandene DLC melden.
+- Interne Namen und Umgebungsvariablen heißen noch `TOTK_*` (z. B. `TOTK_GPU=null`, `TOTK_TRACE`). Umbenennen erst, wenn die Runtime läuft.
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Runtime übernommen
+- Komplette Runtime aus TotK Recomp nach `runtime/` übernommen (141 Dateien, ~59.000 Zeilen, MIT; Herkunft jeder Datei steht in ihrem Kopf, die vollständige Liste in `licenses/TOTK-RECOMP-THIRD_PARTY_NOTICES.md`).
+- Angepasst: `boot.c` prüft keine TotK-Rücksprungadressen und init_array-Größen mehr, sondern loggt, wo die Checkpoints erreicht werden; Hauptthread-Priorität/Kern/Stack kommen aus `main.npdm` (`kern_set_main_params`); `fs_host.c` nimmt die Title-ID aus dem Build (`rt_application_id`); sichtbare Namen `karpur.exe`, `karpur.ini`, `karpur.log`, Fenstertitel „KarPur“; kein TotK-Icon.
+- `tools/build_game.py` (aus TotK, angepasst): Standardpfade `generated/`, `game/extracted/update/exefs`, `game/romfs`, `build/game`; ExeFS-Hashes und Title-ID aus der eigenen Extraktion statt einer Tabelle; `rt_game_version = 0` (keine TotK-Version, alle TotK-Sonderfälle aus). `tools/romfs_index.py`, `tools/build_shaders.py` unverändert. `extract_romfs.py` schreibt jetzt `status: pass` in `index.json` (braucht `romfs_index.py`).
+- Lokal unter Linux kompiliert die Runtime bis auf Umgebungsgrenzen (kein SDL3, älteres Clang 18 und Vulkan-Header 1.3.275); alle geänderten Dateien kompilieren. Gelinkt und gestartet wird erst beim Maintainer.
+- Bekannt: `--probe-loader` und andere Probes vergleichen noch mit TotK-Messwerten und schlagen fehl; sie sind für Purpur nicht gedacht.
 
 ### 2026-11-01: RomFS entpackt
 - hactool beim Maintainer gebaut (1d64a83 + 3 Patches), BKTR-Zusammenführung in 43 s, alle sechs IVFC-Ebenen GOOD.

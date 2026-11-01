@@ -229,6 +229,58 @@ Dann die Spieldaten zusammenführen:
 
 Das Werkzeug kopiert die beiden großen Datenpakete aus deinen Dumps, lässt hactool sie zusammenführen und dabei jede Prüfsumme kontrollieren, und legt das Ergebnis als `game\romfs\romfs.bin` ab. **Das dauert etwa 5–20 Minuten** und braucht zeitweise rund 30 GB freien Platz, danach bleiben etwa 6–7 GB. Am Ende kommt wieder ein Bericht zwischen `=====`-Linien, den bitte schicken.
 
+## 11. karpur.exe bauen und zum ersten Mal starten (Meilenstein M3)
+
+Neuen Stand holen:
+
+```
+cd C:\KarPur\repo
+```
+
+```
+git pull
+```
+
+Die Bibliotheken installieren, die die Runtime braucht (Fenster und Eingabe, Ton, Video, Kompression, Vulkan):
+
+```
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-sdl3 mingw-w64-ucrt-x86_64-opus mingw-w64-ucrt-x86_64-libvpx mingw-w64-ucrt-x86_64-zstd mingw-w64-ucrt-x86_64-vulkan-devel mingw-w64-ucrt-x86_64-vulkan-memory-allocator"
+```
+
+Das Inhaltsverzeichnis der Spieldaten einmal neu schreiben (dauert etwa eine halbe Minute, die Daten selbst bleiben unverändert):
+
+```
+.venv\Scripts\python tools\extract_romfs.py --index-only
+```
+
+`karpur.exe` bauen (übersetzter Spielcode + Runtime, etwa 5 Minuten):
+
+```
+.venv\Scripts\python tools\build_game.py
+```
+
+Am Ende sollte eine Zeile wie `build\game\karpur.exe: file ... MiB` stehen.
+
+Selbsttest, braucht keine Spieldaten und dauert nur Sekunden:
+
+```
+build\game\karpur.exe --selftest
+```
+
+Und dann der erste echte Start. Er läuft ohne Fenster, das Spiel arbeitet nur im Hintergrund und schreibt mit, wie weit es kommt:
+
+```
+cmd /c "build\game\karpur.exe --boot > game\report\boot.log 2>&1"
+```
+
+Falls sich nach 2 Minuten nichts mehr tut, mit **Strg+C** abbrechen. Danach die letzten 80 Zeilen des Logs anzeigen:
+
+```
+Get-Content game\report\boot.log -Tail 80
+```
+
+Diese Zeilen bitte schicken. Ein Absturz ist hier ganz normal: Er zeigt uns, welcher Teil der Switch als Nächstes fehlt.
+
 ## Was später noch dazukommt
 
 Für die Grafik (Meilenstein M4) kommen das Vulkan SDK und .NET (für den Shader-Übersetzer) dazu. Diese Anleitung wird dann erweitert.
