@@ -2,13 +2,14 @@
 
 Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. Neueste Einträge oben.
 
-## Aktueller Meilenstein: M4, erstes Bild
+## Aktueller Meilenstein: M5, spielbar
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`, Sprache wählen; Log-Ende schicken (und ob das nächste Menü bzw. der Titelbildschirm erscheint).
-2. Transform Feedback richtig umsetzen (VK_EXT_transform_feedback im Vulkan-Back-End), sobald sichtbar wird, was fehlt. Bis dahin werden die sieben TF-Funktionen ignoriert.
-3. Die übrigen angeforderten NVN-Funktionen (ClearColori/ui, DrawArraysIndirect, MultiDraw*IndirectCount, DrawTexture, Downsample*, ResolveDepthBuffer, CommandBufferFenceSync, Copy-Strides, Tessellation, ViewportSwizzles, Subroutinen) umsetzen, wenn sie aufgerufen werden.
-4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
+1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; prüfen, ob jetzt Ton kommt (AudioOut über SDL). Log-Zeile `audout: ... opened` schicken.
+2. **Transform Feedback umsetzen** (VK_EXT_transform_feedback im Vulkan-Back-End: Bind, Begin/End/Pause/Resume, DrawTransformFeedback, Zähler im Control-Puffer). Hauptverdacht für die kaputten Spielerfiguren und fehlenden NPCs: GPU-Skinning über Transform Feedback; ohne TF bleiben die gezeichneten Vertexpuffer leer oder alt.
+3. Bildfehler danach angehen: Flackern auf dem Einschreibungsbildschirm, fehlende Schatten, `SetScissors: differing scissor ignored` (Purpur nutzt mehrere Scissors), `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
+4. Die übrigen NVN-Funktionen (ClearColori/ui, DrawArraysIndirect, MultiDraw*IndirectCount, DrawTexture, Downsample*, ResolveDepthBuffer, CommandBufferFenceSync, Copy-Strides, Tessellation, ViewportSwizzles, Subroutinen) umsetzen, wenn sie aufgerufen werden.
+5. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
@@ -20,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: M4 erledigt – das Spiel läuft bis ins Feld
+- Mit den Transform-Feedback-No-ops kommt der Maintainer durch die ganze Einführung: Sprachwahl, Namenseingabe (Software-Tastatur: `swkbd ... -> "Melody"`), Charaktererstellung (Frisur, Gesicht; Figur stark verzerrt), Einschreibungsbildschirm (flackert, Figur fehlt), Zwischensequenzen in der Akademie-Bibliothek und vor der Akademie (Umgebung, Pikachu und einige Figuren sichtbar, Schatten und viele NPCs fehlen), dann ins Feld; Hauptmenü lässt sich öffnen. Spielstand wird gespeichert (`fs commit save: 1 files, 4.2 MiB`).
+- Stabil mit 30 fps (Purpurs eigene Rate, `frame rate: no patch table, shipping 30 fps`) über ~26.000 Frames; kein Absturz, Fenster vom Maintainer geschlossen. Einzelne Ruckler beim ersten Übersetzen neuer Shader (bis 1,3 s bei Frame 12218).
+- Probleme: Spielerfigur als riesige verzerrte Flächen, NPCs fehlen (Verdacht: GPU-Skinning über Transform Feedback, das noch ignoriert wird), Flackern, keine Schatten, **kein Ton** (`audout: ... silent`: AudioOut war aus TotK nur als stumme Ausgabe übernommen).
+- Umgesetzt: AudioOut spielt jetzt über einen eigenen SDL-Stream auf dem Standardgerät (16 Bit stereo, 48 kHz); Datenzeiger über die SDK-Funktion `GetAudioOutBufferDataPointer`. Die Puffer-Taktung über die Host-Uhr bleibt.
 
 ### 2026-11-01: ERSTES BILD – Sprachauswahl wird gerendert
 - Mit dem MapMemory-Fix aus .bss läuft der Start durch. **Das Fenster öffnet sich (1920x1080, Mailbox, 250-Hz-Monitor, Bildrate auf 60 begrenzt) und zeigt Purpurs Sprachauswahl** („In welcher Sprache möchtest du spielen?“, Deutsch … Traditionelles Chinesisch, Auswahlbalken, Farbverlauf). Alle Shared Fonts werden korrekt dargestellt. Der Controller bedient das Menü.

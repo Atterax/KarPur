@@ -11,6 +11,9 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <SDL3/SDL.h>
+
+#include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -229,9 +232,11 @@ BT_ZERO(bt_desc_char, "_ZNK2nn9bluetooth14GattDescriptor17GetCharacteristicEPNS0
 BT_ZERO(bt_char_descs, "_ZNK2nn9bluetooth18GattCharacteristic14GetDescriptorsEPNS0_14GattDescriptorEi",
         "bluetooth::GattCharacteristic::GetDescriptors");
 
-// ---- AudioOut (audout:u): a silent output that releases each buffer once its length has passed on the host clock.
-// AudioOutBuffer accessors (SetAudioOutBufferInfo, GetAudioOutBufferDataSize, ...) stay the SDK's own; the data size
-// is read through the SDK's GetAudioOutBufferDataSize so this file needs no knowledge of the struct.
+// ---- AudioOut (audout:u): each buffer is copied into an SDL audio stream on the default playback device (KarPur;
+// SDL mixes it with the audio renderer's stream) and released once its length has passed on the host clock, which
+// paces the game as the hardware would. AudioOutBuffer accessors (SetAudioOutBufferInfo, GetAudioOutBufferDataSize,
+// ...) stay the SDK's own; data pointer and size are read through them, so this file needs no knowledge of the
+// struct. TOTK_AUDIO=none keeps the output silent.
 #define AO_RATE 48000
 #define AO_CHANNELS 2
 #define AO_MAX_OUTS 4
@@ -245,6 +250,7 @@ typedef struct {
     int n;
     uint64_t end_ns;                    // when the last appended buffer finishes
     uint64_t played;                    // frames released so far
+    SDL_AudioStream *stream;            // KarPur: 16-bit stereo to the default device, NULL when silent
 } AudioOutSlot;
 static AudioOutSlot ao[AO_MAX_OUTS];
 static PlatMutex ao_lock = PLAT_MUTEX_INIT;
@@ -262,18 +268,48 @@ static AudioOutSlot *ao_slot(uint64_t out, int create) {
     rt_fatal("audout: more than %d audio outputs open", AO_MAX_OUTS);
 }
 
+// KarPur: an SDL stream for one AudioOut, NULL (silent) with TOTK_AUDIO=none or without a device.
+static SDL_AudioStream *ao_stream_open(void) {
+    const char *mode = cfg_get("TOTK_AUDIO");
+    if ((mode && !strcmp(mode, "none")) || cfg_get("TOTK_AUDIO_OFF")) return NULL;
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+        rt_log("audout: SDL audio init failed (%s): silent", SDL_GetError());
+        return NULL;
+    }
+    SDL_AudioSpec spec = {SDL_AUDIO_S16, AO_CHANNELS, AO_RATE};
+    SDL_AudioStream *st = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (!st) {
+        rt_log("audout: no output device (%s): silent", SDL_GetError());
+        return NULL;
+    }
+    if (!SDL_ResumeAudioStreamDevice(st)) {
+        rt_log("audout: starting the output failed (%s): silent", SDL_GetError());
+        SDL_DestroyAudioStream(st);
+        return NULL;
+    }
+    return st;
+}
+
 // Result OpenDefaultAudioOut(AudioOut *, const AudioOutParameter &)
 static void ao_open(Cpu *c) {
+    SDL_AudioStream *st = ao_stream_open();
     plat_mutex_lock(&ao_lock);
-    ao_slot(arg_x(c, 0), 1);
+    AudioOutSlot *s = ao_slot(arg_x(c, 0), 1);
+    if (s->stream) SDL_DestroyAudioStream(s->stream);
+    s->stream = st;
     plat_mutex_unlock(&ao_lock);
-    rt_log("audout: default audio output opened (%d Hz, %d channels, silent)", AO_RATE, AO_CHANNELS);
+    rt_log("audout: default audio output opened (%d Hz, %d channels, %s)", AO_RATE, AO_CHANNELS,
+           st ? "to the default playback device" : "silent");
     ret_x(c, 0);
 }
 static void ao_close(Cpu *c) {
     plat_mutex_lock(&ao_lock);
     AudioOutSlot *s = ao_slot(arg_x(c, 0), 0);
-    if (s) s->out = 0;
+    if (s) {
+        if (s->stream) SDL_DestroyAudioStream(s->stream);
+        s->stream = NULL;
+        s->out = 0;
+    }
     plat_mutex_unlock(&ao_lock);
 }
 static void ao_start(Cpu *c) {
@@ -310,10 +346,17 @@ static void ao_played(Cpu *c) {
 }
 // bool AppendAudioOutBuffer(AudioOut *, AudioOutBuffer *)
 static void ao_append(Cpu *c) {
-    static uint64_t data_size_fn;
+    static uint64_t data_size_fn, data_ptr_fn;
     if (!data_size_fn) data_size_fn = ldr_symbol("_ZN2nn5audio25GetAudioOutBufferDataSizeEPKNS0_14AudioOutBufferE");
+    static int ptr_tried;
+    if (!ptr_tried) {
+        ptr_tried = 1;
+        data_ptr_fn = ldr_symbol("_ZN2nn5audio28GetAudioOutBufferDataPointerEPKNS0_14AudioOutBufferE");
+        if (!data_ptr_fn) rt_log("audout: nn::audio::GetAudioOutBufferDataPointer not found: AudioOut stays silent");
+    }
     uint64_t out = arg_x(c, 0), buf = arg_x(c, 1);
     uint64_t bytes = data_size_fn && buf ? rt_call(c, data_size_fn, 1, buf) : 0;
+    uint64_t data = data_ptr_fn && buf ? rt_call(c, data_ptr_fn, 1, buf) : 0;
     uint64_t frames = bytes / (2 * AO_CHANNELS);
     plat_mutex_lock(&ao_lock);
     AudioOutSlot *s = ao_slot(out, 1);
@@ -325,6 +368,9 @@ static void ao_append(Cpu *c) {
         s->due_ns[s->n] = s->end_ns;
         s->samples[s->n] = frames;
         s->n++;
+        // KarPur: the samples go to the device now; the guest may reuse the buffer once it is released
+        if (s->stream && data && bytes && plat_mem_readable(data, bytes))
+            SDL_PutAudioStreamData(s->stream, (const void *)(uintptr_t)data, (int)(frames * 2 * AO_CHANNELS));
     }
     plat_mutex_unlock(&ao_lock);
     ret_x(c, (uint64_t)ok);
