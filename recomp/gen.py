@@ -203,14 +203,48 @@ def partition(est, max_fns, max_bytes, big_fn):
     return chunks
 
 
+# ------------------------------------------------------------------------------------------------ setjmp sites
+
+# KarPur: calls to these are lifted with a host setjmp in the calling function's frame (runtime/rt_setjmp.h), so a
+# guest longjmp can return to them.
+SETJMP_NAMES = {'_setjmp', 'setjmp', 'sigsetjmp', '__sigsetjmp'}
+
+
+def setjmp_targets(mod, starts_abs):
+    """Addresses whose call is a setjmp call: the module's own setjmp definitions and its PLT stubs (ADRP x16;
+    LDR x17, [x16, #imm]; ...; BR x17) whose GOT slot is a setjmp import."""
+    from nso import R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT
+    n = mod.nso
+    out = {mod.base + sym[3] for sym in n.exports() if sym[0] in SETJMP_NAMES}
+    got = {mod.base + off for off, typ, sym, _ in n.relocs
+           if typ in (R_AARCH64_JUMP_SLOT, R_AARCH64_GLOB_DAT) and sym and sym < len(n.syms)
+           and n.syms[sym][0] in SETJMP_NAMES}
+    if got:
+        for a in starts_abs:
+            a = int(a)
+            if not mod.in_text(a + 12):
+                continue
+            w0, w1, w3 = mod.word(a), mod.word(a + 4), mod.word(a + 12)
+            if (w0 & 0x9F00001F) != 0x90000010 or (w1 & 0xFFC003FF) != 0xF9400211 or w3 != 0xD61F0220:
+                continue
+            imm = ((w0 >> 29) & 3) | (((w0 >> 5) & 0x7FFFF) << 2)
+            page = (a & ~0xFFF) + (_sext(imm, 21) << 12)
+            if page + ((w1 >> 10) & 0xFFF) * 8 in got:
+                out.add(a)
+    return out
+
+
 # ------------------------------------------------------------------------------------------------ emission
 
 class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
-    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None):
+    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
+                 setjmp=frozenset()):
         self.mod = mod
         self.starts = starts
+        self.setjmp = setjmp           # KarPur: addresses whose call is a setjmp call (setjmp_targets)
+        self.uses_setjmp = False
         self.patched = patched or {}   # {address: (set index, [replacement words])} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
@@ -375,6 +409,15 @@ class Emitter:
                 out.append('    ' + fp.decl())
 
         def call(t, a):
+            if t in self.setjmp:
+                # KarPur: a host setjmp in this frame; a guest longjmp comes back with x0 set and every register
+                # restored, so all register locals are reloaded (runtime/rt_setjmp.h).
+                self.uses_setjmp = True
+                self.stats['setjmp_sites'] += 1
+                target = f'{fname(t)}(c)' if t in starts else f'c->pc = {hx(t)}; rt_dispatch(c)'
+                if t in starts:
+                    refs.add(t)
+                return f'c->x[30] = {hx(a + 4)}; {spill}if (!RT_SETJMP(c)) {{ {target}; }}{reload}'
             if t in starts:
                 refs.add(t)
                 return f'c->x[30] = {hx(a + 4)}; {spill}{fname(t)}(c);{reload_call}'
@@ -466,6 +509,11 @@ class Emitter:
         else:
             out += [line for _, line in body]
         out.append('}')
+        if any(ins.kind == 'bl' and ins.target in self.setjmp for ins in insns):
+            # KarPur: a tail call would end the frame that holds the host jmp_buf while the guest frame lives on;
+            # clang also refuses musttail in a function that calls setjmp. Plain calls and returns instead.
+            out = [line.replace(MUSTTAIL, 'return') for line in out]
+            self.stats['setjmp_functions'] += 1
         self.stats['functions'] += 1
         self.stats['instructions'] += len(insns)
         return out, refs
@@ -475,6 +523,7 @@ def chunk_text(name, number, emitter, fns):
     """C text of one chunk. fns: [(entry, end)]."""
     body, refs = [], set()
     emitter.uses_patches = False
+    emitter.uses_setjmp = False
     for entry, end in fns:
         lines, r = emitter.function(entry, end)
         body.append('\n'.join(lines))
@@ -483,8 +532,9 @@ def chunk_text(name, number, emitter, fns):
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
-    return (header(f'{name} chunk {number:04d}') + '#include "cpu.h"\n#include "simd.h"\n\n' + protos + '\n'
-            + '\n\n'.join(body) + '\n')
+    first = '#include "rt_setjmp.h"\n' if emitter.uses_setjmp else ''   # before anything that includes setjmp.h
+    return (header(f'{name} chunk {number:04d}') + first + '#include "cpu.h"\n#include "simd.h"\n\n' + protos
+            + '\n' + '\n\n'.join(body) + '\n')
 
 
 def write_if_changed(path, text):
@@ -523,9 +573,10 @@ def _retry(fn, *args):
 _W = {}  # worker state: 'mods' {name: (path, base)}, 'starts' {name: sorted array}, 'emitters' {name: Emitter}
 
 
-def _worker_init(mods, starts, table, opts):
+def _worker_init(mods, starts, table, opts, setjmp=None):
     _W['mods'] = mods
     _W['starts'] = starts
+    _W['setjmp'] = setjmp or {}   # KarPur: {module: [setjmp call targets]}
     _W['patches'] = table
     _W['opts'] = opts   # Emitter keyword arguments
     _W['emitters'] = {}
@@ -538,7 +589,8 @@ def _emitter(name):
         mod = Module(name, path, base, 'c')
         e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
                                            _W['patches'].for_module(name, base),
-                                           spins=_W['patches'].spins_for(name, base), **_W['opts'])
+                                           spins=_W['patches'].spins_for(name, base),
+                                           setjmp=frozenset(_W['setjmp'].get(name, ())), **_W['opts'])
     return e
 
 
@@ -635,7 +687,7 @@ def main():
     if unknown:
         raise SystemExit(f'not in {args.exefs}: {", ".join(sorted(unknown))}')
 
-    paths, starts_abs, info, tasks = {}, {}, {}, []
+    paths, starts_abs, info, tasks, setjmp = {}, {}, {}, [], {}
     for name, base, _ in mods:
         if name not in want:
             continue
@@ -656,11 +708,13 @@ def main():
             tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns)))
         paths[name] = (str(path), base)
         starts_abs[name] = abs_starts
+        setjmp[name] = sorted(setjmp_targets(mod, abs_starts))
         info[name] = {'base': base, 'lo': mod.lo, 'hi': mod.hi, 'emitted': abs_starts[:n].tolist(),
                       'chunks': len(chunks), 'discover': dstats, 'discover_seconds': time.perf_counter() - t,
                       'moddir': moddir}
         print(f'{name}: {dstats["functions"]} functions ({dstats["seeds"]} seeds, {dstats["rounds"]} rounds), '
-              f'{len(chunks)} chunks, discovery {time.perf_counter() - t:.1f}s', file=sys.stderr, flush=True)
+              f'{len(chunks)} chunks, {len(setjmp[name])} setjmp targets, discovery {time.perf_counter() - t:.1f}s',
+              file=sys.stderr, flush=True)
         del mod
 
     # Largest chunks first, so the pool does not end on a long tail.
@@ -671,7 +725,7 @@ def main():
     ctx = mp.get_context('spawn')
     jobs, why = pick_jobs(args.jobs)
     print(f'emitting with {jobs} workers ({why})', file=sys.stderr, flush=True)
-    with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts)) as pool:
+    with ctx.Pool(jobs, initializer=_worker_init, initargs=(paths, starts_abs, table, opts, setjmp)) as pool:
         for i, r in enumerate(pool.imap_unordered(_emit_chunk, [t for _, t in tasks], chunksize=1)):
             results[r['module']].append(r)
             if r['error']:

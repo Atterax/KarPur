@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `calls.py main+0x26ca4` und ein Lauf mit `KARPUR_WATCH=__cxa_throw,__cxa_rethrow,_Unwind_Resume,__cxa_allocate_exception`. Gesucht: wer die C++-Exception wirft (Ort und type_info), und ob das an einer unserer Ersatzfunktionen liegt.
+1. Maintainer: `tools/lift.py` (Generator geändert: setjmp-Stellen), dann `tools/build_game.py`, `karpur.exe`. Bericht von `lift.py` (Zeile `setjmp targets`) und Log-Ende schicken. Danach klären, wer den `longjmp` auslöst und warum (Fehlerpfad?).
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Kein C++-Exception, sondern setjmp/longjmp
+- `calls.py main+0x26ca4`: liegt in `main+0x26c60` (32 Instruktionen) direkt hinter `bl _setjmp` (+0x40), danach ein indirekter Aufruf über x20. Ein klassischer setjmp-Rahmen um einen Funktionszeiger. `longjmp` kehrt mit `ret` an die gespeicherte Rücksprungadresse zurück, daher `lr == pc`. Keine `__cxa_*`- oder `_Unwind_*`-Aufrufe.
+- Umgesetzt: `recomp/gen.py` findet setjmp-Ziele (eigene Definitionen und PLT-Stubs mit GOT-Slot auf `_setjmp`/`setjmp`/`sigsetjmp`) und hebt jeden Aufruf als `if (!RT_SETJMP(c)) <Aufruf>; <alle Register neu laden>`; Funktionen mit setjmp-Stelle haben kein `musttail`. `runtime/setjmp_host.c` sichert x19–x30, sp, v8–v15 und die Host-Aufruftiefe pro Thread und Puffer; der Ersatz für `longjmp`/`_longjmp`/`siglongjmp` stellt sie wieder her, setzt x0 und springt mit Host-`longjmp` zurück.
+- Geprüft: Lifter-Differenztest unverändert grün; erzeugter Code für eine künstliche setjmp-Stelle im Testprogramm kompiliert. Nicht geprüft: ein echter longjmp (braucht das Spiel).
 
 ### 2026-11-01: Fonts angenommen, erster C++-Exception-Sprung
 - Mit decodierten Fonts kommt das Spiel weiter: lokales Konto angelegt (`build/profile/account.uid`), Spielstand gemountet (`save0`, leer), `bcat::Initialize` (offline), `oe::SetPerformanceConfiguration` zweimal.
