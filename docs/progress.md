@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Verdeckungsabfragen sind nicht die Ursache des Ploppens
+- `OCCLUSION=0`: Objekte ploppen weiter. Die Prüf-Draws sind Boxen (36 Indizes), Tiefentest GREATER (Reverse-Z) ohne Schreiben, halbe Auflösung 960x540: plausibel.
+- Neue Verdachte: Distanz-/LOD-abhängiges Culling, eventuell auf der GPU (Compute schreibt Instanzzahlen in die indirekten Argumente) oder über eine CPU-Rücklesung (z. B. Tiefenpuffer → Puffer, deren Kopie übersprungen wird). Diagnose: Zähler „written by a shader“ in der Indirekt-Zeile; dazu alle `(logged once)`-Warnungen ansehen.
+
 ### 2026-11-01: Objekte ploppen je nach Abstand/Kamera (Verdeckungsabfragen verdächtig)
 - `IND_CPU=1`, `IND_SHOW=1`, `MEMORY=import`: Objekte sind da, ploppen aber je nach Abstand und Kamerawinkel ein und aus (bei `IND_SHOW` am meisten sichtbar). ~95 % der Samples-Passed-Berichte sind 0. Typisch für falsche Verdeckungsabfragen; der frühere `OCCLUSION=0`-Test lief noch vor dem Basis-Instanz-Fix und zählt nicht.
 - Diagnose: `vk_exec: occlusion-counted draw N: …` (Zustand der gezählten Prüf-Draws: Tiefentest, Ziel, Culling, Clipping, bis 12 verschiedene). Occlusion-Bericht nur noch die ersten drei Male, dann jedes 16. Mal.

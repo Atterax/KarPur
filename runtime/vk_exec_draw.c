@@ -247,6 +247,14 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
     return p;
 }
 
+// 1 when a shader of this command buffer stored into memory overlapping [addr, addr+size) (note_written ranges).
+static int shader_wrote(VkExec *ex, uint64_t addr, uint64_t size) {
+    CbRes *r = cb_res(ex);
+    for (int i = 0; i < r->nwritten; i++)
+        if (addr < r->written[i].addr + r->written[i].size && r->written[i].addr < addr + size) return 1;
+    return 0;
+}
+
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
     CbRes *r = cb_res(ex);
     for (int i = 0; i < r->nwritten; i++)
@@ -2029,7 +2037,7 @@ static uint64_t skips[SK_N], skip_draws, skip_frame0;
 static int skip_logs;
 // KarPur diagnostic: indirect indexed draws over the same window: all, arguments readable by the CPU (they may be
 // stale when a shader writes them), instance count 0, index count 0, first instance not 0, instance count above 1.
-static uint64_t ind_stat[6];
+static uint64_t ind_stat[7];   // [6]: arguments a shader of the same command buffer stored into
 static int ind_logs;
 static int skip_note(int why) {
     skips[why]++;
@@ -2054,10 +2062,10 @@ static void skip_tick(void) {
     if (ind_stat[0] && ind_logs < 30) {
         ind_logs++;
         rt_log("vk_exec: indirect indexed draws in frames %llu-%llu: %llu, arguments CPU-readable %llu: instance count 0 "
-               "%llu, index count 0 %llu, first instance not 0 %llu, instance count above 1 %llu",
+               "%llu, index count 0 %llu, first instance not 0 %llu, instance count above 1 %llu, written by a shader %llu",
                (unsigned long long)skip_frame0, (unsigned long long)f, (unsigned long long)ind_stat[0],
                (unsigned long long)ind_stat[1], (unsigned long long)ind_stat[2], (unsigned long long)ind_stat[3],
-               (unsigned long long)ind_stat[4], (unsigned long long)ind_stat[5]);
+               (unsigned long long)ind_stat[4], (unsigned long long)ind_stat[5], (unsigned long long)ind_stat[6]);
     }
     memset(skips, 0, sizeof skips);
     memset(ind_stat, 0, sizeof ind_stat);
@@ -2387,6 +2395,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         ind_stat[1]++, ind_stat[2] += !a.instanceCount, ind_stat[3] += !a.indexCount;
         ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
     }
+    ind_stat[6] += shader_wrote(ex, d->ind, sizeof(VkDrawIndexedIndirectCommand));
     // A/B tests for objects that stay invisible (KarPur): TOTK_IND_CPU=1 draws with the arguments as the CPU sees them
     // (vkCmdDrawIndexed) instead of letting the GPU read them from the pool buffer, which tells a stale GPU copy of
     // the arguments apart; TOTK_IND_SHOW=1 also draws arguments with instance count 0 as one instance, which shows
