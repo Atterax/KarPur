@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-2. **Bildfehler.** Unsichtbare Objekte: Basis-Instanz indirekter Draws behoben (Gemüse sichtbar), Rest prüfen. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
+2. **Bildfehler.** Unsichtbare Objekte: Basis-Instanz behoben; Rest: die CPU des Spiels schickt Draws normaler Objekte nicht ab (siehe Protokoll „Kein Thread-Wettlauf“, Plan dort). Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -20,6 +20,13 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Kein Thread-Wettlauf; Stand der Suche und nächster Plan
+- `ONE_CPU=1` (~15 fps) und `ONE_CPU=2`: gleiche fehlende Objekte, Ploppen unverändert. Wettlauf zwischen CPU-Threads ausgeschlossen.
+- `MapPhysicalMemory … failed 0x10801` beim Start ist normal: das Spiel holt Speicher bis zur Grenze (Pool 0xCD500000 = Retail). Zelda-spezifische Eingriffe (ov_zstd, LOD guard) sind für Purpur nicht aktiv bzw. greifen nicht.
+- Stand: Die CPU des Spiels schickt die Draws normaler Objekte (Zaun, Palme, Büsche, Bäume, Töpfe) nicht ab; nur Objekte in der Kamera-Ausblendung werden gezeichnet. Ausgeschlossen sind alle getesteten Grafik-Ursachen, GPU-Abfragen, Zeitpunkte, Speicher-Spiegel, Wettläufe.
+- Verbleibende Kandidaten: (1) Die CPU liest Ergebnisse des GPU-Cullings (Compute-Shader 1 schreibt Storage 1, 256 KiB) zurück und entscheidet damit; falsche Ergebnisse von Shader 1 → Objekte fehlen. (2) Ein falsch übersetzter CPU-Befehl (SIMD) in der Sichtbarkeitsprüfung.
+- Plan: Rücksprungadressen (LR) der NVN-Draw-Aufrufe für ein bestimmtes Mesh aufzeichnen (Spiel-Code-Adressen, keine Spieldaten), um die Funktion zu finden, die entscheidet; dann deren Eingaben verfolgen. Außerdem prüfen, ob die CPU Bereiche liest, die Compute-Shader 1 schreibt.
 
 ### 2026-11-01: Vergleich mit der echten Switch; Test auf Wettlauf zwischen CPU-Threads
 - Vergleichsbilder (gleiche Stelle, Switch vs. KarPur): Bei uns fehlen auch **entfernte** Objekte dauerhaft: Palme, großer Baum, zwei von drei weißen Büschen, roter Topf, der komplette blaue Zaun. Auf der Switch wird ein Baum nah an der Kamera leicht durchsichtig (gepunktet); bei uns erscheint er **nur** in genau dieser Kamera-Ausblendung und verschwindet bei der kleinsten Bewegung wieder.
