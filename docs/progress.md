@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Flackern – A/B-Tests mit vorhandenen Schaltern
+- Schatten und Bäume flackerten schon vor den TF-Arbeiten (frühe Läufe). Kandidaten: Daten, die das Spiel für das nächste Bild überschreibt, während die (bei uns spätere) GPU-Ausführung sie noch liest (TotK hatte das bei Uniforms: `LOD_GUARD`, `vk_usnap`); VRAM-Spiegel (`MEMORY=mirror`), Recorder-Thread, Textur-Aliase, Memo-Caches, Aufteilung der Command Buffer.
+- `tools/run_with.py NAME=WERT …`: startet karpur.exe mit Schaltern nur für diesen Lauf (TOTK_-Präfix wird ergänzt).
+- Testreihe beim Maintainer: ohne Schalter; `MEMORY=import`; `VK_RECORDER=0`; `TEX_ALIAS=0`; `BIND_SKIP=0 SHADER_MEMO=0 PIPE_MEMO=0 TEX_MEMO=0 PUSH_SKIP=0`; `SPLIT_DRAWS=0`. Jeweils: flackern Schatten / Bäume?
+
 ### 2026-11-01: Stabil mit Figuren
 - Mit Ein-Set-Layout für Pipelines ohne Fragment-Shader: kein Absturz mehr (GPL an), Spielerin, NPCs und Pokémon normal, 30 fps, Menüs, Karte, Speichern. Offen: Schatten und Bäume flackern.
 
