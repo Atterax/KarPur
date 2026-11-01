@@ -562,6 +562,7 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 }
 
 static void (*crash_fn)(const PlatCrash *c);
+void (*plat_fault_extra)(char *buf, size_t n);
 
 // KarPur: a fault in another module (a graphics driver) is left to that module's handlers, but the first few are
 // written to stderr with the module, the offset, the thread's name and the return addresses in this executable on
@@ -589,6 +590,11 @@ static void foreign_fault_note(EXCEPTION_POINTERS *ep, const char *what, uintptr
         fprintf(stderr, ", %s address %#llx", ep->ExceptionRecord->ExceptionInformation[0] == 1 ? "writing" : "reading",
                 (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1]);
     fprintf(stderr, "\n");
+    if (plat_fault_extra) {
+        char extra[256] = "";
+        plat_fault_extra(extra, sizeof extra);
+        if (extra[0]) fprintf(stderr, "[host]   %s\n", extra);
+    }
     void *f[62];
     USHORT n = RtlCaptureStackBackTrace(0, 62, f, NULL);
     for (USHORT i = 0, k = 0; i < n && k < 12; i++)

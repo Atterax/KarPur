@@ -216,6 +216,9 @@ typedef struct {
     uintptr_t frames[16];      // (rip is frames[0]); 0 for a fault, whose rip is exact
 } PlatCrash;
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
+// KarPur: extra text for a fault inside another module (a driver), written by the faulting thread's subsystem, e.g.
+// the Vulkan recorder's current packet (vk_rec.c). NULL: none. Called on the faulting thread; must not allocate.
+extern void (*plat_fault_extra)(char *buf, size_t n);
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
 int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
 void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure

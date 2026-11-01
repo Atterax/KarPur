@@ -8,6 +8,7 @@
 // @ a4b53a3, MIT, Copyright (c) 2026 Peiikai); the code is ours.
 #define VK_REC_IMPL
 #include <immintrin.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,9 +49,21 @@ static uint64_t now_ns(void) { return plat_now_ns(); }
 
 static void exec_packet(uint32_t op, void *p);
 
+// KarPur: the packet being executed and the ones before it, for a fault inside the driver (plat_fault_extra): the op
+// number (the enum above) and the first argument words of the current one (Vulkan handles and counts).
+static volatile uint32_t cur_op, prev_op[6];
+static volatile uint64_t cur_arg[3];
+
+static void fault_extra(char *buf, size_t n) {
+    snprintf(buf, n, "vk recorder packet op %u (args %#llx %#llx %#llx), before it ops %u %u %u %u %u %u", cur_op,
+             (unsigned long long)cur_arg[0], (unsigned long long)cur_arg[1], (unsigned long long)cur_arg[2], prev_op[0],
+             prev_op[1], prev_op[2], prev_op[3], prev_op[4], prev_op[5]);
+}
+
 static void rec_main(void *arg) {
     (void)arg;
     plat_thread_priority(rec_prio);
+    plat_fault_extra = fault_extra;
     uint64_t t = 0;
     for (;;) {
         uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
@@ -67,7 +80,13 @@ static void rec_main(void *arg) {
         for (int k = 0; t != h; k++) {
             uint64_t w = ring[t % RING_WORDS];
             uint32_t op = (uint32_t)(w & 0xffff), n = (uint32_t)(w >> 32);
-            if (op != R_PAD) exec_packet(op, &ring[t % RING_WORDS + 1]);
+            if (op != R_PAD) {
+                for (int i = 5; i > 0; i--) prev_op[i] = prev_op[i - 1];
+                prev_op[0] = cur_op, cur_op = op;
+                const uint64_t *a = &ring[t % RING_WORDS + 1];
+                cur_arg[0] = n > 1 ? a[0] : 0, cur_arg[1] = n > 2 ? a[1] : 0, cur_arg[2] = n > 3 ? a[2] : 0;
+                exec_packet(op, &ring[t % RING_WORDS + 1]);
+            }
             t += n;
             if ((k & 63) == 63) __atomic_store_n(&tail, t, __ATOMIC_RELEASE);
         }

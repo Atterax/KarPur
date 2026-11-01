@@ -1648,3 +1648,5 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
     while (k < 0 && errno == EINTR);
     return (long)k;
 }
+
+void (*plat_fault_extra)(char *buf, size_t n);   // set by vk_rec.c; faults in other modules are not reported here

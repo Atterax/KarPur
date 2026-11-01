@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Absturz im Recorder-Thread
+- `symbolize.py` (Map mit bildrelativen Adressen, Basis 0): karpur+0xc8a6207 = `rec_main+0x5e7` (der Recorder führt ein Paket aus; Aufruf eingebettet), darüber `thread_main`, darunter unser `crash_veh`.
+- `vk_rec.c` merkt sich das laufende Paket (Op-Nummer laut Enum, erste drei Argumentwörter) und die sechs davor; `plat_fault_extra` gibt das bei einem Treiberfehler mit aus.
+
 ### 2026-11-01: Treiberfehler lokalisiert (Adressen), Bäume ohne TF
 - Lauf mit GPL: `access violation at nvoglv64.dll+0xedca72, thread "vk recorder", reading address 0`, aufgerufen von karpur+0xc7a4607 ← +0xc8a6207 ← +0xc7a293e (Runtime-Code, nicht geliftet). Lesen von Adresse 0 im Treiber deutet auf ein NULL-Handle oder einen NULL-Zeiger in einem vkCmd-Aufruf.
 - `tools/symbolize.py`: ordnet karpur+0x…-Adressen über `build/game/karpur.map` Symbolen zu.
