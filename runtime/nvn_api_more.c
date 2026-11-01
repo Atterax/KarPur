@@ -147,3 +147,28 @@ NVN_API(nvnCommandBufferSetStencilCullCriteria) { (void)c; }
 // void nvnCommandBufferBindCoverageModulationTable(NVNcommandBuffer *cb, const float *entries): used only with a
 // coverage modulation mode, which the Vulkan back end does not apply (see the multisample state above)
 NVN_API(nvnCommandBufferBindCoverageModulationTable) { (void)c; }
+
+// ---------- Transform feedback: not implemented yet, ignored so the game goes on
+// Violet's intro uses transform feedback (vertex shader output written back to buffers and drawn again, typically
+// for particles). Until the Vulkan back end records it (VK_EXT_transform_feedback), binding, begin/end/pause/resume
+// do nothing and DrawTransformFeedback draws nothing: what the game draws from captured vertices is missing on
+// screen, everything else renders. Each entry point logs its first call.
+static void tf_ignored(uint8_t *once, const char *name) {
+    if (!__atomic_exchange_n(once, 1, __ATOMIC_RELAXED))
+        rt_log("nvn: %s: transform feedback is not implemented, ignored (logged once)", name);
+}
+#define TF_IGNORED(n) NVN_API(n) { (void)c; static uint8_t once; tf_ignored(&once, #n); }
+// void nvnCommandBufferBindTransformFeedbackBuffer(NVNcommandBuffer *cb, int index, NVNbufferAddress buffer,
+// size_t size)
+TF_IGNORED(nvnCommandBufferBindTransformFeedbackBuffer)
+// void nvnCommandBufferBindTransformFeedbackBuffers(NVNcommandBuffer *cb, int first, int count,
+// const NVNbufferRange *buffers)
+TF_IGNORED(nvnCommandBufferBindTransformFeedbackBuffers)
+// void nvnCommandBuffer{Begin,End,Pause,Resume}TransformFeedback(NVNcommandBuffer *cb, NVNbufferAddress control)
+TF_IGNORED(nvnCommandBufferBeginTransformFeedback)
+TF_IGNORED(nvnCommandBufferEndTransformFeedback)
+TF_IGNORED(nvnCommandBufferPauseTransformFeedback)
+TF_IGNORED(nvnCommandBufferResumeTransformFeedback)
+// void nvnCommandBufferDrawTransformFeedback(NVNcommandBuffer *cb, NVNdrawPrimitive mode, NVNbufferAddress control)
+TF_IGNORED(nvnCommandBufferDrawTransformFeedback)
+#undef TF_IGNORED

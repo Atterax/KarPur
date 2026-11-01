@@ -5,9 +5,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; Log-Ende und `svc ... failed`-Zeilen schicken.
-2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
-3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
+1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`, Sprache wählen; Log-Ende schicken (und ob das nächste Menü bzw. der Titelbildschirm erscheint).
+2. Transform Feedback richtig umsetzen (VK_EXT_transform_feedback im Vulkan-Back-End), sobald sichtbar wird, was fehlt. Bis dahin werden die sieben TF-Funktionen ignoriert.
+3. Die übrigen angeforderten NVN-Funktionen (ClearColori/ui, DrawArraysIndirect, MultiDraw*IndirectCount, DrawTexture, Downsample*, ResolveDepthBuffer, CommandBufferFenceSync, Copy-Strides, Tessellation, ViewportSwizzles, Subroutinen) umsetzen, wenn sie aufgerufen werden.
+4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
@@ -19,6 +20,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: ERSTES BILD – Sprachauswahl wird gerendert
+- Mit dem MapMemory-Fix aus .bss läuft der Start durch. **Das Fenster öffnet sich (1920x1080, Mailbox, 250-Hz-Monitor, Bildrate auf 60 begrenzt) und zeigt Purpurs Sprachauswahl** („In welcher Sprache möchtest du spielen?“, Deutsch … Traditionelles Chinesisch, Auswahlbalken, Farbverlauf). Alle Shared Fonts werden korrekt dargestellt. Der Controller bedient das Menü.
+- Log: Startlogo beendet (`oe: the game finished its startup logo`), 600 Frames ohne Fehler, 33 Shader-Antworten aufgezeichnet, Pipelines über Graphics Pipeline Library. Lokalisierte Archive `appli/data/.../*_ger.arc` werden per `GetEntryType` gesucht und nicht gefunden (sie liegen in `data.trpfs`; das Spiel kommt damit zurecht). `save0:/main` und `save0:/poke_trade` fehlen (neuer Spielstand).
+- Nach der Sprachwahl erscheint kurz das nächste Menü (Intro: `player_select`, `demo_intro_*`), dann Abbruch: `NVN nvnCommandBufferBindTransformFeedbackBuffer is not implemented` (auf zwei Threads gleichzeitig).
+- Umgesetzt: die sieben Transform-Feedback-Funktionen als geloggte No-ops (`nvn_api_more.c`); `DrawTransformFeedback` zeichnet nichts. Was das Spiel aus erfassten Vertices zeichnet (vermutlich Partikel), fehlt dadurch vorerst.
 
 ### 2026-11-01: Ursache des CreateThread-Abbruchs: MapMemory aus .bss
 - Mit dem entdoppelten svc-Log steht direkt vor dem Abbruch `svc 0x4 failed with 0xdc01 (x1=0x70046fd000 x2=0x2000)`: MapMemory des Vibrations-Thread-Stacks in die Stack-Region. Das SDK verschiebt jeden Thread-Stack dorthin (Schutzseiten) und bricht ab, wenn das scheitert.
