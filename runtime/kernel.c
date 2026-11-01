@@ -1731,7 +1731,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         return 1;
     }
     case 0x0D: {   // SetThreadPriority(w0 handle, w1 priority)
-        if ((uint32_t)x[1] < 28 || (uint32_t)x[1] > 59) {
+        if ((uint32_t)x[1] > 63) {   // KarPur: the Horizon range, as in CreateThread
             x[0] = R_BAD_STATE;
             return 1;
         }

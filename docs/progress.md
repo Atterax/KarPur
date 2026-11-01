@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; Log-Ende und alle Zeilen mit `CreateThread` schicken. Steht dort kein `refused`, bricht das SDK schon vor dem Systemaufruf ab (eigene Prüfung in `ThreadManager::CreateThread`).
+1. Maintainer: `tools/calls.py sdk+0x3783c0 sdk+0x16ba48 main+0x7839e0`. Gesucht: welche Prüfung in `nn::os::detail::ThreadManager::CreateThread` scheitert.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: CreateThread-Abbruch ist eine SDK-Prüfung
+- Mit erweitertem Prioritäts-/Kernbereich: keine `CreateThread refused`-Zeile, derselbe Abbruch. Die Break-Meldung trägt `result 0`: eine Bedingung im SDK (kein fehlgeschlagener svc mit Result). Verdacht: Zustand des `ThreadType`-Objekts (z. B. ein früherer Thread auf demselben Objekt nicht sauber beendet/zerstört) oder Stack-/Prioritätsprüfung.
+- Zweiter Frame 1: ein Draw 960x540 mit Tiefenpuffer (fmt 130). `vk: copy of format 0x35 texture ... skipped` (einmal geloggt) später prüfen.
+- `SetThreadPriority` nimmt jetzt ebenfalls 0–63.
 
 ### 2026-11-01: Erster Frame, Abbruch in nn::os::CreateThread
 - Mit `csrng` läuft das Spiel deutlich weiter: `set`-Zufall, Performance-Konfiguration `0x92220008`, Bluetooth-LE offline (GattService, InitializeBle, BLE-Events), AudioOut (stumm), Xbox-Controller erkannt, Sechsachsensensor und Vibration angefordert, Grafik-Replay mit Recorder-Thread, Shader-Übersetzung mit 2 Arbeitern, **`vk_exec: frame 1`** (ein Draw 64x64, 3 Vertices, Pipeline nach 28 ms).
