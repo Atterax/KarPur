@@ -281,6 +281,101 @@ Get-Content game\report\boot.log -Tail 80
 
 Diese Zeilen bitte schicken. Ein Absturz ist hier ganz normal: Er zeigt uns, welcher Teil der Switch als Nächstes fehlt.
 
-## Was später noch dazukommt
+## 12. Shader-Übersetzer einrichten (Meilenstein M4)
 
-Für die Grafik (Meilenstein M4) kommen das Vulkan SDK und .NET (für den Shader-Übersetzer) dazu. Diese Anleitung wird dann erweitert.
+Die Switch-Grafikkarte hat ihre eigene Shader-Sprache (kleine Programme, die Pixel und Ecken berechnen). Ein Übersetzer aus dem Emulator Ryujinx wandelt sie in SPIR-V um, die Sprache, die Vulkan auf deiner RTX 5080 versteht. Der Übersetzer ist in C# geschrieben und wird mit **.NET** zu einer eigenen `.exe` gebaut. Zum Verlinken dieser `.exe` braucht .NET den Linker von Microsoft aus den **Visual Studio Build Tools**.
+
+.NET 10 SDK installieren:
+
+```
+winget install --id Microsoft.DotNet.SDK.10 -e
+```
+
+Visual Studio Build Tools mit dem C++-Paket installieren. **Das lädt etwa 3–5 GB herunter und dauert 10–20 Minuten.** Ein Fenster des Visual Studio Installers zeigt den Fortschritt; es schließt sich am Ende von selbst:
+
+```
+winget install --id Microsoft.VisualStudio.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Das Prüfwerkzeug für SPIR-V aus MSYS2 installieren:
+
+```
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-spirv-tools"
+```
+
+**Danach das Terminal schließen und neu öffnen.** Prüfen:
+
+```
+dotnet --version
+```
+
+Erwartete Ausgabe: eine Zahl, die mit `10.` beginnt.
+
+```
+Test-Path "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+```
+
+Erwartete Ausgabe: `True`
+
+Neuen Stand holen:
+
+```
+cd C:\KarPur\repo
+```
+
+```
+git pull
+```
+
+Den Übersetzer bauen. Beim ersten Mal lädt .NET noch Pakete nach, **rechne mit 3–10 Minuten**:
+
+```
+.venv\Scripts\python tools\build_xlate.py
+```
+
+Erwartete Ausgabe: zuerst neun Zeilen `applied 0001-...` bis `applied 0009-...`, dann viele Zeilen von .NET, am Ende `translator identity ...` und `built ...\build\xlate\totk_xlate.exe (... MB) in ... s`. (Der Name `totk_xlate` stammt aus dem Projekt, aus dem wir den Übersetzer übernommen haben; umbenannt wird später.)
+
+Schnelltest mit einem selbstgebauten Mini-Shader, braucht keine Spieldaten:
+
+```
+.venv\Scripts\python tools\xlate_smoke.py
+```
+
+Erwartete Ausgabe:
+
+```
+replies: ['ok const_ps', 'fail ? ...', 'ok again']
+spirv-val exit 0 (... bytes)
+```
+
+Die mittlere `fail`-Antwort ist Absicht: Der Test schickt einmal Unsinn und prüft, dass der Übersetzer danach weiterarbeitet.
+
+Wenn `build_xlate.py` mit einer Fehlermeldung endet: die letzten 30 Zeilen schicken.
+
+## 13. Erster Start mit Fenster (Meilenstein M4)
+
+Bisher lief `karpur.exe` mit `--boot` ohne Bild und hörte beim ersten Grafikaufruf auf. Jetzt starten wir es ohne `--boot`: Es öffnet ein Fenster und versucht zu zeichnen. **Ein schwarzes Fenster oder ein Absturz ist hier normal**; das Log zeigt uns, welche Teile der Grafik noch fehlen.
+
+```
+cd C:\KarPur\repo
+```
+
+```
+build\game\karpur.exe
+```
+
+Warte etwa 2 Minuten (oder bis sich das Fenster von selbst schließt). Wenn es dann noch offen ist, schließe es mit dem **X** oben rechts oder drücke im Terminal **Strg+C**.
+
+Das Log liegt in `build\game\logs\karpur.log`. Die letzten 80 Zeilen anzeigen:
+
+```
+Get-Content build\game\logs\karpur.log -Tail 80
+```
+
+Und dazu die Zeilen über Grafik und Shader (höchstens 150):
+
+```
+Select-String -Path build\game\logs\karpur.log -Pattern "nvn|gfx|vk_|shader|fatal|error|missing|unimpl" | Select-Object -Last 150
+```
+
+Beide Ausgaben bitte schicken. Sie enthalten Funktionsnamen, Adressen und Fehlermeldungen, keine Spieldaten.
