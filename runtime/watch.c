@@ -2,7 +2,7 @@
 //
 // KARPUR_WATCH is a comma-separated list of symbol names as karpur.log prints them (mangled, e.g.
 // _ZN2nn2os11GetTlsValueENS0_7TlsSlotE). Each import of such a symbol through a JUMP_SLOT gets a host observer
-// (hostfn.c, the HOST_OBSERVER mechanism) that calls the guest definition and logs caller, x0-x4, the 16 bytes x0
+// (hostfn.c, the HOST_OBSERVER mechanism) that calls the guest definition and logs caller, x0-x6, the 16 bytes x0
 // points to (a search key or a name; only 16 bytes, so no game data of any size reaches a report), the result and the
 // guest thread's TLS address. A line is written before the call for each new (symbol, caller), so functions that never
 // return (__cxa_throw) show up too, and one after it for each new result; at most WATCH_MAX lines a run.
@@ -80,7 +80,8 @@ static int fresh_line(const char *name, uint64_t lr, uint64_t ret, int pre, int 
 // __cxa_throw), one after it for each new result.
 static void watch_fn(Cpu *c) {
     const char *name = hostfn_name(c->pc);
-    uint64_t lr = c->x[30], a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], a3 = c->x[3], a4 = c->x[4];
+    uint64_t lr = c->x[30], a0 = c->x[0], a1 = c->x[1], a2 = c->x[2], a3 = c->x[3], a4 = c->x[4], a5 = c->x[5],
+             a6 = c->x[6];
     plat_mutex_lock(&lock);
     if (nranges < 0) read_ranges();
     int wanted = caller_wanted(lr - 4);
@@ -116,9 +117,10 @@ static void watch_fn(Cpu *c) {
                 snprintf(x1, sizeof x1, ", x1 = %s", ldr_describe(a1, d, sizeof d));
             }
         }
-        rt_log("watch %d: %s(%#llx, %#llx, %#llx, %#llx, %#llx) from %s, tls %#llx%s%s", n, name ? name : "?",
-               (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3,
-               (unsigned long long)a4, from, (unsigned long long)c->tpidrro, mem, x1);
+        rt_log("watch %d: %s(%#llx, %#llx, %#llx, %#llx, %#llx, %#llx, %#llx) from %s, tls %#llx%s%s", n,
+               name ? name : "?", (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2,
+               (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)a5, (unsigned long long)a6, from,
+               (unsigned long long)c->tpidrro, mem, x1);
     }
     uint64_t ret = rt_original(c);
     if (fresh_line(name, lr, ret, 0, &n))

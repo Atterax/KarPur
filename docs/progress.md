@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `tools/calls.py sdk+0x3783c0 sdk+0x16ba48 main+0x7839e0`. Gesucht: welche Prüfung in `nn::os::detail::ThreadManager::CreateThread` scheitert.
+1. Maintainer: Lauf mit `KARPUR_WATCH=_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mi` und `KARPUR_WATCH_FROM=main+0x7836fc-0x783a5c`. Gesucht: Stack-Adresse (x3), Stack-Größe (x4) und Priorität (x5) des Vibrations-Threads; welche Eingangsprüfung sie verletzen.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: CreateThread-Abbruch kommt vom Vibrations-Thread
+- `calls.py`: `sdk+0x3783c0` ist der Anfang der Funktion *nach* `ThreadManager::CreateThread` (der Thread-Start: Thread-Funktion, TLS-Destruktoren, Broadcast). Die Rücksprungadresse zeigt dorthin, weil `CreateThread` mit einem nie zurückkehrenden Abbruch endet: eine Eingangsprüfung schlägt fehl. `sdk+0x16ba20` ruft `nn::diag::detail::VAbortImpl`.
+- Aufrufer `main+0x7836fc` (216 Instruktionen) richtet die Vibration ein: `hid::GetNpadStyleSet`, `GetNpadJoyAssignment`, `GetVibrationDeviceHandles`, `InitializeVibrationDevice`, dann `nn::os::CreateThread` (+0x2e0), `InitializeTimerEvent`, `StartThread`, `StartPeriodicTimerEvent`.
+- Kandidaten für die Prüfung: Stack-Ausrichtung (4 KiB), Stack-Größe, Priorität. `watch.c` loggt jetzt x0–x6.
 
 ### 2026-11-01: CreateThread-Abbruch ist eine SDK-Prüfung
 - Mit erweitertem Prioritäts-/Kernbereich: keine `CreateThread refused`-Zeile, derselbe Abbruch. Die Break-Meldung trägt `result 0`: eine Bedingung im SDK (kein fehlgeschlagener svc mit Result). Verdacht: Zustand des `ThreadType`-Objekts (z. B. ein früherer Thread auf demselben Objekt nicht sauber beendet/zerstört) oder Stack-/Prioritätsprüfung.
