@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Compute liest die Abfrage-Ergebnisse nicht; ~1000 Abfragen pro Frame, 95 % „verdeckt“
+- `buffer bindings over them: compute 0` in allen Fenstern: kein Compute-Shader liest die Ergebnisse (die „draws“-Treffer kommen von der großen Spanne von 0x5652b00 Bytes). Verdacht OQ_GPU vom Tisch.
+- Das Spiel macht ~1000 Samples-Passed-Abfragen pro Frame (Boxen gegen die 960x540-Tiefe, Reverse-Z GREATER), davon 90–97 % mit 0. Die CPU entscheidet pro Objekt. `OCCLUSION=0` wurde nie zusammen mit dem gl_BaseInstance-Fix getestet: erneut testen.
+- Diagnose `vk_exec: frames …: occlusion depth target: clears …, draws writing depth …, copies in …, scaled copies in …`: woher die halbe Tiefe kommt (falsch gefüllte Tiefe → fast alles „verdeckt“).
+
 ### 2026-11-01: gl_BaseInstance allein behebt das Ploppen nicht
 - Übersetzer gebaut (neue ID `1170d8f8…`), Objekte ploppen weiter (Zaun, Büsche je nach Kamera). Barriere zwischen Compute und indirektem Draw ist voll (ALL→ALL), daran liegt es nicht.
 - `OQ_GPU=1` stürzte im Startmenü ab (Gerätefehler „write invalid at 0“, kurz nach `occlusion query slot 1 not available after its fence`). Erst die Diagnose ohne Schalter auswerten; OQ_GPU nutzt jetzt VK_MEM_PICK wie die anderen Kopien (Ursache des Absturzes nicht sicher).

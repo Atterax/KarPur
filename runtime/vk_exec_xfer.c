@@ -532,6 +532,12 @@ static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
         return;
     }
     VkImageSubresourceLayers sl = sub_layers(&s), dl = sub_layers(&d);
+    if (vk_oq_depth.img && d.img->image == vk_oq_depth.img) {
+        if (s.img->samples > 1 && d.img->samples == 1) vk_oq_depth.resolves++;
+        else if (same_size && same_format) vk_oq_depth.copies++;
+        else vk_oq_depth.blits++;
+        vk_oq_depth.src_w = s.w, vk_oq_depth.src_h = s.h, vk_oq_depth.src_fmt = (uint32_t)p->src->d.format;
+    }
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);
     if (s.img->samples > 1 && d.img->samples == 1) {

@@ -784,6 +784,7 @@ static int twin_dispatch;                // op_dispatch*: the resources being bo
 // and by draws. Nonzero: shaders read occlusion results on the GPU (the replay writes them from the CPU after the
 // fence, too late for a shader in the same submission).
 static uint64_t oq_bind[2];
+VkOqDepthDiag vk_oq_depth;
 
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
 // aligned, a copy in transient memory when the backing is host memory with an unaligned offset. 0 when neither works.
@@ -2077,6 +2078,18 @@ static void skip_tick(void) {
                "draws %llu", (unsigned long long)skip_frame0, (unsigned long long)f, (unsigned long long)(ohi - olo),
                (unsigned long long)oq_bind[0], (unsigned long long)oq_bind[1]);
     memset(oq_bind, 0, sizeof oq_bind);
+    if (vk_oq_depth.img && ind_logs < 30) {
+        VkOqDepthDiag *o = &vk_oq_depth;
+        rt_log("vk_exec: frames %llu-%llu: occlusion depth target: clears %llu (last value %.3f), draws writing depth %llu "
+               "(of them up to 6 vertices %llu), draws only testing %llu, copies in %llu, scaled copies in %llu, resolves in "
+               "%llu (last source %ux%u format %#x)", (unsigned long long)skip_frame0, (unsigned long long)f,
+               (unsigned long long)o->clears, o->clear_val, (unsigned long long)o->dwrite_draws,
+               (unsigned long long)o->dwrite_small, (unsigned long long)o->test_draws, (unsigned long long)o->copies,
+               (unsigned long long)o->blits, (unsigned long long)o->resolves, o->src_w, o->src_h, o->src_fmt);
+        VkImage keep = o->img;
+        memset(o, 0, sizeof *o);
+        o->img = keep;
+    }
     if (ind_stat[0] && ind_logs < 30) {
         ind_logs++;
         rt_log("vk_exec: indirect indexed draws in frames %llu-%llu: %llu, arguments CPU-readable %llu: instance count 0 "
@@ -2106,6 +2119,7 @@ static void oq_draw_note(VkExec *ex, const VkPipeState *s, int32_t count) {
     for (int i = 0; i < n; i++)
         if (!memcmp(&seen[i], &k, sizeof k)) return;
     seen[n++] = k;
+    if (!vk_oq_depth.img) vk_oq_depth.img = ex->depth.image;
     char tg[512];
     vk_exec_targets_describe(ex, tg, sizeof tg);
     rt_log("vk_exec: occlusion-counted draw %d: prim %u, %d indices/vertices, fragment shader %s, depth test %u write %u "
@@ -2271,6 +2285,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
     if (vk_exec_oq_counting()) oq_draw_note(ex, &s, count);
+    if (vk_oq_depth.img && ex->depth.image == vk_oq_depth.img && s.ds.dt) {
+        if (s.ds.dw) vk_oq_depth.dwrite_draws++, vk_oq_depth.dwrite_small += count <= 6;
+        else vk_oq_depth.test_draws++;
+    }
     return 1;
 }
 

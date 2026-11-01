@@ -745,6 +745,8 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     if (!asp) return;
     float d = c->depth < 0.0f ? 0.0f : c->depth > 1.0f ? 1.0f : c->depth;
     VkClearDepthStencilValue v = {d, (uint32_t)c->stencil & 0xff};
+    if (vk_oq_depth.img && t->image == vk_oq_depth.img && (asp & VK_IMAGE_ASPECT_DEPTH_BIT))
+        vk_oq_depth.clears++, vk_oq_depth.clear_val = d;
     if (whole_target(ex, t)) {
         vk_exec_barrier(ex);
         VkImageSubresourceRange r = {asp, t->level, 1, t->base_layer, t->layers};
