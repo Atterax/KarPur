@@ -178,6 +178,24 @@ int vk_xfb_draw_begin(VkExec *ex) {
         nbound++;
     }
     if (!nbound) return 0;
+    // Each distinct layout once (up to 16): a model kind with other outputs (trees, effects) shows up here.
+    static NvnXfb seen_lay[16];
+    static int nseen_lay;
+    int known = 0;
+    for (int i = 0; i < nseen_lay && !known; i++) known = !memcmp(&seen_lay[i], &lay, sizeof lay);
+    if (!known && nseen_lay < 16) {
+        seen_lay[nseen_lay++] = lay;
+        char d[400];
+        int o = 0;
+        for (int b = 0; b < 4 && o < (int)sizeof d - 60; b++) {
+            if (!lay.stride[b]) continue;
+            o += snprintf(d + o, sizeof d - o, " [%d: stride %u:", b, lay.stride[b]);
+            for (int i = 0; i < lay.n[b] && o < (int)sizeof d - 8; i++) o += snprintf(d + o, sizeof d - o, " %02x", lay.loc[b][i]);
+            o += snprintf(d + o, sizeof d - o, "]");
+        }
+        rt_log("tf: layout %d:%s (buffer sizes %#llx %#llx %#llx)", nseen_lay, d, (unsigned long long)ex->xfb_buf[0].size,
+               (unsigned long long)ex->xfb_buf[1].size, (unsigned long long)ex->xfb_buf[2].size);
+    }
     if (++tf_draws <= 4) {
         char d[200];
         int o = 0;

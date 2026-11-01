@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M5, spielbar
 
 ### Nächste Schritte
-1. **Transform Feedback testen** (umgesetzt, beim Maintainer noch nicht gelaufen): Übersetzer neu bauen (`tools\build_xlate.py`, Program.cs geändert → alle Shader werden neu übersetzt), Spiel bauen, Figuren prüfen. Log: `tf: transform feedback recorded ...`, `tf: draw N captures into 3 buffers: ...`, `vk_exec: program bind ...`. Wenn Figuren falsch aussehen: zuerst die Annahme „Location 0x20 + k = generisches Attribut k“ in `nvn_xfb.h` prüfen (Alternative: Maxwell-Wortoffset je Komponente).
+1. **Transform Feedback läuft** (Figuren, Pokémon, Animationen sichtbar). Offen: verformte Bäume (grüne Klumpen mit schwarzen Löchern), Absturz mit Pipeline-Libraries (siehe Protokoll). Alte Notiz: Übersetzer neu bauen (`tools\build_xlate.py`, Program.cs geändert → alle Shader werden neu übersetzt), Spiel bauen, Figuren prüfen. Log: `tf: transform feedback recorded ...`, `tf: draw N captures into 3 buffers: ...`, `vk_exec: program bind ...`. Wenn Figuren falsch aussehen: zuerst die Annahme „Location 0x20 + k = generisches Attribut k“ in `nvn_xfb.h` prüfen (Alternative: Maxwell-Wortoffset je Komponente).
 2. Bildfehler danach: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
@@ -20,6 +20,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: FIGUREN SICHTBAR – Transform Feedback läuft
+- Lauf A (`TOTK_XFB=0`): Absturz nach dem Hauptmenü beim Laden, auch ohne TF-Aufnahme. Lauf B (`TOTK_GPL=0`, mit Aufnahme): läuft stabil, **Spielerin, NPCs und Pokémon mit Modellen und Animationen sichtbar**, 30 fps. Die Schrittlogs zeigen: Binden, Begin, Draw, End laufen durch.
+- Folgerung: Der Treiber (NVIDIA 621.01) stürzt ab, wenn ein Vertex-Shader mit TransformFeedback-Capability durch Pipeline-Libraries (GPL) geht. `vk_pipeline.c`: `uses_xfb()` (Capability 53 im SPIR-V); solche Pipelines nehmen weder Stage-Libraries noch Fast-Link, nur `create_graphics`.
+- Neu sichtbar: Bäume als verformte grüne Klumpen mit schwarzen Flächen (vorher flackernd). `vk_xfb.c` loggt jetzt jedes neue TF-Layout (bis 16) mit den Komponenten-Bytes, um zu sehen, ob Bäume ein anderes Layout haben.
 
 ### 2026-11-01: Absturz im Treiber beim ersten TF-Draw
 - Erster Lauf mit echtem TF: Übersetzer baut, Smoke-Test ok, alle 490 Shader neu übersetzt. Layout dekodiert wie erwartet (`[0: stride 12, 3 components from 0x20] [1: … 0x24] [2: … 0x28]`). Direkt nach `tf: draw 1 captures into 3 buffers` endet der Prozess ohne Meldung: Der Absturz liegt außerhalb von karpur.exe (der Crash-Reporter meldet nur Fehler in unserem Modul), also im Treiber.

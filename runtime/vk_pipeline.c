@@ -868,6 +868,22 @@ static int uses_subgroup_ops(const uint32_t *w, uint64_t words) {
     return 0;
 }
 
+// KarPur: true when the module declares the TransformFeedback capability (a vertex shader whose NVN control section
+// has a transform feedback layout, gfx_shader.c "xfb"). NVIDIA's driver (621.01, RTX 5080) ends the process inside
+// the driver when such a shader goes through graphics pipeline libraries; with TOTK_GPL=0 it runs. Pipelines with such
+// a vertex shader are therefore always built whole (create_graphics): no stage libraries, no fast link.
+static int uses_xfb(const GfxShader *sh) {
+    uint64_t words = 0;
+    const uint32_t *w = sh ? gfx_shader_spirv(sh, &words) : NULL;
+    for (uint64_t i = 5; w && i < words;) {
+        uint32_t op = w[i] & 0xffff, n = w[i] >> 16;
+        if (!n || i + n > words || op != 17) return 0;   // OpCapability first, as uses_subgroup_ops
+        if (w[i + 1] == 53) return 1;                     // TransformFeedback
+        i += n;
+    }
+    return 0;
+}
+
 // Chain {size 32} into a stage create info when the stage uses subgroup ops and the driver allows the pin.
 static void pin_subgroup32(VkPipelineShaderStageCreateInfo *st, VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rq,
                            const uint32_t *w, uint64_t words) {
@@ -2032,7 +2048,8 @@ static void pipe_worker(void *arg) {
         }
         // Step 1 for a job a draw waits for: its stage libraries and the fast link. Step 2, the optimised build, goes to
         // the head of the low queue, so a burst of new pipelines gets every fast link before any optimised build.
-        if (P.gpl && (!j->prebuild || j->demanded) && !j->p->info.pipeline && !j->p->fast_tried && j->p->lay) {
+        if (P.gpl && !uses_xfb(j->s.vs) && (!j->prebuild || j->demanded) && !j->p->info.pipeline && !j->p->fast_tried &&
+            j->p->lay) {
             int final;
             VkPipeline f = gpl_link(&j->s, &j->k, j->p->lay, 1, &final);   // releases P.lock while building
             j->p->fast_tried = 1;
@@ -2302,7 +2319,7 @@ static VkPipeline graphics(const VkPipeState *s, const VkPipeInfo **info, int as
                       : "builds its libraries itself (TOTK_PIPE_WAIT=draw)");
     }
     double end = wait_ms ? now_ms() + wait_ms : 0;
-    if (p && p->building && P.gpl && !p->info.pipeline && !p->fast_tried && p->lay) {
+    if (p && p->building && P.gpl && !uses_xfb(s->vs) && !p->info.pipeline && !p->fast_tried && p->lay) {
         int final = 0, build = wait_ms != 0 && draw_build;
         uint64_t p0 = perf_begin(), t0 = qpc();
         if (build && U.on) {
@@ -2778,7 +2795,7 @@ static void lb_worker(void *arg) {
         } else if (gfx_shader_stage(sh) == GFX_STAGE_CS) {
             lb_compute(sh);
         } else if (gfx_shader_stage(sh) == GFX_STAGE_VS || gfx_shader_stage(sh) == GFX_STAGE_FS) {
-            if (P.gpl) lb_library(sh, gfx_shader_stage(sh) == GFX_STAGE_VS, 1);
+            if (P.gpl && !uses_xfb(sh)) lb_library(sh, gfx_shader_stage(sh) == GFX_STAGE_VS, 1);
             else lb_skip_lib();
         }
         plat_mutex_lock(&LB.stat);
@@ -2871,7 +2888,7 @@ static void lb_warm_worker(void *arg) {
             if (pipe) vkDestroyPipeline(P.device, pipe, NULL);
             lb_count(2, pipe ? 3 : 2, now_ms() - t0);
         } else if (st == GFX_STAGE_VS || st == GFX_STAGE_FS) {
-            if (P.gpl) lb_library(sh, st == GFX_STAGE_VS, 0);
+            if (P.gpl && !uses_xfb(sh)) lb_library(sh, st == GFX_STAGE_VS, 0);
             else lb_skip_lib();
         }
         if (owned) gfx_shader_release_private(sh);
