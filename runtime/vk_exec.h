@@ -82,6 +82,10 @@ typedef struct VkExec {
     p_bind_buf ubo[6][18], ssbo[6][16];  // OP_BIND_UBO / OP_BIND_SSBO per stage and index
     uint64_t tex[6][128], samp[6][128], img[6][32];   // OP_BIND_TEX / OP_BIND_SAMP / OP_BIND_IMG handles per stage
 
+    // ---- vk_xfb.c slots (transform feedback): left empty by vk_exec.c
+    p_bind_xfb xfb_buf[4];               // OP_BIND_XFB per buffer index
+    int xfb_active;                      // between OP_XFB begin (or resume) and end (or pause)
+
     // ---- vk_exec_xfer.c slots (render enable, conditional rendering): left empty by vk_exec.c
     int render_disabled;                 // OP_RENDER_ENABLE false or a failed OP_RENDER_COND: clears and draws skip
     p_render_cond render_cond;           // last OP_RENDER_COND
@@ -175,6 +179,9 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
 // vk_exec_xfer.c: OP_COPY_B2B, OP_COPY_B2T, OP_COPY_T2B, OP_COPY_T2T, OP_CLEAR_TEX, OP_SIGNAL_EVENT, OP_REPORT_COUNTER,
 // OP_RESET_COUNTER, OP_RENDER_ENABLE, OP_RENDER_COND, OP_CLEAR_BUF.
 void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
+// Transform feedback (vk_xfb.c): OP_BIND_XFB, OP_XFB, OP_DRAW_XFB; vk_xfb_note_draw runs before every draw.
+void vk_exec_op_xfb(VkExec *ex, uint32_t op, const void *payload);
+void vk_xfb_note_draw(VkExec *ex, uint32_t op, const void *payload);
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);

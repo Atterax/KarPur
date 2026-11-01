@@ -8,7 +8,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 1. **Transform Feedback umsetzen** (größere Arbeit, mehrere Teile):
    - Woher kommt das Layout (welche Ausgaben in welchen Puffer, Stride)? Auf Maxwell setzt der Treiber es als GPU-Zustand aus den Steuerdaten des NVN-Programms (`nvnProgramSetShaders`, Control-Teil der ShaderData). Herausfinden, wo es in Purpurs Programmen steht: **Diagnose eingebaut, wartet auf den Lauf beim Maintainer** (Zeilen `tf:` im Log, siehe Protokoll).
    - Übersetzer (`tools/xlate/Program.cs`): `QueryTransformFeedbackEnabled`, `QueryTransformFeedbackVaryingLocations`, `QueryTransformFeedbackStride` aus dem Job beantworten (Ryujinx erzeugt dann die XFB-Decorations im SPIR-V); Job-Felder in `gfx_shader.c`.
-   - Front-End (`nvn_api_more.c` → echte Ops): Bind(s), Begin/End/Pause/Resume, DrawTransformFeedback als Command-Records.
+   - Front-End: ✅ Bind(s), Begin/End/Pause/Resume, DrawTransformFeedback sind Command-Records (`OP_BIND_XFB`, `OP_XFB`, `OP_DRAW_XFB` in `nvn_api_cmd.c`); der Abspieler (`vk_xfb.c`) merkt sich Puffer und aktiv/inaktiv, zeichnet aber noch nichts in Vulkan.
    - Vulkan-Back-End: `vkCmdBindTransformFeedbackBuffersEXT`, `vkCmdBegin/EndTransformFeedbackEXT` mit Zählerpuffer (NVN-Control-Adresse), `vkCmdDrawIndirectByteCountEXT` für DrawTransformFeedback; Pipeline mit XFB-Ausgaben. `vk_device.c` aktiviert VK_EXT_transform_feedback schon, Puffer haben die Usage-Flags (`vk_memory.c`).
 2. Bildfehler danach: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: TF-Diagnose ins Abspielen verlegt
+- Zweiter Lauf: Bei jedem `BeginTransformFeedback` war im selben Command Buffer kein Vertex-Shader gebunden („without a known vertex shader“, 4 von 4). Das Programm kommt also aus einem früheren Command Buffer (NVN-Zustand gilt über Command Buffer hinweg) oder wird erst nach Begin gebunden. Auffällig im selben Lauf: `vk: a draw without a bound program is skipped`.
+- Deshalb sind die TF-Aufrufe jetzt echte Records, und `vk_xfb.c` wertet beim Abspielen aus, wo der gebundene Shader sicher bekannt ist: Jeder Draw meldet seinen Vertex-Shader (`vk_xfb_note_draw`). Draws bei aktivem TF loggen die ersten 6 Male Programm, Stufen-IDs, Rasterizer-Discard, Vertexzahl und Puffergrößen. Der Layout-Bericht (bei 1, 4, 16 TF-Shadern) vergleicht jetzt den ganzen Control-Teil (0x880 Bytes).
+- `nvn_probe.c` prüft die drei neuen Ops.
+- Nächster Schritt: Maintainer-Lauf, `tf:`-Zeilen auswerten.
 
 ### 2026-11-01: Erster TF-Diagnoselauf: kein Layout-Bericht, aber Puffergrößen
 - Kein `tf: layout report`: Der zuletzt gebundene Vertex-Shader wurde pro Host-Thread gemerkt (`_Thread_local`), Gastthreads/Fibers wechseln aber die Host-Threads. Jetzt pro Command Buffer gemerkt (Tabelle mit 256 Plätzen); ein `BeginTransformFeedback` ohne bekannten Vertex-Shader wird geloggt.

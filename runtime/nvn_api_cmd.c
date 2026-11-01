@@ -580,11 +580,48 @@ NVN_API(nvnCommandBufferSetRenderEnableConditional) {
     r->mode = m;
     r->addr = arg_x(c, 2);
 }
+// ---------- Transform feedback (KarPur): recorded as ops, replayed by vk_xfb.c. Each entry point logs its first calls
+// (buffer addresses and sizes, control addresses: no game data).
+static int xfb_first(int32_t *n, int max) { return __atomic_add_fetch(n, 1, __ATOMIC_RELAXED) <= max; }
+static void xfb_bind(const Cpu *c, int index, uint64_t addr, uint64_t size) {
+    static int32_t n;
+    if (xfb_first(&n, 6)) rt_log("tf: BindTransformFeedbackBuffer(index %d, %#llx, size %#llx)", index,
+                                 (unsigned long long)addr, (unsigned long long)size);
+    *REC(cmd_of(c), OP_BIND_XFB, p_bind_xfb) = (p_bind_xfb){index, 0, addr, size};
+}
+// void nvnCommandBufferBindTransformFeedbackBuffer(NVNcommandBuffer *cb, int index, NVNbufferAddress buffer,
+// size_t size)
+NVN_API(nvnCommandBufferBindTransformFeedbackBuffer) { xfb_bind(c, (int)arg_x(c, 1), arg_x(c, 2), arg_x(c, 3)); }
+// void nvnCommandBufferBindTransformFeedbackBuffers(NVNcommandBuffer *cb, int first, int count,
+// const NVNbufferRange *buffers): NVNbufferRange = {NVNbufferAddress address; uint64_t size}
+NVN_API(nvnCommandBufferBindTransformFeedbackBuffers) {
+    int first = (int)arg_x(c, 1), count = (int)arg_x(c, 2);
+    const NVNbufferRange *r = arg_p(c, 3);
+    for (int i = 0; r && i < count && first + i < 4; i++) xfb_bind(c, first + i, r[i].address, r[i].size);
+}
+static void xfb_op(const Cpu *c, int kind) {
+    static const char *const names[] = {"Begin", "End", "Pause", "Resume"};
+    static int32_t n[4];
+    if (xfb_first(&n[kind], 3))
+        rt_log("tf: %sTransformFeedback(control %#llx)", names[kind], (unsigned long long)arg_x(c, 1));
+    *REC(cmd_of(c), OP_XFB, p_xfb) = (p_xfb){kind, 0, arg_x(c, 1)};
+}
+// void nvnCommandBuffer{Begin,End,Pause,Resume}TransformFeedback(NVNcommandBuffer *cb, NVNbufferAddress control)
+NVN_API(nvnCommandBufferBeginTransformFeedback) { xfb_op(c, XFB_BEGIN); }
+NVN_API(nvnCommandBufferEndTransformFeedback) { xfb_op(c, XFB_END); }
+NVN_API(nvnCommandBufferPauseTransformFeedback) { xfb_op(c, XFB_PAUSE); }
+NVN_API(nvnCommandBufferResumeTransformFeedback) { xfb_op(c, XFB_RESUME); }
+// void nvnCommandBufferDrawTransformFeedback(NVNcommandBuffer *cb, NVNdrawPrimitive mode, NVNbufferAddress control)
+NVN_API(nvnCommandBufferDrawTransformFeedback) {
+    static int32_t n;
+    if (xfb_first(&n, 3))
+        rt_log("tf: DrawTransformFeedback(mode %d, control %#llx)", (int)arg_x(c, 1), (unsigned long long)arg_x(c, 2));
+    *REC(cmd_of(c), OP_DRAW_XFB, p_draw_xfb) = (p_draw_xfb){(int)arg_x(c, 1), 0, arg_x(c, 2)};
+}
+
 // void nvnCommandBufferBindProgram(NVNcommandBuffer *cmd, const NVNprogram *program, int stages)
-void nvn_tf_note_program(const void *cb, const void *prog);   // KarPur: nvn_api_more.c, transform feedback layout report
 NVN_API(nvnCommandBufferBindProgram) {
     *REC(cmd_of(c), OP_BIND_PROGRAM, p_bind_program) = (p_bind_program){arg_p(c, 1), (int)arg_x(c, 2)};
-    nvn_tf_note_program(cmd_of(c), arg_p(c, 1));
 }
 // void nvnCommandBufferBind{Blend,Color,ChannelMask,Multisample,Polygon,DepthStencil}State(NVNcommandBuffer *cmd,
 // const NVN*State *state): the state object's bytes are copied (p_bind_state.kind order)
@@ -966,7 +1003,7 @@ const char *nvn_op_name(uint32_t op) {
         "BIND_VSTREAM", "BIND_VBUF", "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL", "POLY_OFFSET", "DRAW",
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
-        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF",
+        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "BIND_XFB", "XFB", "DRAW_XFB",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";

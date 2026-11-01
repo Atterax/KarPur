@@ -457,6 +457,13 @@ static uint64_t record_all(void) {
     REC(OP_DISPATCH_IND, CALL(nvnCommandBufferDispatchComputeIndirect, U(c), 0xc100));
     REC(OP_CLEAR_BUF, CALL(nvnCommandBufferClearBuffer, U(c), 0xc200, 0x40, 0xdeadbeef));
     REC(OP_CLEAR_BUF, CALL(nvnCommandBufferReportValue, U(c), 0x1234, 0xc300));
+    static const NVNbufferRange xfb_r[2] = {{0xd000, 0x30}, {0xd100, 0x10}};
+    REC(OP_BIND_XFB, CALL(nvnCommandBufferBindTransformFeedbackBuffer, U(c), 3, 0xd200, 0x20));
+    CALL(nvnCommandBufferBindTransformFeedbackBuffers, U(c), 0, 2, U(xfb_r));
+    expect[nexpect++] = OP_BIND_XFB, expect[nexpect++] = OP_BIND_XFB;   // one op per buffer
+    REC(OP_XFB, CALL(nvnCommandBufferBeginTransformFeedback, U(c), 0xd300));
+    REC(OP_XFB, CALL(nvnCommandBufferEndTransformFeedback, U(c), 0xd300));
+    REC(OP_DRAW_XFB, CALL(nvnCommandBufferDrawTransformFeedback, U(c), NVN_DRAW_PRIMITIVE_TRIANGLES, 0xd300));
     static const int thresholds[4] = {1, 2, 3, 4};
     CALL(nvnCommandBufferSetColorReductionEnable, U(c), 1);   // hints: nothing recorded
     CALL(nvnCommandBufferSetColorReductionThresholds, U(c), 0, U(thresholds));
@@ -679,6 +686,23 @@ static void parse_all(uint64_t h) {
             const p_clear_buf *p = a;
             CHECK((p->addr == 0xc200 && p->size == 0x40 && p->value == 0xdeadbeef) ||
                       (p->addr == 0xc300 && p->size == 4 && p->value == 0x1234), "CLEAR_BUF payload (ClearBuffer, ReportValue)");
+            break;
+        }
+        case OP_BIND_XFB: {
+            const p_bind_xfb *p = a;
+            CHECK((p->index == 3 && p->addr == 0xd200 && p->size == 0x20) ||
+                      (p->index == 0 && p->addr == 0xd000 && p->size == 0x30) ||
+                      (p->index == 1 && p->addr == 0xd100 && p->size == 0x10), "BIND_XFB payload");
+            break;
+        }
+        case OP_XFB: {
+            const p_xfb *p = a;
+            CHECK((p->kind == XFB_BEGIN || p->kind == XFB_END) && p->control == 0xd300, "XFB payload");
+            break;
+        }
+        case OP_DRAW_XFB: {
+            const p_draw_xfb *p = a;
+            CHECK(p->mode == NVN_DRAW_PRIMITIVE_TRIANGLES && p->control == 0xd300, "DRAW_XFB payload");
             break;
         }
         default: CHECK(0, "unexpected op %s", nvn_op_name(o->op)); break;
