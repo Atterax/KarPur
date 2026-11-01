@@ -5,15 +5,23 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M3, erstes Lebenszeichen
 
 ### Nächste Schritte
-1. Maintainer baut hactool und führt `tools/extract_romfs.py` aus ([setup-windows.md](setup-windows.md), Schritt 10), schickt den RomFS-Bericht. Daran sehen wir, wie die Spieldaten organisiert sind (z. B. `trpfs`/`trpfd`).
-2. Runtime aus TotK Recomp übernehmen, zuerst nur das, was zum Starten nötig ist: Loader (Module an ihre Basis legen, Relocations, dynamisches Linken zwischen main/subsdk0/sdk), Speicher (Reservierung ab `0x7000000000`), `rt_dispatch`, Kernel/Threads, SVCs, `HOST_OVERRIDE`-Mechanismus, Dateisystem auf die RomFS, Boot. Grafik, Audio und Eingabe zunächst als Stubs.
-3. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
+1. Runtime aus TotK Recomp übernehmen, zuerst nur das, was zum Starten nötig ist: Loader (Module an ihre Basis legen, Relocations, dynamisches Linken zwischen main/subsdk0/sdk), Speicher (Reservierung ab `0x7000000000`), `rt_dispatch`, Kernel/Threads, SVCs, `HOST_OVERRIDE`-Mechanismus, Dateisystem auf die RomFS, Boot. Grafik, Audio und Eingabe zunächst als Stubs.
+2. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
-- Karmesin/Purpur packt seine Daten in `trpfs`/`trpak`-Archive; ob der Spielcode sie selbst entpackt (dann nichts zu tun) oder ob dafür Middleware nötig ist, zeigt sich in M3.
+- Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: RomFS entpackt
+- hactool beim Maintainer gebaut (1d64a83 + 3 Patches), BKTR-Zusammenführung in 43 s, alle sechs IVFC-Ebenen GOOD.
+- RomFS Purpur 4.0.0: **9,24 GiB, nur 30 Dateien**, sha256 `6258fef055415246…`.
+  - `arc/`: 2 Dateien, 7,48 GiB: ein großes Archiv `data.trpfs` (7,47 GiB) mit Inhaltsverzeichnis `data.trpfd` (Game-Freak-Format, liest der Spielcode selbst).
+  - `audio/`: 23 Dateien, 1,55 GiB: `.pck` und `.bnk` sind Audiokinetic-Wwise-Soundbanks. Wwise ist im Spielcode enthalten und wird mitübersetzt; Ausgabe über `nn::audio` (TotKs Audio-Renderer).
+  - `demo/`: 2 Videos `.bk2` (Bink 2 von RAD, wird im Spielcode dekodiert).
+  - `system/`, `event/`: kleine Dateien (`.trpre`, `.trevt`, `.trmdd`).
+- Folge für die Runtime: Das Dateisystem muss vor allem schnelle wahlfreie Lesezugriffe in einer 7,5-GiB-Datei liefern; TotKs `romfs.c` liest direkt aus `romfs.bin`, das passt.
 
 ### 2026-11-01: RomFS-Extraktion vorbereitet
 - Maintainer hat 100 GB frei (bei Bedarf 200–400 GB).
