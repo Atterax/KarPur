@@ -5,11 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M5, spielbar
 
 ### Nächste Schritte
-1. **Transform Feedback umsetzen** (größere Arbeit, mehrere Teile):
-   - Woher kommt das Layout (welche Ausgaben in welchen Puffer, Stride)? Auf Maxwell setzt der Treiber es als GPU-Zustand aus den Steuerdaten des NVN-Programms (`nvnProgramSetShaders`, Control-Teil der ShaderData). Herausfinden, wo es in Purpurs Programmen steht: **Diagnose eingebaut, wartet auf den Lauf beim Maintainer** (Zeilen `tf:` im Log, siehe Protokoll).
-   - Übersetzer (`tools/xlate/Program.cs`): `QueryTransformFeedbackEnabled`, `QueryTransformFeedbackVaryingLocations`, `QueryTransformFeedbackStride` aus dem Job beantworten (Ryujinx erzeugt dann die XFB-Decorations im SPIR-V); Job-Felder in `gfx_shader.c`.
-   - Front-End: ✅ Bind(s), Begin/End/Pause/Resume, DrawTransformFeedback sind Command-Records (`OP_BIND_XFB`, `OP_XFB`, `OP_DRAW_XFB` in `nvn_api_cmd.c`); der Abspieler (`vk_xfb.c`) merkt sich Puffer und aktiv/inaktiv, zeichnet aber noch nichts in Vulkan.
-   - Vulkan-Back-End: `vkCmdBindTransformFeedbackBuffersEXT`, `vkCmdBegin/EndTransformFeedbackEXT` mit Zählerpuffer (NVN-Control-Adresse), `vkCmdDrawIndirectByteCountEXT` für DrawTransformFeedback; Pipeline mit XFB-Ausgaben. `vk_device.c` aktiviert VK_EXT_transform_feedback schon, Puffer haben die Usage-Flags (`vk_memory.c`).
+1. **Transform Feedback testen** (umgesetzt, beim Maintainer noch nicht gelaufen): Übersetzer neu bauen (`tools\build_xlate.py`, Program.cs geändert → alle Shader werden neu übersetzt), Spiel bauen, Figuren prüfen. Log: `tf: transform feedback recorded ...`, `tf: draw N captures into 3 buffers: ...`, `vk_exec: program bind ...`. Wenn Figuren falsch aussehen: zuerst die Annahme „Location 0x20 + k = generisches Attribut k“ in `nvn_xfb.h` prüfen (Alternative: Maxwell-Wortoffset je Komponente).
 2. Bildfehler danach: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
@@ -24,6 +20,18 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Transform Feedback und Programm-Binden nach Stufen umgesetzt
+- Layout-Bytes der ersten 4 TF-Shader: außer den bekannten Stellen nur `6e8..6ea = 01 01 01`, `6ec = 03`, `6ed = 01` (vermutlich Puffer-aktiv und Pufferanzahl 3) – sonst nichts. Bereiche: Attribut je Ausgabe bei 0x0dc + 0x80·b + j, (vermutlich) erste Komponente bei 0x2dc + …, Komponentenzahl bei 0x4dc + …, Strides u16 bei 0x6dc. Die drei 0x200-Bereiche schließen lückenlos an die Strides an. Annahme: Attributwert 0x20 + k = generisches Attribut k (Puffer 0: Position xyz, 1/2: Normale/Tangente).
+- `runtime/nvn_xfb.h`: dekodiert das Layout in Maxwell-Attributwörter je Komponente (0x20 + 4k + c), wie Ryujinx sie erwartet.
+- `gfx_shader.c`: Vertex-Shader mit Layout bekommen im Job `"xfb": [{"stride", "locs"}] × 4`. `tools/xlate/Program.cs` beantwortet damit `QueryTransformFeedbackEnabled/VaryingLocations/Stride` → SPIR-V mit Xfb-Decorations. Übersetzer muss neu gebaut werden.
+- `vk_xfb.c` neu:
+  - Programm-Binden nach Stufenmaske (`vk_prog_bind`); vor jedem Draw/Dispatch reicht `vk_prog_select` das passende Programm an `vk_exec_draw.c` weiter (Spielprogramm oder zusammengesetztes `prog_t`).
+  - Compute-Binds (0x20) überschreiben die Grafikstufen nicht mehr.
+  - Bei aktivem TF: Puffer binden (Offsets selbst mitgezählt, keine Zählerpuffer), `vkCmdBeginTransformFeedbackEXT`, Draw, `vkCmdEnd…`. Die Puffer gelten als GPU-geschrieben (Mirror-Rückschreiben).
+  - Danach folgt beim TF-Ende eine volle Barriere.
+  - Aufrufe über Funktionszeiger nach `rec_drain`.
+- Die Diagnose (Layout-Bericht) ist entfernt.
 
 ### 2026-11-01: TF-Layout im Control-Teil gefunden (teilweise)
 - Bestätigt: Purpur bindet für TF erst ein reines Vertex-Programm (Maske 0x1), dann `BindProgram(NULL, 0x2)` (Fragment lösen). Andere Masken: 0x1f (alle Grafikstufen), 0x20 (Compute). Das Back-End muss die Stufenmaske umsetzen (siehe nächste Schritte).

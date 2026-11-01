@@ -1,7 +1,7 @@
 // TOTK Vulkan adaptation of MacNativeGames games/totk/tools/totk_xlate/Program.cs (MIT, see LICENSE; MNG commit b75be8cf).
 // Provenance: that file is based on D2R Mobile dm/gfx/tools/dmsh_xlate/Program.cs. Changes here: SPIR-V for Vulkan is the final
 // output (no MSL service, no VertexCounterLowering, no NEAR_IS_MINUS_W rewrite), depth clip control reported as supported,
-// non-constant texture offsets reported as unsupported, --disasm dropped.
+// non-constant texture offsets reported as unsupported, --disasm dropped. KarPur: transform feedback answered from the job ("xfb").
 // Protocol (stdout carries replies only; diagnostics go to stderr):
 //   totk_xlate --serve              one request per stdin line: {"job": {...}, "out": "<dir>"}; one reply line per request:
 //                                   "ok <key>" or "fail <key> <message>"; a malformed line gets "fail ? <message>" and the loop continues.
@@ -9,7 +9,7 @@
 //   job: { "key", "stage": "vs|ps|cs", "code": path (graphics = 0x50-byte SPH + instructions, compute = instructions), "c1": hex,
 //          "tex": {slot: type}, "img": {slot: {type, fmt}}, "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint},
 //          "local": [x, y, z], "shared": bytes, "debug": bool, "reduced": bool, "softfloat64": bool,
-//          "sbuf_align": int, "subgroup": int }
+//          "sbuf_align": int, "subgroup": int, "xfb": [{"stride", "locs": [...]}] x 4 (KarPur: transform feedback) }
 //   Output: <out>/<key>.spv and <out>/<key>.res.json (bindings, queried slots, notes).
 using Ryujinx.Common.Memory;
 using Ryujinx.Graphics.Shader;
@@ -117,6 +117,15 @@ static class SwshXlate
         public int QueryHostStorageBufferOffsetAlignment() => _job["sbuf_align"] is JsonNode n ? (int)n : 16;
         // "subgroup": n: lanes per subgroup when the host cannot pin 32 (AMD GCN/Vega run 64): ballots and votes span n lanes.
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
+        // KarPur: "xfb": [{"stride": bytes, "locs": [Maxwell attribute word offset per captured component]}] x 4, from the
+        // vertex shader's NVN control section (runtime/nvn_xfb.h). The SPIR-V then carries XfbBuffer/XfbStride/Offset
+        // decorations and the host records VK_EXT_transform_feedback around the draws (runtime/vk_xfb.c).
+        public bool QueryTransformFeedbackEnabled() => _job["xfb"] is JsonArray;
+        public ReadOnlySpan<byte> QueryTransformFeedbackVaryingLocations(int bufferIndex) =>
+            _job["xfb"] is JsonArray a && bufferIndex < a.Count && a[bufferIndex]?["locs"] is JsonArray l
+                ? new ReadOnlySpan<byte>(l.Select(v => (byte)(int)v).ToArray()) : ReadOnlySpan<byte>.Empty;
+        public int QueryTransformFeedbackStride(int bufferIndex) =>
+            _job["xfb"] is JsonArray a && bufferIndex < a.Count && a[bufferIndex]?["stride"] is JsonNode s ? (int)s : 0;
     }
 
 

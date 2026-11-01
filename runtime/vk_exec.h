@@ -179,10 +179,14 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
 // vk_exec_xfer.c: OP_COPY_B2B, OP_COPY_B2T, OP_COPY_T2B, OP_COPY_T2T, OP_CLEAR_TEX, OP_SIGNAL_EVENT, OP_REPORT_COUNTER,
 // OP_RESET_COUNTER, OP_RENDER_ENABLE, OP_RENDER_COND, OP_CLEAR_BUF.
 void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
-// Transform feedback (vk_xfb.c): OP_BIND_XFB, OP_XFB, OP_DRAW_XFB; vk_xfb_note_draw runs before every draw.
+// vk_xfb.c. Program binds by stage: OP_BIND_PROGRAM goes to vk_prog_bind; vk_prog_select (before every draw, compute
+// 0, and dispatch, compute 1) hands vk_exec_op_draw the program for the bound stages. Transform feedback: OP_BIND_XFB,
+// OP_XFB, OP_DRAW_XFB; vk_xfb_draw_begin right before a draw's vkCmdDraw* (1: begun, then vk_xfb_draw_end after it).
+void vk_prog_bind(const p_bind_program *b);
+void vk_prog_select(VkExec *ex, int compute);
 void vk_exec_op_xfb(VkExec *ex, uint32_t op, const void *payload);
-void vk_xfb_note_draw(VkExec *ex, uint32_t op, const void *payload);
-void vk_xfb_note_bind(const p_bind_program *b);   // before vk_exec_op_draw handles OP_BIND_PROGRAM
+int vk_xfb_draw_begin(VkExec *ex);
+void vk_xfb_draw_end(VkExec *ex, int prim, uint32_t n, uint32_t inst);
 // vk_exec_xfer.c, samples-passed counting: a draw about to be recorded in the open pass (begins an occlusion query
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);

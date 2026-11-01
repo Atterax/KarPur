@@ -2155,7 +2155,9 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         free(ix);
         vkCmdDrawIndexed(ex->cb, n + 1, inst, 0, 0, (uint32_t)d->base_instance);
     } else {
+        int xfb = vk_xfb_draw_begin(ex);   // KarPur: transform feedback around the draw (vk_xfb.c)
         vkCmdDraw(ex->cb, n, inst, first, (uint32_t)d->base_instance);
+        if (xfb) vk_xfb_draw_end(ex, d->prim, n, inst);
     }
     ex->recorded++;
 }
@@ -2210,8 +2212,10 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
+    int xfb = vk_xfb_draw_begin(ex);   // KarPur: transform feedback around the draw (vk_xfb.c)
     vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
+    if (xfb) vk_xfb_draw_end(ex, d->prim, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1);
     ex->recorded++;
 }
 

@@ -1,24 +1,22 @@
-// Transform feedback in the Vulkan replay. Written for KarPur (MIT).
+// Program binds by stage and transform feedback in the Vulkan replay. Written for KarPur (MIT).
 //
-// Violet draws its characters through transform feedback: a vertex shader skins the vertices into three buffers
-// (observed: 12, 4 and 4 bytes a vertex), later draws read them as plain vertex buffers. The game never calls
-// DrawTransformFeedback. Not recorded into Vulkan yet: the buffers stay unwritten, so skinned models are invisible or
-// drawn from stale data.
+// Program binds. nvnCommandBufferBindProgram(cb, program, stages) binds the program's shaders for the stages in the
+// mask (NVNshaderStageBits); a stage in the mask the program lacks is unbound (the program may be NULL), stages
+// outside the mask keep theirs. Violet's transform feedback passes bind a vertex-only program (mask 0x1) and then
+// unbind the fragment stage alone (NULL, 0x2); compute programs come with mask 0x20 between graphics draws.
+// vk_exec_draw.c knows one program (ex->prog), so this file keeps the program of every stage and, right before each
+// draw or dispatch, hands vk_exec_draw.c the program that holds exactly the bound graphics stages, or the compute
+// program: the game's own program when one provides them all, else a composite (a host prog_t whose stage entries
+// come from several programs, kept in a table by their programs and serials).
 //
-// For now this file keeps the bound buffers and the active state and finds the transform feedback layout. The layout
-// (which vertex outputs go to which buffer, the strides) is not an NVN call: the driver takes it from the program's
-// 0x880-byte control section, at offsets nobody has documented. Every draw notes its vertex shader: drawn while
-// transform feedback is active it is a transform feedback shader (up to TF_KEEP are copied), else its nonzero 32-bit
-// words are ORed into one "plain" mask. When 1, 4 and 16 distinct transform feedback shaders were seen, the words set
-// in all of them and in no plain shader are logged with their values in the first three (small numbers: strides,
-// counts, output locations; never code). The first transform feedback draws are logged with their program and buffer
-// sizes.
-//
-// Program binds have a stage mask (NVNshaderStageBits): the stages in it take the program's shaders, a stage in the
-// mask the program lacks is unbound (the program may be NULL), stages outside the mask keep theirs. Violet unbinds the
-// fragment stage this way for its transform feedback draws (rasterizer discard on), keeping the vertex shader of an
-// earlier bind. vk_exec_draw.c still treats every bind as replacing all stages, so those draws have no program there
-// and are skipped; this file tracks the vertex stage itself.
+// Transform feedback (Violet: GPU skinning of characters and Pokemon into three buffers that later draws read as
+// vertex buffers; DrawTransformFeedback is never called). The layout comes from the vertex shader's control section
+// (nvn_xfb.h) and is part of the shader translation (gfx_shader.c "xfb"). A draw while transform feedback is active
+// binds the buffers at the bytes captured so far, begins transform feedback, draws, ends it, and advances the offsets by
+// the vertices it captured times each stride. Pipelines cannot be bound while transform feedback is active, so it is
+// begun and ended around every draw, and the offsets are kept here instead of in counter buffers. The end of transform
+// feedback adds a full barrier so the captured vertices are visible to the draws that read them. The Vulkan calls go
+// through function pointers and are made after rec_drain (vk_rec.h).
 //
 // Runs on the replay thread under vk_sync_submit's lock (vk_exec.h): no locking inside.
 #include <stdint.h>
@@ -27,128 +25,36 @@
 
 #include "host.h"
 #include "nvn_api.h"
+#include "nvn_xfb.h"
 #include "vk_exec.h"
 
-#define CTRL_SIZE 0x880
-#define CTRL_WORDS (CTRL_SIZE / 4)
-#define TF_KEEP 16
-#define PLAIN_SLOTS 16384   // open addressing; the game has a few hundred vertex shaders
+// ---- program binds by stage
 
-static uint8_t plain_nz[CTRL_WORDS];          // a plain vertex shader had this word nonzero
-static const void *plain_seen[PLAIN_SLOTS];   // vertex controls already ORed into plain_nz
-static int nplain;
-static uint8_t tf_ctrl[TF_KEEP][CTRL_SIZE];   // copies of transform feedback vertex shader controls
-static const void *tf_at[TF_KEEP];
-static int ntf, tf_draws, tf_draws_logged, tf_no_vs;
+#define NSTAGE 6         // NVN stage ids (control +0x714): 0 vertex, 1 fragment, 2-4 the other graphics stages, 5 compute
+#define CS_STAGE 5
+#define COMP_SLOTS 1024
 
-// The vertex stage's control section of a program, as vk_exec_draw.c find_stage_scan finds it (stage id at +0x714).
-static const uint8_t *vs_control(const prog_t *p) {
-    if (!p) return NULL;
-    for (uint32_t i = 0; i < p->nstage && i < 6; i++) {
-        const uint8_t *c = p->sd[i].control;
-        if (!c || !p->sd[i].data) continue;
-        uint32_t st;
-        memcpy(&st, c + 0x714, 4);
-        if (st == 0) return c;   // 0: vertex (tools/shader_census.py STAGE_IDS)
-    }
+static const prog_t *stage_prog[NSTAGE];   // program whose shader is bound at each stage
+static const prog_t *gfx_cur;              // graphics program for the bound stages, valid while !gfx_dirty
+static int gfx_dirty = 1;
+static int bound_since[2];                 // a bind touched the graphics (0) or compute (1) stages since the last select
+static prog_t comp[COMP_SLOTS];            // composites
+static struct { const prog_t *p[CS_STAGE]; uint64_t s[CS_STAGE]; } comp_key[COMP_SLOTS];
+
+static int stage_of(const NVNshaderData *sd) {
+    if (!sd->control || !sd->data) return -1;
+    uint32_t st;
+    memcpy(&st, (const uint8_t *)sd->control + 0x714, 4);
+    return st < NSTAGE ? (int)st : -1;
+}
+
+static const NVNshaderData *stage_entry(const prog_t *p, int st) {
+    for (uint32_t i = 0; p && i < p->nstage && i < 6; i++)
+        if (stage_of(&p->sd[i]) == st) return &p->sd[i];
     return NULL;
 }
 
-static int is_tf(const void *ctl) {
-    for (int i = 0; i < ntf; i++)
-        if (tf_at[i] == ctl) return 1;
-    return 0;
-}
-
-static void plain_add(const uint8_t *ctl) {
-    if (is_tf(ctl)) return;   // also drawn with transform feedback: not plain
-    uint64_t h = (uint64_t)(uintptr_t)ctl * 0x9E3779B97F4A7C15ull;
-    for (uint32_t i = (uint32_t)(h >> 50), n = 0; n < PLAIN_SLOTS; i = (i + 1) % PLAIN_SLOTS, n++) {
-        if (plain_seen[i] == ctl) return;
-        if (!plain_seen[i]) {
-            if (nplain >= PLAIN_SLOTS / 2) return;   // table full enough: the mask is settled by now
-            plain_seen[i] = ctl, nplain++;
-            for (int w = 0; w < CTRL_WORDS; w++) {
-                uint32_t v;
-                memcpy(&v, ctl + 4 * w, 4);
-                if (v) plain_nz[w] = 1;
-            }
-            return;
-        }
-    }
-}
-
-static void tf_report(void) {
-    int found = 0, some = 0;
-    rt_log("tf: layout report over %d transform feedback vertex shaders and %d plain ones (words set in all of the "
-           "former, in none of the latter; values in the first three):", ntf, nplain);
-    for (int w = 0; w < CTRL_WORDS && found < 64; w++) {
-        if (plain_nz[w]) continue;
-        int all = 1;
-        uint32_t v[3] = {0, 0, 0};
-        for (int k = 0; k < ntf && all; k++) {
-            uint32_t x;
-            memcpy(&x, tf_ctrl[k] + 4 * w, 4);
-            if (!x) all = 0;
-            if (k < 3) v[k] = x;
-        }
-        if (!all) continue;
-        rt_log("tf:   +%#05x: %#x %#x %#x", 4 * w, v[0], v[1], v[2]);
-        found++;
-    }
-    // Zero in every plain shader, set in some (not all) transform feedback shaders: fields of buffers or outputs only
-    // some programs use.
-    for (int w = 0; w < CTRL_WORDS && some < 64; w++) {
-        if (plain_nz[w]) continue;
-        int cnt = 0;
-        for (int k = 0; k < ntf; k++) {
-            uint32_t x;
-            memcpy(&x, tf_ctrl[k] + 4 * w, 4);
-            cnt += x != 0;
-        }
-        if (cnt && cnt < ntf) {
-            if (!some++) rt_log("tf: words set in some transform feedback shaders only (count of %d):", ntf);
-            rt_log("tf:   +%#05x: in %d", 4 * w, cnt);
-        }
-    }
-    rt_log("tf: %d words in all, %d in some", found, some);
-}
-
-// The nonzero bytes of a transform feedback shader's layout regions (found by the first report: per-buffer words at
-// 0x0dc + 0x80 i, 0x4dc + 0x80 i, strides as u16[4] at 0x6dc), as offset=value; '*' marks a word that is nonzero in
-// some plain shader too. Small numbers (output locations, counts, strides), at most 160 bytes a shader.
-static void tf_dump(int k, const uint8_t *ctl) {
-    static const int lo[2] = {0x0c0, 0x4c0}, hi[2] = {0x2e0, 0x700};
-    char line[200];
-    int o = 0, n = 0, total = 0;
-    for (int r = 0; r < 2; r++)
-        for (int off = lo[r]; off < hi[r] && total < 160; off++) {
-            if (!ctl[off]) continue;
-            o += snprintf(line + o, sizeof line - o, " %03x=%02x%s", off, ctl[off], plain_nz[off / 4] ? "*" : "");
-            n++, total++;
-            if (n == 16) rt_log("tf: shader %d layout bytes:%s", k, line), o = n = 0;
-        }
-    if (n) rt_log("tf: shader %d layout bytes:%s", k, line);
-    rt_log("tf: shader %d: %d nonzero layout bytes", k, total);
-}
-
-static void tf_add(const uint8_t *ctl) {
-    if (ntf >= TF_KEEP || is_tf(ctl)) return;
-    memcpy(tf_ctrl[ntf], ctl, CTRL_SIZE);
-    tf_at[ntf++] = ctl;
-    if (ntf <= 4) tf_dump(ntf, ctl);
-    if (ntf == 1 || ntf == 4 || ntf == TF_KEEP) tf_report();
-}
-
-static int draw_count(uint32_t op, const void *a) {
-    if (op == OP_DRAW) return ((const p_draw *)a)->count;
-    if (op == OP_DRAW_IDX) return ((const p_draw_idx *)a)->count;
-    return -1;   // indirect
-}
-
-static const prog_t *vs_prog;   // program whose vertex shader is bound (per-stage tracking, see above)
-
-void vk_xfb_note_bind(const p_bind_program *b) {
+void vk_prog_bind(const p_bind_program *b) {
     static struct { int null_prog; int32_t stages; } seen[12];
     static int nseen;
     int null_prog = b->prog == NULL, fresh = 1;
@@ -156,55 +62,176 @@ void vk_xfb_note_bind(const p_bind_program *b) {
         if (seen[i].null_prog == null_prog && seen[i].stages == b->stages) fresh = 0;
     if (fresh && nseen < 12) {
         seen[nseen].null_prog = null_prog, seen[nseen++].stages = b->stages;
-        rt_log("tf: program bind seen: %s program, stage mask %#x", null_prog ? "no" : "a", b->stages);
+        rt_log("vk_exec: program bind with %s program, stage mask %#x (binds by stage)", null_prog ? "no" : "a", b->stages);
     }
-    if (b->stages & NVN_SHADER_STAGE_VERTEX_BIT) vs_prog = vs_control(b->prog) ? b->prog : NULL;
+    for (int st = 0; st < NSTAGE; st++)
+        if (b->stages & (1 << st)) stage_prog[st] = stage_entry(b->prog, st) ? b->prog : NULL;
+    if (b->stages & 0x1f) gfx_dirty = 1, bound_since[0] = 1;
+    if (b->stages & 0x20) bound_since[1] = 1;
 }
 
-void vk_xfb_note_draw(VkExec *ex, uint32_t op, const void *payload) {
-    static const prog_t *last;
-    static uint64_t last_serial;
-    const prog_t *p = vs_prog;
-    if (!ex->xfb_active) {
-        if (p && (p != last || p->serial != last_serial)) {   // one note per program bind, not per draw
-            last = p, last_serial = p->serial;
-            const uint8_t *vs = vs_control(p);
-            if (vs) plain_add(vs);
-        }
-        return;
+static const prog_t *composite(void) {
+    uint64_t h = 0;
+    for (int st = 0; st < CS_STAGE; st++)
+        h = (h ^ (uintptr_t)stage_prog[st] ^ (stage_prog[st] ? stage_prog[st]->serial << 20 : 0)) * 0x9E3779B97F4A7C15ull;
+    unsigned slot = (unsigned)(h >> 54) % COMP_SLOTS;
+    int match = comp[slot].magic == NVN_PROG_MAGIC;
+    for (int st = 0; st < CS_STAGE && match; st++)
+        if (comp_key[slot].p[st] != stage_prog[st] || (stage_prog[st] && comp_key[slot].s[st] != stage_prog[st]->serial))
+            match = 0;
+    if (match) return &comp[slot];
+    prog_t *c = &comp[slot];
+    memset(c, 0, sizeof *c);
+    for (int st = 0; st < CS_STAGE; st++) {
+        comp_key[slot].p[st] = stage_prog[st];
+        comp_key[slot].s[st] = stage_prog[st] ? stage_prog[st]->serial : 0;
+        const NVNshaderData *sd = stage_entry(stage_prog[st], st);
+        if (sd) c->sd[c->nstage++] = *sd;
     }
-    last = NULL;
-    tf_draws++;
-    const uint8_t *vs = vs_control(p);
-    if (tf_draws_logged < 6) {
-        tf_draws_logged++;
-        char st[64] = "";
-        for (uint32_t i = 0, o = 0; p && i < p->nstage && i < 6 && o < sizeof st - 12; i++) {
-            uint32_t id = 0xff;
-            if (p->sd[i].control) memcpy(&id, (const uint8_t *)p->sd[i].control + 0x714, 4);
-            o += (uint32_t)snprintf(st + o, sizeof st - o, " %u", id);
-        }
-        rt_log("tf: draw %d with transform feedback: vertex program %p (%u stages, ids%s), vertex shader %s, bound "
-               "program %s, raster discard %d, %d vertices, buffers %#llx %#llx %#llx %#llx bytes",
-               tf_draws, (const void *)p, p ? p->nstage : 0, st, vs ? "found" : "missing", ex->prog ? "set" : "none", ex->pipe.raster_discard,
-               draw_count(op, payload), (unsigned long long)ex->xfb_buf[0].size,
-               (unsigned long long)ex->xfb_buf[1].size, (unsigned long long)ex->xfb_buf[2].size,
-               (unsigned long long)ex->xfb_buf[3].size);
+    c->magic = NVN_PROG_MAGIC;
+    c->serial = nvn_new_serial();
+    static int ncomp;
+    if (++ncomp <= 4 || ncomp % 1000 == 0)
+        rt_log("vk_exec: composite program %d (%u stages from several binds)", ncomp, c->nstage);
+    return c;
+}
+
+static const prog_t *gfx_program(void) {
+    const prog_t *one = NULL;
+    int mixed = 0;
+    for (int st = 0; st < CS_STAGE; st++) {
+        if (!stage_prog[st]) continue;
+        if (!one) one = stage_prog[st];
+        else if (stage_prog[st] != one) mixed = 1;
     }
-    if (vs) tf_add(vs);
-    else if (++tf_no_vs <= 3) rt_log("tf: draw with transform feedback without a vertex shader (%d so far)", tf_no_vs);
+    if (!one) return NULL;
+    for (uint32_t i = 0; !mixed && i < one->nstage && i < 6; i++) {   // a stage of one that is not bound from it
+        int st = stage_of(&one->sd[i]);
+        if (st >= 0 && st < CS_STAGE && stage_prog[st] != one) mixed = 1;
+    }
+    return mixed ? composite() : one;
+}
+
+void vk_prog_select(VkExec *ex, int compute) {
+    if (!compute && gfx_dirty) gfx_cur = gfx_program(), gfx_dirty = 0;
+    const prog_t *want = compute ? stage_prog[CS_STAGE] : gfx_cur;
+    // Passed on after every bind, as before binds by stage (vk_exec_draw.c bumps its bind generation), and whenever
+    // the program differs (a dispatch between draws).
+    if (ex->prog == want && !bound_since[compute]) return;
+    bound_since[compute] = 0;
+    p_bind_program b = {want, compute ? 0x20 : 0x1f};
+    vk_exec_op_draw(ex, OP_BIND_PROGRAM, &b);
+}
+
+// ---- transform feedback
+
+static PFN_vkCmdBindTransformFeedbackBuffersEXT fn_bind;
+static PFN_vkCmdBeginTransformFeedbackEXT fn_begin;
+static PFN_vkCmdEndTransformFeedbackEXT fn_end;
+static int fn_state;                // 0 not looked up, 1 ready, -1 unavailable
+static uint64_t written[4];         // bytes captured into each buffer since its bind or the begin
+static VkMemSpan span[4];           // the buffers of the draw in flight
+static uint64_t span_addr[4];
+static int nbound, captured_any;
+static NvnXfb lay;                  // layout of the draw in flight
+static int tf_draws, tf_skipped;
+
+static int fns_ready(void) {
+    if (!fn_state) {
+        VkCtx *c = vk_ctx();
+        fn_state = -1;
+        if (c && c->has_transform_feedback) {
+            fn_bind = (PFN_vkCmdBindTransformFeedbackBuffersEXT)vkGetDeviceProcAddr(c->device, "vkCmdBindTransformFeedbackBuffersEXT");
+            fn_begin = (PFN_vkCmdBeginTransformFeedbackEXT)vkGetDeviceProcAddr(c->device, "vkCmdBeginTransformFeedbackEXT");
+            fn_end = (PFN_vkCmdEndTransformFeedbackEXT)vkGetDeviceProcAddr(c->device, "vkCmdEndTransformFeedbackEXT");
+            if (fn_bind && fn_begin && fn_end) fn_state = 1;
+        }
+        rt_log("tf: transform feedback %s", fn_state > 0 ? "recorded with VK_EXT_transform_feedback"
+                                                         : "unavailable (no VK_EXT_transform_feedback): those draws capture nothing");
+    }
+    return fn_state > 0;
+}
+
+static void skip_note(const char *why) {
+    if (++tf_skipped <= 6) rt_log("tf: a transform feedback draw captures nothing: %s (%d so far)", why, tf_skipped);
+}
+
+int vk_xfb_draw_begin(VkExec *ex) {
+    if (!ex->xfb_active || !fns_ready()) return 0;
+    const NVNshaderData *vs = stage_entry(ex->prog, 0);
+    if (!vs || !nvn_xfb_layout(vs->control, &lay)) return skip_note("the vertex shader has no transform feedback layout"), 0;
+    VkBuffer buf[4];
+    VkDeviceSize off[4], size[4];
+    nbound = 0;
+    for (int b = 0; b < 4; b++) {
+        if (!lay.stride[b]) continue;
+        const p_bind_xfb *x = &ex->xfb_buf[b];
+        if (b != nbound) return skip_note("its buffers are not bound from index 0 on"), 0;
+        if (!x->addr || written[b] >= x->size) return skip_note("a buffer is unbound or full"), 0;
+        span_addr[b] = x->addr + written[b];
+        if (!vk_mem_resolve(span_addr[b], 1, &span[b]) || span[b].offset % 4) return skip_note("a buffer is not backed"), 0;
+        VK_MEM_USE(span[b]);
+        uint64_t n = x->size - written[b];
+        buf[b] = span[b].buffer, off[b] = span[b].offset, size[b] = n < span[b].avail ? n : span[b].avail;
+        nbound++;
+    }
+    if (!nbound) return 0;
+    if (++tf_draws <= 4) {
+        char d[200];
+        int o = 0;
+        for (int b = 0; b < nbound; b++)
+            o += snprintf(d + o, sizeof d - o, " [%d: stride %u, %u components from %#x]", b, lay.stride[b], lay.n[b],
+                          lay.loc[b][0]);
+        rt_log("tf: draw %d captures into %d buffers:%s", tf_draws, nbound, d);
+    }
+    rec_drain();
+    fn_bind(ex->cb, 0, (uint32_t)nbound, buf, off, size);
+    fn_begin(ex->cb, 0, 0, NULL, NULL);
+    ex->recorded += 2;
+    return 1;
+}
+
+// Vertices a draw of n vertices and inst instances sends down the pipeline (what transform feedback captures).
+static uint64_t captured_vertices(int prim, uint32_t n, uint32_t inst) {
+    uint64_t v;
+    switch (prim) {
+    case NVN_DRAW_PRIMITIVE_LINE_STRIP: v = n >= 2 ? 2ull * (n - 1) : 0; break;
+    case NVN_DRAW_PRIMITIVE_LINE_LOOP: v = n >= 2 ? 2ull * n : 0; break;
+    case NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP: case NVN_DRAW_PRIMITIVE_TRIANGLE_FAN: v = n >= 3 ? 3ull * (n - 2) : 0; break;
+    case NVN_DRAW_PRIMITIVE_LINES: v = n / 2 * 2ull; break;
+    case NVN_DRAW_PRIMITIVE_TRIANGLES: v = n / 3 * 3ull; break;
+    default: v = n; break;   // points; the rest is not expected with transform feedback
+    }
+    return v * (inst ? inst : 1);
+}
+
+void vk_xfb_draw_end(VkExec *ex, int prim, uint32_t n, uint32_t inst) {
+    rec_drain();
+    fn_end(ex->cb, 0, 0, NULL, NULL);
+    ex->recorded++;
+    uint64_t verts = captured_vertices(prim, n, inst);
+    for (int b = 0; b < nbound; b++) {
+        uint64_t bytes = verts * lay.stride[b], left = ex->xfb_buf[b].size - written[b];
+        if (bytes > left) bytes = left;
+        vk_mem_gpu_wrote(&span[b], bytes);
+        vk_usnap_drop(span_addr[b], bytes);
+        written[b] += bytes;
+    }
+    captured_any = 1;
 }
 
 void vk_exec_op_xfb(VkExec *ex, uint32_t op, const void *payload) {
     switch (op) {
     case OP_BIND_XFB: {
         const p_bind_xfb *b = payload;
-        if (b->index >= 0 && b->index < 4) ex->xfb_buf[b->index] = *b;
+        if (b->index >= 0 && b->index < 4) ex->xfb_buf[b->index] = *b, written[b->index] = 0;
         break;
     }
     case OP_XFB: {
         int kind = ((const p_xfb *)payload)->kind;
+        if (kind == XFB_BEGIN) memset(written, 0, sizeof written);
         ex->xfb_active = kind == XFB_BEGIN || kind == XFB_RESUME;
+        if (!ex->xfb_active && captured_any) vk_exec_barrier(ex), captured_any = 0;   // captured vertices -> vertex fetch
         break;
     }
     case OP_DRAW_XFB: {

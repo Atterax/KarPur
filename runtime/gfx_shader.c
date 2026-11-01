@@ -42,6 +42,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "nvn_xfb.h"
 #include "platform/platform.h"
 
 #define CONTROL_SIZE 0x880
@@ -1083,6 +1084,19 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
        ae8f4f4). Without it a shader that stores to memory is depth-tested late, and the G-buffer draws' EQUAL test
        after the depth prepass fails along contour lines. Already part of the code hash (the whole control section). */
     if (!strcmp(stage, "ps") && (control[0x718] & 1)) o += sprintf(o, ",\"early_fragment_tests\":true");
+    /* KarPur: transform feedback of a vertex shader (nvn_xfb.h): per buffer its stride and the Maxwell attribute word of
+       each component it captures; the translator then decorates those outputs for VK_EXT_transform_feedback. Part of
+       the code hash already (the whole control section). */
+    NvnXfb xfb;
+    if (!strcmp(stage, "vs") && nvn_xfb_layout(control, &xfb)) {
+        o += sprintf(o, ",\"xfb\":[");
+        for (int b = 0; b < 4; b++) {
+            o += sprintf(o, "%s{\"stride\":%u,\"locs\":[", b ? "," : "", xfb.stride[b]);
+            for (int i = 0; i < xfb.n[b]; i++) o += sprintf(o, "%s%u", i ? "," : "", xfb.loc[b][i]);
+            o += sprintf(o, "]}");
+        }
+        o += sprintf(o, "]");
+    }
     int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
     if (!host_f64) o += sprintf(o, ",\"softfloat64\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
@@ -1282,7 +1296,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     snprintf(spv_path, PATH_CAP + 80, "%s/%s.spv", cache_dir, hex);
     snprintf(res_path, PATH_CAP + 80, "%s/%s.res.json", cache_dir, hex);
     if (!write_file(code_path, code + skip, (size_t)(r->length - skip))) return fail("cannot write the code file", hex);
-    size_t cap = 2 * PATH_CAP * 6 + 2 * r->c1_len + 8192;
+    size_t cap = 2 * PATH_CAP * 6 + 2 * r->c1_len + 8192 + 4 * 200;   // + transform feedback layout
     char *req = malloc(cap), reply[LINE_MAX_LEN];
     if (!req) return plat_file_delete(code_path), fail("out of memory", hex);
     build_request(req, hex, r->stage_name, code_path, r->c1, r->c1_len, a, control);
