@@ -2094,13 +2094,19 @@ static int pipe_memo_on(void) {
 // frame with the one before: meshes drawn then that now have no instances (culled) or no draw at all (not issued), and
 // the largest of them. Press it once where a missing object is visible and once where it is not. Counts only.
 enum { SNAP_IND, SNAP_IDX, SNAP_ARR };
-typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; uint32_t chmask, misc, blend0, prog, vb0, vb1, itype; } SnapEnt;
+typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; uint32_t chmask, misc, blend0, prog, vb0, vb1, itype; int lay; } SnapEnt;
 #define SNAP_N 32768
 static SnapEnt *snap_cur, *snap_prev;
 static uint32_t snap_ncur, snap_nprev;
 static int snap_state, snap_key_was, snap_no;
 static uint64_t snap_frame;
 static uint32_t snap_itype;   // index type of the draw being added (op_draw_idx*), 9 for arrays
+static const GfxShader *snap_vs;   // vertex shader of the draw being added (prepare_draw)
+// Vertex layouts of snapshot entries: attributes (va_st words), streams (stride, divisor) and the vertex shader's input
+// mask, kept once each so the comparison can print the layouts of the meshes it lists.
+#define SNAP_LAYOUTS 128
+static struct { uint64_t hash; uint32_t vattr[16]; vs_st vstream[16]; uint32_t inputs; int printed; } snap_lay[SNAP_LAYOUTS];
+static int snap_nlay;
 
 static uint64_t snap_mix(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
     uint64_t h = 0xcbf29ce484222325ull;
@@ -2123,9 +2129,21 @@ static void snap_add_ex(const VkExec *ex, int kind, uint64_t key, uint32_t inst,
     uint32_t b0;
     memcpy(&b0, &p->blend[0], sizeof b0);
     uint64_t pr = (uint64_t)(uintptr_t)p->vs * 31 + (uint64_t)(uintptr_t)p->fs;
+    GfxShaderIo io[32];
+    uint32_t inputs = snap_vs ? gfx_shader_inputs(snap_vs, io) : 0;
+    uint64_t lh = snap_mix(inputs, 0, 0, 0);
+    for (int i = 0; i < 16; i++) lh = snap_mix(lh, p->vattr[i], p->vstream[i].stride, p->vstream[i].divisor);
+    int lay = -1;
+    for (int i = 0; i < snap_nlay; i++)
+        if (snap_lay[i].hash == lh) { lay = i; break; }
+    if (lay < 0 && snap_nlay < SNAP_LAYOUTS) {
+        lay = snap_nlay++;
+        snap_lay[lay].hash = lh, snap_lay[lay].inputs = inputs, snap_lay[lay].printed = 0;
+        memcpy(snap_lay[lay].vattr, p->vattr, sizeof p->vattr), memcpy(snap_lay[lay].vstream, p->vstream, sizeof p->vstream);
+    }
     snap_cur[snap_ncur++] = (SnapEnt){key, inst, count, 1, (uint8_t)kind, p->chmask.mask, misc, b0,
                                       (uint32_t)(pr ^ pr >> 32), (uint32_t)ex->vbuf[0].size, (uint32_t)ex->vbuf[1].size,
-                                      snap_itype};
+                                      snap_itype, lay};
 }
 #define snap_add(kind, key, inst, count) snap_add_ex(ex, kind, key, inst, count)
 
@@ -2195,8 +2213,8 @@ static void snap_finish(void) {
                    big_c[k].count, big_c[k].inst, big_c[k].draws);
         for (int k = 0; k < 8 && big_g[k].count; k++)
             rt_log("vk_exec:   now not issued: %s, %u indices (type %u), %u instances before, %u draws; state %#x, "
-                   "vertex buffers %u/%u bytes", kn[big_g[k].kind], big_g[k].count, big_g[k].itype, big_g[k].inst,
-                   big_g[k].draws, big_g[k].misc, big_g[k].vb0, big_g[k].vb1);
+                   "vertex buffers %u/%u bytes, layout %d", kn[big_g[k].kind], big_g[k].count, big_g[k].itype, big_g[k].inst,
+                   big_g[k].draws, big_g[k].misc, big_g[k].vb0, big_g[k].vb1, big_g[k].lay);
         SnapEnt big_n[10] = {0};
         for (uint32_t i = 0; i < snap_ncur; i++) {
             const SnapEnt *c = &snap_cur[i];
@@ -2212,8 +2230,33 @@ static void snap_finish(void) {
         }
         for (int k = 0; k < 10 && big_n[k].count; k++)
             rt_log("vk_exec:   newly drawn: %s, %u indices (type %u), %u instances, %u draws; state %#x, vertex buffers "
-                   "%u/%u bytes", kn[big_n[k].kind], big_n[k].count, big_n[k].itype, big_n[k].inst, big_n[k].draws,
-                   big_n[k].misc, big_n[k].vb0, big_n[k].vb1);
+                   "%u/%u bytes, layout %d", kn[big_n[k].kind], big_n[k].count, big_n[k].itype, big_n[k].inst, big_n[k].draws,
+                   big_n[k].misc, big_n[k].vb0, big_n[k].vb1, big_n[k].lay);
+        // the layouts of the listed meshes, each once per run: attribute i = Location i of the vertex shader
+        const SnapEnt *lists[2] = {big_g, big_n};
+        int lens[2] = {8, 10};
+        for (int l = 0; l < 2; l++)
+            for (int k = 0; k < lens[l] && lists[l][k].count; k++) {
+                int li = lists[l][k].lay;
+                if (li < 0 || snap_lay[li].printed) continue;
+                snap_lay[li].printed = 1;
+                char buf[1200], *o = buf, *end = buf + sizeof buf;
+                o += snprintf(o, (size_t)(end - o), "vk_exec: layout %d: shader inputs %#x;", li, snap_lay[li].inputs);
+                uint32_t used_streams = 0;
+                for (int a = 0; a < 16 && end - o > 60; a++) {
+                    va_st v;
+                    memcpy(&v, &snap_lay[li].vattr[a], sizeof v);
+                    if (!(snap_lay[li].inputs >> a & 1) && !v.fmt) continue;
+                    o += snprintf(o, (size_t)(end - o), " a%d fmt %#x s%u +%u%s;", a, (unsigned)v.fmt, (unsigned)v.stream,
+                                  (unsigned)v.offset, snap_lay[li].inputs >> a & 1 ? "" : " (unread)");
+                    used_streams |= 1u << v.stream;
+                }
+                for (int b = 0; b < 16 && end - o > 40; b++)
+                    if (used_streams >> b & 1)
+                        o += snprintf(o, (size_t)(end - o), " stream %d stride %u divisor %u;", b,
+                                      snap_lay[li].vstream[b].stride, snap_lay[li].vstream[b].divisor);
+                rt_log("%s", buf);
+            }
     }
     SnapEnt *t = snap_prev;
     snap_prev = snap_cur, snap_nprev = snap_ncur;
@@ -2480,6 +2523,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
+    snap_vs = s.vs;
     if (vk_exec_oq_counting()) oq_draw_note(ex, &s, count);
     if (vk_oq_depth.img && ex->depth.image == vk_oq_depth.img && s.ds.dt) {
         if (s.ds.dw) vk_oq_depth.dwrite_draws++, vk_oq_depth.dwrite_small += count <= 6;

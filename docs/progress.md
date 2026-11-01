@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: LOD0-Modelle haben einen anderen Vertex-Aufbau
+- F8 mit Indextyp und Puffergrößen (alle Indizes 16 Bit): Die beim Hinschauen gezeichneten detailreichen Modelle (20628/16014/12225/10239 … Indizes) haben alle Vertex-Puffer 1 mit **760 Bytes**; die einfachen Modelle beim Wegschauen 2696/2780/9564 Bytes. `VB_WHOLE=1` änderte nichts, die Größe ist es nicht.
+- Werkzeug zeigt jetzt das Vertex-Layout der gelisteten Meshes: `vk_exec: layout N: shader inputs …; aK fmt … sS +Offset; stream S stride … divisor …` (Attribut K = Location K des Vertex-Shaders).
+
 ### 2026-11-01: Ursache eingegrenzt: Die detailreichsten Modelle (LOD0) sind unsichtbar
 - F8-Vergleich mit Zustand: „not issued“ und „newly drawn“ haben dieselben Zustände (Tiefe GREATER + Schreiben, Stencil, 4 Farbziele, teils A2C). Es ist ein **LOD-Tausch**: Beim Hinschauen ersetzt das Spiel 6270/2553-Index-Modelle durch 25359/18462/12288-Index-Modelle, beim Wegdrehen umgekehrt. Die hochdetaillierten Modelle kommen unsichtbar heraus.
 - Nächster Test: `TOTK_VB_WHOLE=1` (Vertex-Puffer bis zum Ende des Speichers binden; robuster Vertex-Abruf liefert sonst Nullen hinter der Bindung). Snapshot zeigt jetzt Indextyp (0 Byte, 1 16 Bit, 2 32 Bit, 9 ohne Index) und die Größen der Vertex-Puffer 0/1.
