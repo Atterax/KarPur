@@ -1650,3 +1650,7 @@ long plat_child_read(PlatChild *c, void *buf, size_t cap) {
 }
 
 void (*plat_fault_extra)(char *buf, size_t n);   // set by vk_rec.c; faults in other modules are not reported here
+
+// Read watch (platform.h): Windows only.
+int plat_read_watch(uint64_t addr, uint64_t n) { (void)addr, (void)n; return 0; }
+int plat_read_watch_take(PlatWatchHit *out, int max) { (void)out, (void)max; return 0; }

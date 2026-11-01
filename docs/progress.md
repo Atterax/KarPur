@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Lesewächter für die Ausgaben der Compute-Shader
+- Neu: `TOTK_READ_WATCH=1`. Storage-Buffer ≥ 64 KiB, die ein Dispatch schreibt (GPU-Culling: 256 KiB, 1 MiB, Draw-Argumente), werden nach Abschluss der Submission unzugänglich gemacht (höchstens alle 30 Frames); der erste Zugriff je Seite wird mit Befehl und Rücksprungadressen in karpur.exe geloggt (`vk_exec: read watch: buffer N … accessed at karpur+… called from …`), dann läuft der Zugriff weiter. Windows: Vectored Exception Handler `read_watch_veh` (platform/win32.c), Linux ohne Funktion.
+- `tools/symbolize.py --log <log> --grep "read watch"` ersetzt alle karpur+0x… einer Logzeile durch Symbolnamen (f_<Gastadresse> = Spielcode).
+- Zweck: Kandidat 1 prüfen (CPU liest Ergebnisse des GPU-Cullings). Zugriffe aus der Runtime selbst (Argumente lesen, Rückschreiben) erscheinen auch; Spielcode erkennt man an f_70….
+
 ### 2026-11-01: Kein Thread-Wettlauf; Stand der Suche und nächster Plan
 - `ONE_CPU=1` (~15 fps) und `ONE_CPU=2`: gleiche fehlende Objekte, Ploppen unverändert. Wettlauf zwischen CPU-Threads ausgeschlossen.
 - `MapPhysicalMemory … failed 0x10801` beim Start ist normal: das Spiel holt Speicher bis zur Grenze (Pool 0xCD500000 = Retail). Zelda-spezifische Eingriffe (ov_zstd, LOD guard) sind für Purpur nicht aktiv bzw. greifen nicht.

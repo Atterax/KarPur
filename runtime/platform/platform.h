@@ -197,6 +197,13 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+// KarPur diagnostic (read watch): the committed pages of [addr, addr+n) become inaccessible until the next access to
+// each; that access (any thread, read or write) is recorded with the faulting instruction and the return addresses in
+// this executable, the page gets its protection back and the access runs again. 1 when anything was armed.
+// plat_read_watch_take copies and clears up to max recorded accesses. Windows only (0 elsewhere).
+typedef struct { uint64_t addr; uint64_t rip; uint64_t frames[6]; int nframes; } PlatWatchHit;
+int plat_read_watch(uint64_t addr, uint64_t n);
+int plat_read_watch_take(PlatWatchHit *out, int max);
 // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);

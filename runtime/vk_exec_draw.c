@@ -2087,6 +2087,8 @@ static int pipe_memo_on(void) {
     return PM.on;
 }
 
+static void rww_poll(void);   // read watch, below
+
 // ---- F8 draw snapshots (KarPur diagnostic)
 // F8 in the game window marks the next frame: its draws are collected as (mesh key, instances), where the key is the
 // index buffer, first index, index count and vertex offset (indirect: as the CPU sees the arguments, which a shader
@@ -2294,7 +2296,7 @@ static void skip_tick(void) {
     skip_draws++;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     static uint64_t edge_f;
-    if (f != edge_f) edge_f = f, snap_frame_edge(f);
+    if (f != edge_f) edge_f = f, snap_frame_edge(f), rww_poll();
     if (!skip_frame0) skip_frame0 = f ? f : 1;
     if (f < skip_frame0 + 600) return;
     uint64_t any = 0;
@@ -2712,6 +2714,78 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 // the target the proxies test against, "depth" any depth image), storage buffers (size, written) and whether a written
 // one covers the arguments of the indirect draws seen so far (ind_lo/ind_hi). A GPU culling pass that reads a depth
 // texture or writes the draw arguments shows up here.
+// ---- read watch (KarPur diagnostic, TOTK_READ_WATCH=1)
+// Does game code on the CPU read what the compute shaders write? The storage buffers of at least 64 KiB a dispatch
+// writes (Violet's GPU culling: 256 KiB, 1 MiB, the draw arguments) are made inaccessible once the submission is done
+// (plat_read_watch), at most every 30 frames; the first access to each page is logged with the instruction and the
+// return addresses in karpur.exe, which tools/symbolize.py turns into function names (f_<guest address> for game
+// code). Addresses only.
+#define RWW_N 16
+static struct { uint64_t addr, size; } rww[RWW_N];
+static int rww_n;
+static int rww_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("READ_WATCH", "0");
+        if (on) rt_log("vk_exec: read watch on the storage buffers compute shaders write (TOTK_READ_WATCH=1)");
+    }
+    return on;
+}
+
+static void rww_arm_cb(void *arg) {
+    (void)arg;
+    for (int i = 0; i < rww_n; i++) plat_read_watch(rww[i].addr, rww[i].size);
+}
+
+static void rww_note(VkExec *ex, const GfxShader *cs) {
+    if (!rww_on()) return;
+    const GfxShaderRes *res;
+    int nr = gfx_shader_resources(cs, GFX_RES_SSBO, &res);
+    for (int r = 0; r < nr; r++) {
+        if (!(res[r].flags & 1)) continue;
+        int ubo, slot = ssbo_slot(&res[r], NVN_STAGE_CS, &ubo);
+        if (slot < 0 || slot >= 16 || ubo) continue;
+        const p_bind_buf *b = &ex->ssbo[NVN_STAGE_CS][slot];
+        if (b->size < 65536 || nvn_gpu_only(b->addr)) continue;
+        int k = 0;
+        while (k < rww_n && rww[k].addr != b->addr) k++;
+        if (k == rww_n && rww_n < RWW_N) rww[rww_n++] = (typeof(rww[0])){b->addr, b->size};
+    }
+    static uint64_t last_f;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (rww_n && f >= last_f + 30) last_f = f, vk_completion_add(ex->fence, rww_arm_cb, NULL);
+}
+
+// Logs the recorded accesses: each distinct faulting instruction once (at most 60), with its buffer.
+static void rww_poll(void) {
+    if (!rww_on()) return;
+    static uint64_t seen[64];
+    static int nseen;
+    PlatWatchHit h[64];
+    int n = plat_read_watch_take(h, 64);
+    uintptr_t base = plat_exe_base();
+    for (int i = 0; i < n; i++) {
+        int dup = 0;
+        for (int k = 0; k < nseen && !dup; k++) dup = seen[k] == h[i].rip;
+        if (dup || nseen >= 64) continue;
+        seen[nseen++] = h[i].rip;
+        int buf = -1;
+        for (int k = 0; k < rww_n; k++)
+            if (h[i].addr - rww[k].addr < rww[k].size) buf = k;
+        char fr[200] = "", *o = fr;
+        for (int k = 0; k < h[i].nframes && o - fr < 170; k++)
+            o += snprintf(o, (size_t)(fr + sizeof fr - o), " karpur+%#llx", (unsigned long long)(h[i].frames[k] - base));
+        if (h[i].rip - base < 0x40000000u)
+            rt_log("vk_exec: read watch: buffer %d (%llu bytes) +%#llx accessed at karpur+%#llx; called from%s", buf,
+                   buf >= 0 ? (unsigned long long)rww[buf].size : 0ull,
+                   buf >= 0 ? (unsigned long long)(h[i].addr - rww[buf].addr) : 0ull,
+                   (unsigned long long)(h[i].rip - base), fr[0] ? fr : " ?");
+        else
+            rt_log("vk_exec: read watch: buffer %d accessed outside karpur.exe (rip %#llx); called from%s", buf,
+                   (unsigned long long)h[i].rip, fr[0] ? fr : " ?");
+    }
+}
+
 static void cs_note(VkExec *ex, const GfxShader *cs, const p_dispatch *d) {
     static const GfxShader *seen[4];
     static int nseen[4], n;
@@ -2802,6 +2876,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     bind_resources(ex, info);
     twin_dispatch = 0;
     cs_note(ex, cs, d);
+    rww_note(ex, cs);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);

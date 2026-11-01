@@ -561,6 +561,79 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     AddVectoredExceptionHandler(1, fault_veh);
 }
 
+// ---- read watch (platform.h): pages made inaccessible; the first access to each is recorded and let through.
+#define RW_PAGES 4096
+#define RW_HITS 256
+static struct { uint64_t page; DWORD prot; } rw_page[RW_PAGES];
+static int rw_npages;
+static PlatWatchHit rw_hit[RW_HITS];
+static int rw_nhits;
+static volatile LONG rw_spin;
+static void rw_lock(void) { while (InterlockedExchange(&rw_spin, 1)) YieldProcessor(); }
+static void rw_unlock(void) { InterlockedExchange(&rw_spin, 0); }
+
+static LONG CALLBACK read_watch_veh(EXCEPTION_POINTERS *ep) {
+    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 || !rw_npages)
+        return EXCEPTION_CONTINUE_SEARCH;
+    uint64_t addr = (uint64_t)er->ExceptionInformation[1], page = addr & ~0xfffull;
+    rw_lock();
+    int found = -1;
+    for (int i = 0; i < rw_npages; i++)
+        if (rw_page[i].page == page) { found = i; break; }
+    if (found < 0) {
+        rw_unlock();
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    DWORD old;
+    VirtualProtect((void *)(uintptr_t)page, 0x1000, rw_page[found].prot, &old);
+    rw_page[found] = rw_page[--rw_npages];
+    if (rw_nhits < RW_HITS) {
+        PlatWatchHit *h = &rw_hit[rw_nhits++];
+        memset(h, 0, sizeof *h);
+        h->addr = addr, h->rip = (uint64_t)ep->ContextRecord->Rip;
+        uintptr_t base = (uintptr_t)GetModuleHandleW(NULL);
+        void *f[48];
+        USHORT n = RtlCaptureStackBackTrace(0, 48, f, NULL);
+        for (USHORT i = 0; i < n && h->nframes < 6; i++)
+            if ((uintptr_t)f[i] - base < 0x40000000u && (uintptr_t)f[i] != (uintptr_t)h->rip)
+                h->frames[h->nframes++] = (uint64_t)(uintptr_t)f[i];
+    }
+    rw_unlock();
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+int plat_read_watch(uint64_t addr, uint64_t n) {
+    static volatile LONG installed;
+    if (!InterlockedExchange(&installed, 1)) AddVectoredExceptionHandler(1, read_watch_veh);
+    int armed = 0;
+    for (uint64_t p = addr & ~0xfffull; p < addr + n; p += 0x1000) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)(uintptr_t)p, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) continue;
+        DWORD prot = mbi.Protect & 0xff;
+        if (prot != PAGE_READWRITE && prot != PAGE_READONLY) continue;
+        rw_lock();
+        int dup = 0;
+        for (int i = 0; i < rw_npages && !dup; i++) dup = rw_page[i].page == p;
+        if (!dup && rw_npages < RW_PAGES) {
+            DWORD old;
+            if (VirtualProtect((void *)(uintptr_t)p, 0x1000, PAGE_NOACCESS, &old))
+                rw_page[rw_npages].page = p, rw_page[rw_npages++].prot = old & 0xff, armed = 1;
+        }
+        rw_unlock();
+    }
+    return armed;
+}
+
+int plat_read_watch_take(PlatWatchHit *out, int max) {
+    rw_lock();
+    int n = rw_nhits < max ? rw_nhits : max;
+    memcpy(out, rw_hit, sizeof *out * (size_t)n);
+    rw_nhits = 0;
+    rw_unlock();
+    return n;
+}
+
 static void (*crash_fn)(const PlatCrash *c);
 void (*plat_fault_extra)(char *buf, size_t n);
 

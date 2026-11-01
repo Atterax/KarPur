@@ -5,6 +5,10 @@ tools/build_game.py lists every symbol with its address; this tool prints the sy
 distance from its start. Output: symbol names and offsets only.
 
   .venv\\Scripts\\python tools\\symbolize.py karpur+0xc7a4607 karpur+0xc8a6207
+  .venv\\Scripts\\python tools\\symbolize.py --log build\\game\\logs\\karpur.log --grep "read watch"
+
+With --log, every line of the log that contains the --grep text is printed with each karpur+0x... replaced by
+symbol+offset.
 """
 
 import argparse
@@ -44,7 +48,9 @@ def load(path):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('addresses', nargs='+', help='karpur+0x... as the fault report prints them')
+    ap.add_argument('addresses', nargs='*', help='karpur+0x... as the fault report prints them')
+    ap.add_argument('--log', type=Path, help='a log whose karpur+0x... addresses are replaced by symbols')
+    ap.add_argument('--grep', default='karpur+', help='with --log: only lines containing this text')
     ap.add_argument('--map', type=Path, default=MAP)
     ap.add_argument('--base', type=lambda s: int(s, 16), default=None, help='image base (hex); default: detected')
     a = ap.parse_args()
@@ -58,6 +64,17 @@ def main():
     if a.base is None:
         a.base = BASE if addrs[-1] >= BASE else 0
     print(f'{len(syms)} symbols in {a.map.name}, image base {a.base:#x}')
+
+    def name(off):
+        i = bisect_right(addrs, a.base + off) - 1
+        return f'{syms[i][1]}+{a.base + off - syms[i][0]:#x}' if i >= 0 else f'karpur+{off:#x}'
+
+    if a.log:
+        if not a.log.is_file():
+            sys.exit(f'error: {a.log} not found')
+        for line in a.log.read_text(errors='replace').splitlines():
+            if a.grep in line:
+                print(re.sub(r'karpur\+0x([0-9a-fA-F]+)', lambda m: name(int(m.group(1), 16)), line))
     for text in a.addresses:
         off = int(text.split('+', 1)[-1], 16)
         va = a.base + off
