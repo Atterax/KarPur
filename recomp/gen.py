@@ -224,11 +224,13 @@ def setjmp_targets(mod, starts_abs):
             a = int(a)
             if not mod.in_text(a + 12):
                 continue
-            w0, w1, w3 = mod.word(a), mod.word(a + 4), mod.word(a + 12)
+            w0, w1, w3 = int(mod.word(a)), int(mod.word(a + 4)), int(mod.word(a + 12))
             if (w0 & 0x9F00001F) != 0x90000010 or (w1 & 0xFFC003FF) != 0xF9400211 or w3 != 0xD61F0220:
                 continue
             imm = ((w0 >> 29) & 3) | (((w0 >> 5) & 0x7FFFF) << 2)
-            page = (a & ~0xFFF) + (_sext(imm, 21) << 12)
+            if imm & (1 << 20):   # sign of the 21-bit ADRP immediate (scalar; _sext works on numpy arrays)
+                imm -= 1 << 21
+            page = (a & ~0xFFF) + (imm << 12)
             if page + ((w1 >> 10) & 0xFFF) * 8 in got:
                 out.add(a)
     return out
