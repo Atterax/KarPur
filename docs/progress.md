@@ -5,8 +5,8 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe` erneut starten, Log-Ende schicken. Erwartung: Das Spiel kommt über die Sprachabfrage hinaus; nächster Abbruch entweder an einem weiteren Systemdienst oder an einer der 36 fehlenden NVN-Funktionen, sobald sie aufgerufen wird.
-2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden (das Spiel fordert pauschal fast alle an, siehe Protokoll).
+1. Maintainer: Lauf mit `TOTK_TRACE=ipc,host` (alle IPC-Befehle mit Ergebnis, erster Aufruf jeder Host-Ersatzfunktion mit Aufrufer). Gesucht: welche Anfrage oder Ersatzfunktion vor dem Absturz in `nn::os::LockMutex` ein leeres Objekt hinterlässt.
+2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
 ### Offene Fragen
@@ -19,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Dienst `set` läuft, Absturz in nn::os::LockMutex
+- `set` wird geöffnet und beantwortet. Danach: ein Präemptions-Interrupt (harmlos), viermal `audren:u` geöffnet, dann Zugriffsverletzung beim Lesen von `0xe1` in `nn::os::LockMutex` mit `x0 = 0xe0`: ein Mutex bei Offset `0xe0` eines Objekts, dessen Zeiger 0 ist.
+- Aufrufer `main+0x14fe804`, Kette `main+0x11bcec8` → `0x11acbb0` → `0x92bdc0` → `0x165e87c` → `nnMain+0xac`. Dieselbe Kette wie beim Sprachvergleich (`main+0x11bcd04`), also dieselbe Startfunktion ein Stück weiter.
+- Vermutung: Ein Initialisierungsschritt davor (Audio über die vier `audren:u`-Sitzungen? eine TotK-Ersatzfunktion mit SDK-20-Annahmen?) ist still gescheitert und hat kein Objekt angelegt. Nächster Lauf mit Trace.
 
 ### 2026-11-01: Grafik-Initialisierung durch, Abbruch am Dienst `set`
 - Nach den 65 neuen NVN-Funktionen läuft die Grafik-Initialisierung durch; danach öffnet das Spiel `audren:u` zweimal (Ton über SDL auf dem Standardgerät, 48 kHz) und fragt die Sprache ab.
