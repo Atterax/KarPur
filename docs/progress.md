@@ -2,18 +2,21 @@
 
 Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. Neueste Einträge oben.
 
-## Aktueller Meilenstein: M1, Werkzeuge & Extraktion
+## Aktueller Meilenstein: M2, Lifter läuft
 
 ### Nächste Schritte
-1. Maintainer führt `tools/compare_totk.py` aus und schickt den Vergleich.
-2. Vergleich auswerten: Welche TotK-Ersatzfunktionen gibt es in SDK 13.3.13 unverändert, welche heißen anders, welche Bereiche sind neu (Online/Pia/NPLN, Bluetooth, LDN)?
-3. Danach: RomFS-Extraktion (Basis + BKTR-Update zusammenführen, wie bei TotK mit gepatchtem hactool) und Toolchain für M2 (MSYS2/Clang).
+1. Maintainer installiert MSYS2 mit Clang, LLD und Ninja ([setup-windows.md](setup-windows.md), Schritt 8).
+2. Lifter von TotK Recomp (`recomp/`, MIT) nach `recomp/` übernehmen: NSO-Laden, ARM64-Decoder, NEON-Lowering, Sprungtabellen, Generator. TotK-Spezifisches (Patches, Versionstabellen) weglassen.
+3. Werkzeug, das den Lifter auf `main`, `sdk`, `subsdk0` laufen lässt und berichtet: Funktionen, nicht unterstützte Instruktionen, Sprungtabellen; danach Kompiliertest mit Clang.
 
 ### Offene Fragen
-- Welche Spielversion genau (Build-ID von `main`)? Kommt aus dem M1-Bericht.
-- Wie viel der TotK-Runtime passt zur SDK-Version von Karmesin/Purpur?
+- Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
 
 ## Protokoll
+
+### 2026-11-01: TotK-Vergleich, M1 erledigt
+- **Alle 210 SDK-Symbole, die die TotK-Runtime behandelt, gibt es in Purpur unter demselben Namen.** Das Ersatzkonzept (Austausch auf `nn::*`-Funktionsebene) lässt sich direkt übertragen.
+- Bereiche, die TotK nie anfasst: reine Bibliotheken, die einfach mitübersetzt werden (`nn::util` 44, `nn::fontll` 24, `nn::mem` 13, `nn::crypto` 12, `nn::lmem` 6, `nn::result`, `nn::detail`) und Online-/Systemfunktionen, die wir als „offline“ beantworten (`nn::bluetooth` 34, `nn::socket` 29, `nn::ldn` 27, `nn::bcat` 22, `nn::nifm` 8, `nn::ssl` 8, `nn::web` 8, `nn::settings` 3, `nn::ngc` 3, `nn::album` 3, `nn::nsd` 2, `nn::ec` 1).
 
 ### 2026-11-01: Erster M1-Bericht (Purpur, Update 4.0.0)
 - Basis: XCI 6,63 GiB, Program-NCA keygen 14. Update 4.0.0: NSP 4,88 GiB, keygen 17, BKTR. ExeFS beider entpackt, alle Hashes OK.

@@ -132,6 +132,36 @@ Es dauert je nach Festplatte etwa eine Minute. Der Bericht enthält nur Kennunge
 
 Wenn statt des Berichts eine Zeile mit `error:` kommt, schick einfach diese Zeile.
 
+## 8. C-Compiler installieren (Meilenstein M2)
+
+Der übersetzte Spielcode ist C-Code, und der muss zu einem Windows-Programm kompiliert werden. Dafür brauchen wir **Clang** aus **MSYS2**. MSYS2 ist eine Sammlung von Entwickler-Werkzeugen für Windows. Die Installation lädt etwa 1–2 GB herunter.
+
+MSYS2 installieren (landet in `C:\msys64`):
+
+```
+winget install --id MSYS2.MSYS2 -e
+```
+
+MSYS2 aktualisieren. **Diesen Befehl zweimal hintereinander ausführen**, weil der erste Durchlauf nur die Grundpakete erneuert und sich dann beendet:
+
+```
+C:\msys64\usr\bin\bash.exe -lc "pacman -Syuu --noconfirm"
+```
+
+Clang, den Linker LLD und das Build-Werkzeug Ninja installieren:
+
+```
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld mingw-w64-ucrt-x86_64-ninja"
+```
+
+Prüfen:
+
+```
+C:\msys64\ucrt64\bin\clang.exe --version
+```
+
+Erwartete Ausgabe: eine Zeile wie `clang version 2x.x.x` und darunter `Target: x86_64-w64-windows-gnu`.
+
 ## Was später noch dazukommt
 
-Für den Lifter (Meilenstein M2) kommen MSYS2 mit Clang, Ninja und das Vulkan SDK dazu. Diese Anleitung wird dann erweitert.
+Für die Grafik (Meilenstein M4) kommen das Vulkan SDK und .NET (für den Shader-Übersetzer) dazu. Diese Anleitung wird dann erweitert.
