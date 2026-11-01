@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: F8-Vergleich: Die CPU des Spiels schickt die Draws nicht mehr ab
+- Kamera vom Baum weg (Blätter sichtbar) → zum Baum hin (weg): pro Vergleich 13–34 Meshes „now not issued“ (auch direkte indizierte Draws, z. B. 11805/3930/2694 Indizes), nur 0–2 „now without instances“, dafür 16–37 „newly drawn“. Das GPU-Culling ist es nicht; das Spiel wechselt auf der CPU zu anderen Draws, sobald das Objekt zwischen Kamera und Figur steht (Kamera-Ausblendung; auf der Switch gepunktet durchsichtig).
+- Verdacht: Die neuen Draws der Ausblendung kommen unsichtbar heraus. Das Werkzeug zeigt jetzt für „not issued“ und „newly drawn“ den Zustand: Bits von `state` (0 Tiefentest, 1 Tiefe schreiben, 2–5 Tiefenfunktion, 6 Stencil, 7 A2C, 8 A2C-Dither, 9 Fragment-Shader, 10–11 Cull, 12–19 Blend-Maske, 20–23 Farbziele, 24 Raster-Discard, 25 Tiefenziel), Kanalmaske, Blend-Zustand von Ziel 0, Shader-Kennung.
+
 ### 2026-11-01: EQUAL-Tiefentest nicht die Ursache; Vergleichswerkzeug F8
 - `DEPTH_EQUAL=0`: Das Spiel nutzt EQUAL, aber die Objekte ploppen weiter. Bisher ausgeschlossen: übersprungene Draws, Vertex-Formate, Ersatztexturen, Vorpass, GPL, Verdeckungsabfragen (Wert, Größe, GPU-seitig), Datenwettläufe, Spiegel, Shared Memory, Grenzprüfung, Rekonvergenz, A2C, Discard, EQUAL.
 - Neues Werkzeug: **F8** im Spielfenster nimmt den nächsten Frame auf (Meshes: Indexpuffer/erster Index/Anzahl/Vertex-Offset → Instanzen); das zweite F8 vergleicht mit dem vorigen: `vk_exec: snapshot N vs N-1: drawn in both …; drawn before, now without instances …; now not issued …` plus die 8 größten je Gruppe. Zeigt, ob ein fehlender Baum vom Culling 0 Instanzen bekommt, gar nicht gezeichnet wird oder gezeichnet, aber unsichtbar ist.

@@ -2087,7 +2087,7 @@ static int pipe_memo_on(void) {
 // frame with the one before: meshes drawn then that now have no instances (culled) or no draw at all (not issued), and
 // the largest of them. Press it once where a missing object is visible and once where it is not. Counts only.
 enum { SNAP_IND, SNAP_IDX, SNAP_ARR };
-typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; } SnapEnt;
+typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; uint32_t chmask, misc, blend0, prog; } SnapEnt;
 #define SNAP_N 32768
 static SnapEnt *snap_cur, *snap_prev;
 static uint32_t snap_ncur, snap_nprev;
@@ -2101,10 +2101,24 @@ static uint64_t snap_mix(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
     return h;
 }
 
-static void snap_add(int kind, uint64_t key, uint32_t inst, uint32_t count) {
+// misc: bit 0 depth test, 1 depth write, 2-5 depth func, 6 stencil test, 7 alpha to coverage, 8 a2c dither,
+// 9 fragment shader, 10-11 cull, 12-19 blend enable mask, 20-23 colour targets, 24 raster discard, 25 depth target.
+static void snap_add_ex(const VkExec *ex, int kind, uint64_t key, uint32_t inst, uint32_t count) {
     if (snap_state != 2 || snap_ncur >= SNAP_N) return;
-    snap_cur[snap_ncur++] = (SnapEnt){key, inst, count, 1, (uint8_t)kind};
+    const VkPipeState *p = &ex->pipe;
+    uint32_t ncol = 0;
+    for (int i = 0; i < 8; i++) ncol += p->color_fmt[i] != 0;
+    uint32_t misc = (uint32_t)p->ds.dt | (uint32_t)p->ds.dw << 1 | (uint32_t)p->ds.df << 2 | (uint32_t)p->ds.st << 6 |
+                    (uint32_t)(p->ms.a2c != 0) << 7 | (uint32_t)(p->ms.a2c_dither != 0) << 8 | (uint32_t)(p->fs != NULL) << 9 |
+                    (uint32_t)p->poly.cull << 10 | (uint32_t)(p->color.blend_en & 0xff) << 12 | (ncol & 15) << 20 |
+                    (uint32_t)(p->raster_discard != 0) << 24 | (uint32_t)(p->depth_fmt != 0) << 25;
+    uint32_t b0;
+    memcpy(&b0, &p->blend[0], sizeof b0);
+    uint64_t pr = (uint64_t)(uintptr_t)p->vs * 31 + (uint64_t)(uintptr_t)p->fs;
+    snap_cur[snap_ncur++] = (SnapEnt){key, inst, count, 1, (uint8_t)kind, p->chmask.mask, misc, b0,
+                                      (uint32_t)(pr ^ pr >> 32)};
 }
+#define snap_add(kind, key, inst, count) snap_add_ex(ex, kind, key, inst, count)
 
 static int snap_cmp(const void *a, const void *b) {
     uint64_t x = ((const SnapEnt *)a)->key, y = ((const SnapEnt *)b)->key;
@@ -2171,8 +2185,26 @@ static void snap_finish(void) {
             rt_log("vk_exec:   now without instances: %s, %u indices, %u instances before, %u draws", kn[big_c[k].kind],
                    big_c[k].count, big_c[k].inst, big_c[k].draws);
         for (int k = 0; k < 8 && big_g[k].count; k++)
-            rt_log("vk_exec:   now not issued: %s, %u indices, %u instances before, %u draws", kn[big_g[k].kind],
-                   big_g[k].count, big_g[k].inst, big_g[k].draws);
+            rt_log("vk_exec:   now not issued: %s, %u indices, %u instances before, %u draws; state %#x, mask %#x, "
+                   "blend %#x, shaders %08x", kn[big_g[k].kind], big_g[k].count, big_g[k].inst, big_g[k].draws,
+                   big_g[k].misc, big_g[k].chmask, big_g[k].blend0, big_g[k].prog);
+        SnapEnt big_n[10] = {0};
+        for (uint32_t i = 0; i < snap_ncur; i++) {
+            const SnapEnt *c = &snap_cur[i];
+            if (!c->inst) continue;
+            const SnapEnt *p = snap_find(snap_prev, snap_nprev, c->key);
+            if (p && p->inst) continue;
+            for (int k = 0; k < 10; k++)
+                if (c->count > big_n[k].count) {
+                    memmove(big_n + k + 1, big_n + k, sizeof *big_n * (size_t)(9 - k));
+                    big_n[k] = *c;
+                    break;
+                }
+        }
+        for (int k = 0; k < 10 && big_n[k].count; k++)
+            rt_log("vk_exec:   newly drawn: %s, %u indices, %u instances, %u draws; state %#x, mask %#x, blend %#x, "
+                   "shaders %08x", kn[big_n[k].kind], big_n[k].count, big_n[k].inst, big_n[k].draws, big_n[k].misc,
+                   big_n[k].chmask, big_n[k].blend0, big_n[k].prog);
     }
     SnapEnt *t = snap_prev;
     snap_prev = snap_cur, snap_nprev = snap_ncur;
