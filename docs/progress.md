@@ -5,8 +5,8 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M5, spielbar
 
 ### Nächste Schritte
-1. **Transform Feedback läuft** (Figuren, Pokémon, Animationen sichtbar). Offen: verformte Bäume (grüne Klumpen mit schwarzen Löchern), Absturz mit Pipeline-Libraries (siehe Protokoll). Alte Notiz: Übersetzer neu bauen (`tools\build_xlate.py`, Program.cs geändert → alle Shader werden neu übersetzt), Spiel bauen, Figuren prüfen. Log: `tf: transform feedback recorded ...`, `tf: draw N captures into 3 buffers: ...`, `vk_exec: program bind ...`. Wenn Figuren falsch aussehen: zuerst die Annahme „Location 0x20 + k = generisches Attribut k“ in `nvn_xfb.h` prüfen (Alternative: Maxwell-Wortoffset je Komponente).
-2. Bildfehler danach: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
+1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
+2. **Als Nächstes: Bildfehler.** Schatten flackern, Bäume flackern bzw. erscheinen als verformte Klumpen (kein TF). Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -20,6 +20,9 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Stabil mit Figuren
+- Mit Ein-Set-Layout für Pipelines ohne Fragment-Shader: kein Absturz mehr (GPL an), Spielerin, NPCs und Pokémon normal, 30 fps, Menüs, Karte, Speichern. Offen: Schatten und Bäume flackern.
 
 ### 2026-11-01: Treiberabsturz erklärt: leeres Fragment-Set im unabhängigen Layout
 - Paketbericht: Absturz in Op 47 = `vkCmdPushDescriptorSetWithTemplateKHR` (davor SetStencilReference/WriteMask/CompareMask), für die reine Vertex-Pipeline des TF-Durchgangs. Mit GPL an nutzt jede Pipeline ein INDEPENDENT_SETS-Layout (Set 0 Vertex, Set 1 Fragment); ohne Fragment-Shader ist Set 1 leer. Der NVIDIA-Treiber liest dann beim Push von Set 0 Adresse 0.
