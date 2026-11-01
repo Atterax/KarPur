@@ -1114,6 +1114,13 @@ static void ov_read_cache_list(Cpu *c) { ret_x(c, read_cache_list(arg_p(c, 0), a
 static void ov_close_cache_list(Cpu *c) { close_cache_list(arg_x(c, 0)); }
 // The fs priority only orders I/O inside the system fs process; host I/O is unordered.
 static void ov_set_priority(Cpu *c) { (void)c; }
+// KarPur: nn::fs::SetAllocator(alloc, free) hands the SDK's file-system client its heap. Every nn::fs call the game
+// makes is served by this file, so that client never runs; and the SDK's own SetAllocator would first ask fsp-srv
+// whether access logging is on (Scarlet/Violet's nninitStartup), a service the runtime does not serve.
+static void ov_fs_set_allocator(Cpu *c) {
+    rt_log("fs: SetAllocator(%#llx, %#llx): the host file system needs no guest allocator",
+           (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
+}
 #undef I32
 #undef I64
 
@@ -1148,6 +1155,7 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 #define S_READ_CACHE_LIST "_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi"
 #define S_CLOSE_CACHE_LIST "_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE"
 #define S_SET_PRIORITY "_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE"
+#define S_SET_ALLOCATOR "_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE"
 // romfs.c
 #define S_MOUNT_ROM "_ZN2nn2fs8MountRomEPKcPvm"
 #define S_QUERY_CACHE "_ZN2nn2fs22QueryMountRomCacheSizeEPm"
@@ -1184,6 +1192,7 @@ HOST_OVERRIDE(S_OPEN_CACHE_LIST, ov_open_cache_list);
 HOST_OVERRIDE(S_READ_CACHE_LIST, ov_read_cache_list);
 HOST_OVERRIDE(S_CLOSE_CACHE_LIST, ov_close_cache_list);
 HOST_OVERRIDE(S_SET_PRIORITY, ov_set_priority);
+HOST_OVERRIDE(S_SET_ALLOCATOR, ov_fs_set_allocator);
 
 // ---- --probe-fs
 // Every check calls the overrides the way guest code does: by synthetic address through rt_call, with AAPCS64

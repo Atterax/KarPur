@@ -5,9 +5,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M3, erstes Lebenszeichen
 
 ### Nächste Schritte
-1. Maintainer baut `karpur.exe` und startet `--selftest` und `--boot` ([setup-windows.md](setup-windows.md), Schritt 11), schickt das Ende von `game/report/boot.log`.
-2. Absturz- und Fehlerstellen aus dem Log nacheinander beheben (fehlende/abweichende SDK-Ersatzfunktionen, Strukturlayouts von SDK 13, Dienste, die Purpur zusätzlich nutzt).
-3. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
+1. Maintainer baut neu, startet `--boot` und schickt das Log-Ende und `build/game/uncovered-imports.txt`.
+2. Für jeden Bereich der Liste entscheiden: PC-Ersatz schreiben (Dateisystem, Eingabe, Konten, Zeit …) oder als „offline/nicht vorhanden“ beantworten (Netzwerk, Bluetooth, LDN, BCAT …).
+3. Absturz- und Fehlerstellen aus dem Log nacheinander beheben (fehlende/abweichende SDK-Ersatzfunktionen, Strukturlayouts von SDK 13, Dienste, die Purpur zusätzlich nutzt).
+4. Ziel M3: `karpur.exe` startet, die Spiel-Threads laufen los, Dateien aus der RomFS werden gelesen, und ein Log zeigt, wie weit der Start kommt.
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
@@ -17,6 +18,14 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Erster Start von karpur.exe
+- Build beim Maintainer: 502 Objekte, `karpur.exe` 236 MiB, Link 0,7 s. 905 Warnungen aus dem generierten Code (harmlos; jetzt mit `-w` stumm).
+- `--selftest`: bestanden. 3 Module (main `0x7000000000`, subsdk0 `0x7004800000`, sdk `0x7005000000`), 233.286 Funktionen im Dispatch.
+- `--boot`: Vulkan findet die RTX 5080, alle drei Module laden (main 283.698 Relocations), `nn::init::Start` läuft, `nnosInitialize` und `nninitInitializeSdkModule` laufen durch, die RomFS wird erkannt (30 Dateien). Abbruch in `nninitStartup` (main): `nn::fs::SetAllocator` → SDK-intern `IsEnabledAccessLog` → `GetFileSystemProxyServiceObject` → `sm: service "fsp-srv" is not implemented`.
+- Ursache: TotKs Ersatzfunktionen greifen nur an Import-Stellen (GOT); SDK-interne Aufrufe laufen im übersetzten Nintendo-Code und wollen echte Systemdienste.
+- Behoben: `nn::fs::SetAllocator` hat einen PC-Ersatz (`fs_host.c`).
+- Neu: Der Loader schreibt `uncovered-imports.txt` neben `karpur.exe`: alle Importe von main/subsdk0 aus Systembereichen des SDK ohne PC-Ersatz. Damit sehen wir alle Lücken auf einmal statt Absturz für Absturz.
 
 ### 2026-11-01: Runtime übernommen
 - Komplette Runtime aus TotK Recomp nach `runtime/` übernommen (141 Dateien, ~59.000 Zeilen, MIT; Herkunft jeder Datei steht in ihrem Kopf, die vollständige Liste in `licenses/TOTK-RECOMP-THIRD_PARTY_NOTICES.md`).

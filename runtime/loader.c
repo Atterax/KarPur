@@ -319,6 +319,94 @@ static void mark_used(int observers, const char *name) {
         if (!strcmp(hostfn_table_name(observers, i), name)) (observers ? obs_used : ovr_used)[i] = 1;
 }
 
+// ---- uncovered SDK imports (KarPur)
+// TotK Recomp replaces SDK functions where a module imports them (HOST_OVERRIDE). An import of a game module that
+// binds to the lifted sdk instead runs Nintendo's own client code, which talks to a system service over IPC; the
+// runtime serves only sm: and audren:u, so such a call ends in "sm: service ... is not implemented". This list names
+// every such import of main and subsdk*, in the SDK namespaces that reach system services, so the gaps are known
+// before the game runs into them one at a time. Written to uncovered-imports.txt next to karpur.exe.
+static const char *const SERVICE_NS[] = {
+    "fs", "hid", "account", "oe", "applet", "am", "time", "settings", "nifm", "bcat", "friends", "ldn", "socket",
+    "ssl", "web", "aoc", "pctl", "err", "prepo", "npns", "album", "ec", "nsd", "ngc", "bluetooth", "irsensor", "nfp",
+    "vi", "audio", "codec", "swkbd", "pl", "ns", "arp", "capsrv", "olsc", "pdm", "ro", "fatal", "lm", "apm", "psm",
+    "visrv", "omm", "erpt", "hidbus", "mii", "nfc", "news", "nim", "spl", "ssl", "usb", "sasbus", "btm", "grc",
+};
+typedef struct { char ns[24]; const char *module, *name; } Uncovered;
+static Uncovered *uncovered;
+static int nuncovered, capuncovered;
+
+// The first namespace below nn of a mangled name (_ZN2nn2fs8OpenFile... -> "fs"), or "" when it is not nn::.
+static void nn_namespace(const char *sym, char *out, size_t cap) {
+    out[0] = 0;
+    const char *s = !strncmp(sym, "_ZN2nn", 6) ? sym + 6 : !strncmp(sym, "_ZNK2nn", 7) ? sym + 7 : NULL;
+    if (!s) return;
+    char *end;
+    unsigned long n = strtoul(s, &end, 10);
+    if (end == s || n == 0 || n >= cap) return;
+    memcpy(out, end, n);
+    out[n] = 0;
+}
+
+static void note_uncovered(const char *module, const char *name) {
+    if (!strcmp(module, "sdk")) return;
+    char ns[24];
+    nn_namespace(name, ns, sizeof ns);
+    if (!ns[0]) return;
+    int service = 0;
+    for (size_t i = 0; i < sizeof SERVICE_NS / sizeof *SERVICE_NS && !service; i++) service = !strcmp(ns, SERVICE_NS[i]);
+    if (!service) return;
+    for (int i = 0; i < nuncovered; i++)
+        if (!strcmp(uncovered[i].name, name)) return;
+    if (nuncovered == capuncovered) {
+        capuncovered = capuncovered ? capuncovered * 2 : 256;
+        uncovered = realloc(uncovered, (size_t)capuncovered * sizeof *uncovered);
+        if (!uncovered) rt_fatal("loader: out of memory");
+    }
+    Uncovered *u = &uncovered[nuncovered++];
+    snprintf(u->ns, sizeof u->ns, "%s", ns);
+    u->module = module;
+    u->name = name;
+}
+
+static int uncovered_order(const void *a, const void *b) {
+    const Uncovered *x = a, *y = b;
+    int c = strcmp(x->ns, y->ns);
+    return c ? c : strcmp(x->name, y->name);
+}
+
+static void write_uncovered(void) {
+    qsort(uncovered, (size_t)nuncovered, sizeof *uncovered, uncovered_order);
+    char path[PLAT_PATH_MAX];
+    FILE *f = NULL;
+    if (plat_exe_path(path, sizeof path)) {
+        char *cut = strrchr(path, '/'), *cut2 = strrchr(path, '\\');
+        if (cut2 > cut) cut = cut2;
+        if (cut && (size_t)(cut - path) + 32 < sizeof path) {
+            strcpy(cut + 1, "uncovered-imports.txt");
+            f = fopen(path, "w");
+        }
+    }
+    if (f) fprintf(f, "# SDK imports of the game that run Nintendo's client code and may need a system service.\n"
+                      "# namespace  module  symbol\n");
+    char line[256] = "";
+    int count = 0;
+    for (int i = 0; i <= nuncovered; i++) {
+        if (i == nuncovered || (i && strcmp(uncovered[i].ns, uncovered[i - 1].ns))) {
+            if (count) {
+                size_t n = strlen(line);
+                snprintf(line + n, sizeof line - n, "%s%s %d", n ? ", " : "", uncovered[i - 1].ns, count);
+            }
+            count = 0;
+        }
+        if (i == nuncovered) break;
+        count++;
+        if (f) fprintf(f, "%-10s %-8s %s\n", uncovered[i].ns, uncovered[i].module, uncovered[i].name);
+    }
+    if (f) fclose(f);
+    rt_log("loader: %d SDK imports without a host override, by namespace: %s%s%s", nuncovered, line[0] ? line : "none",
+           f ? "; list in " : "", f ? path : "");
+}
+
 // Order (MNG loader.c:216-224): observer (JUMP_SLOT only), override by name, own definition, other modules in load
 // order, weak -> 0, strong -> named fatal stub. Overrides also replace a module's own symbols.
 static Res resolve(Mod *m, uint32_t si, int jump) {
@@ -336,6 +424,7 @@ static Res resolve(Mod *m, uint32_t si, int jump) {
         mark_used(0, name);
     } else if (guest) {
         r = (Res){guest, RES_GUEST};
+        if (!sym_defined(m, si)) note_uncovered(m->pub.name, name);
     } else if ((m->syms[si].info >> 4) == STB_WEAK) {
         r = (Res){0, RES_WEAK};
     } else {
@@ -464,6 +553,7 @@ void ldr_load(const char *exefs_dir) {
                (unsigned long long)m->pub.base, (unsigned long long)m->pub.size,
                (unsigned long long)(m->nrela + m->njmprel + m->relr_count), m->imports);
     }
+    write_uncovered();
 }
 
 // ---- lookups
