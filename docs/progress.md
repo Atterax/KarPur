@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: Lauf mit `TOTK_TRACE=ipc,host` (alle IPC-Befehle mit Ergebnis, erster Aufruf jeder Host-Ersatzfunktion mit Aufrufer). Gesucht: welche Anfrage oder Ersatzfunktion vor dem Absturz in `nn::os::LockMutex` ein leeres Objekt hinterlässt.
+1. Maintainer: `tools/calls.py main+0x11bcec8 main+0x14fe804 main+0x11acbb0` laufen lassen. Daraus ablesen, welcher Aufruf vor `main+0x11bcec8` das leere Objekt liefert, und dort weitersuchen (ggf. `calls.py` auf diese Funktion).
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Trace vor dem LockMutex-Absturz
+- `TOTK_TRACE=ipc,host`: Kein IPC-Befehl liefert einen Fehler. Reihenfolge vor dem Absturz: Audio-Renderer offen (`audren:u` cmd 0, IAudioRenderer 7/4/5), `GetDesiredLanguage`, `set` cmd 5 (GetAvailableLanguageCodes2), einige NVN-State-Objekte, dann vier `IAudioDevice`-Sitzungen (cmd 5 GetActiveChannelCount, cmd 10 GetActiveAudioDeviceNameAuto zweimal, cmd 12 QueryAudioDeviceOutputEvent) und `nn::codec::GetHardwareOpusDecoderWorkBufferSize`. Die Antworten sehen plausibel aus (`AudioTvOutput`, 2 Kanäle).
+- Neues Werkzeug `tools/calls.py`: listet für eine Adresse aus dem Log die Aufrufe der umgebenden Spielfunktion (Offset, Ziel als SDK-Symbol oder `main+…`, Größe), nur Adressen und Namen. Mit dem Lifter-Testprogramm geprüft; die Auflösung von PLT-Stubs zu Importnamen ist erst am echten Spiel geprüft.
 
 ### 2026-11-01: Dienst `set` läuft, Absturz in nn::os::LockMutex
 - `set` wird geöffnet und beantwortet. Danach: ein Präemptions-Interrupt (harmlos), viermal `audren:u` geöffnet, dann Zugriffsverletzung beim Lesen von `0xe1` in `nn::os::LockMutex` mit `x0 = 0xe0`: ein Mutex bei Offset `0xe0` eines Objekts, dessen Zeiger 0 ist.
