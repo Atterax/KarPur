@@ -5,11 +5,14 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M5, spielbar
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; prüfen, ob jetzt Ton kommt (AudioOut über SDL). Log-Zeile `audout: ... opened` schicken.
-2. **Transform Feedback umsetzen** (VK_EXT_transform_feedback im Vulkan-Back-End: Bind, Begin/End/Pause/Resume, DrawTransformFeedback, Zähler im Control-Puffer). Hauptverdacht für die kaputten Spielerfiguren und fehlenden NPCs: GPU-Skinning über Transform Feedback; ohne TF bleiben die gezeichneten Vertexpuffer leer oder alt.
-3. Bildfehler danach angehen: Flackern auf dem Einschreibungsbildschirm, fehlende Schatten, `SetScissors: differing scissor ignored` (Purpur nutzt mehrere Scissors), `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
-4. Die übrigen NVN-Funktionen (ClearColori/ui, DrawArraysIndirect, MultiDraw*IndirectCount, DrawTexture, Downsample*, ResolveDepthBuffer, CommandBufferFenceSync, Copy-Strides, Tessellation, ViewportSwizzles, Subroutinen) umsetzen, wenn sie aufgerufen werden.
-5. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
+1. **Transform Feedback umsetzen** (größere Arbeit, mehrere Teile):
+   - Woher kommt das Layout (welche Ausgaben in welchen Puffer, Stride)? Auf Maxwell setzt der Treiber es als GPU-Zustand aus den Steuerdaten des NVN-Programms (`nvnProgramSetShaders`, Control-Teil der ShaderData). Herausfinden, wo es in Purpurs Programmen steht (Bericht-Werkzeug: Größen/Offsets der Control-Daten, Zähler der TF-Einträge, keine Bytes).
+   - Übersetzer (`tools/xlate/Program.cs`): `QueryTransformFeedbackEnabled`, `QueryTransformFeedbackVaryingLocations`, `QueryTransformFeedbackStride` aus dem Job beantworten (Ryujinx erzeugt dann die XFB-Decorations im SPIR-V); Job-Felder in `gfx_shader.c`.
+   - Front-End (`nvn_api_more.c` → echte Ops): Bind(s), Begin/End/Pause/Resume, DrawTransformFeedback als Command-Records.
+   - Vulkan-Back-End: `vkCmdBindTransformFeedbackBuffersEXT`, `vkCmdBegin/EndTransformFeedbackEXT` mit Zählerpuffer (NVN-Control-Adresse), `vkCmdDrawIndirectByteCountEXT` für DrawTransformFeedback; Pipeline mit XFB-Ausgaben. `vk_device.c` aktiviert VK_EXT_transform_feedback schon, Puffer haben die Usage-Flags (`vk_memory.c`).
+2. Bildfehler danach: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
+3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
+4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
 
 ### Offene Fragen
 - Gleiche Namen heißen nicht gleiche Strukturen: Bei SDK 13 vs. 20 können sich Strukturlayouts und Revisionen ändern (z. B. `NpadFullKeyState`, `AudioRendererParameter`-Revision). Jede übernommene Ersatzfunktion muss gegen SDK 13 geprüft werden.
@@ -21,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Ton läuft, Figuren unsichtbar
+- AudioOut über SDL: **Musik und Geräusche sind zu hören** (`audout: default audio output opened (... to the default playback device)`). Purpur spielt seinen Ton also über AudioOut.
+- Der Maintainer kann herumlaufen, NPCs ansprechen (Texte, Sprechblasen), durch das Haus (Kinderzimmer, Küche, Wohnzimmer) und nach draußen gehen (Weg zur Akademie, Minikarte). Stabil 30 fps, mehrfaches automatisches Speichern.
+- Die Spielerfigur und Figuren sind jetzt unsichtbar (vorher verzerrt): passt zum Verdacht, dass sie über Transform Feedback gezeichnet werden, das ignoriert wird. Dazu kurze Stachel-Artefakte bei Effekten, Flackern/schwarze Flächen, Schattenfehler draußen.
+- Stand für TF: `tools/xlate/Program.cs` beantwortet die TF-Anfragen des Ryujinx-Übersetzers noch nicht (Standard: aus). Das Vulkan-Back-End aktiviert VK_EXT_transform_feedback bereits und gibt Puffern die TF-Usage-Flags.
 
 ### 2026-11-01: M4 erledigt – das Spiel läuft bis ins Feld
 - Mit den Transform-Feedback-No-ops kommt der Maintainer durch die ganze Einführung: Sprachwahl, Namenseingabe (Software-Tastatur: `swkbd ... -> "Melody"`), Charaktererstellung (Frisur, Gesicht; Figur stark verzerrt), Einschreibungsbildschirm (flackert, Figur fehlt), Zwischensequenzen in der Akademie-Bibliothek und vor der Akademie (Umgebung, Pikachu und einige Figuren sichtbar, Schatten und viele NPCs fehlen), dann ins Feld; Hauptmenü lässt sich öffnen. Spielstand wird gespeichert (`fs commit save: 1 files, 4.2 MiB`).
