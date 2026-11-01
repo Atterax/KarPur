@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `tools/lift.py` (Generator geändert: setjmp-Stellen), dann `tools/build_game.py`, `karpur.exe`. Bericht von `lift.py` (Zeile `setjmp targets`) und Log-Ende schicken. Danach klären, wer den `longjmp` auslöst und warum (Fehlerpfad?).
+1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; Log-Ende schicken.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: setjmp/longjmp läuft, Dienst csrng
+- `lift.py` mit setjmp-Stellen: main 2, subsdk0 0, sdk 2 setjmp-Ziele; alle 404 Dateien kompilieren. Das Spiel kommt über `main+0x26ca4` hinaus, der longjmp-Weg funktioniert.
+- Nächster Abbruch: `sm: service "csrng" is not implemented` aus `nn::crypto::GenerateCryptographicallyRandomBytes` (`InitializeCsrng`), Aufrufer `main+0x20f9ba0`.
+- Neu `runtime/csrng_service.c`: cmd 0 GenerateRandomBytes füllt den Ausgabepuffer mit `plat_random` (Zufall vom Host-Betriebssystem).
 
 ### 2026-11-01: Kein C++-Exception, sondern setjmp/longjmp
 - `calls.py main+0x26ca4`: liegt in `main+0x26c60` (32 Instruktionen) direkt hinter `bl _setjmp` (+0x40), danach ein indirekter Aufruf über x20. Ein klassischer setjmp-Rahmen um einen Funktionszeiger. `longjmp` kehrt mit `ret` an die gespeicherte Rücksprungadresse zurück, daher `lr == pc`. Keine `__cxa_*`- oder `_Unwind_*`-Aufrufe.
