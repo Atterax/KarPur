@@ -134,15 +134,28 @@ static void get_info(Cpu *c, uint64_t pc) {
 
 static void svc_body(Cpu *c, uint32_t imm, uint64_t pc);
 
-// KarPur: an SVC that answers with an error Result in x0 is logged (at most 100 lines a run): the SDK often aborts
+// KarPur: an SVC that answers with an error Result in x0 is logged (each svc, result and place once): the SDK often aborts
 // on such a result with no other message. SVCs whose x0 is not a Result (GetCurrentProcessorNumber, GetSystemTick,
 // SleepThread, ExitThread, Break, ExitProcess) and the expected answers of waits (timeout, cancelled) are left out.
 static void svc_result_check(const Cpu *c, uint32_t imm, uint64_t pc) {
     uint32_t r = (uint32_t)c->x[0];
     if (!r || imm == 0x10 || imm == 0x1E || imm == 0x0B || imm == 0x0A || imm == 0x26 || imm == 0x07) return;
     if (r == KERN_R_TIMEOUT || r == KERN_R_CANCELLED) return;
-    static int32_t n;
-    if (plat_inc32(&n) > 100) return;
+    // Each (svc, result, place) once, so the frequent expected answers (WaitForAddress / SignalToAddress / ResetSignal
+    // reporting InvalidState 0xFA01 for "the value changed" or "not signalled") do not use up the lines.
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    static struct { uint32_t imm, r; uint64_t pc; } seen[128];
+    static int nseen;
+    int fresh = 1;
+    plat_mutex_lock(&lock);
+    for (int i = 0; i < nseen && fresh; i++)
+        if (seen[i].imm == imm && seen[i].r == r && seen[i].pc == pc) fresh = 0;
+    if (fresh) {
+        if (nseen < 128) seen[nseen++] = (typeof(seen[0])){imm, r, pc};
+        else fresh = 0;
+    }
+    plat_mutex_unlock(&lock);
+    if (!fresh) return;
     char at[160];
     rt_log("svc %#x failed with %#x at %s (x1=%#llx x2=%#llx x3=%#llx)", imm, r, ldr_describe(pc, at, sizeof at),
            (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3]);

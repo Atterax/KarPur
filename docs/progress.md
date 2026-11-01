@@ -20,6 +20,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: svc-Fehlerlog, erste Ergebnisse
+- `svc 0x2c` MapPhysicalMemory 0x10801 (bekannt, das Spiel macht weiter). Sehr häufig `svc 0x34` WaitForAddress und `svc 0x35` SignalToAddress mit 0xFA01 (InvalidState: Wert hat sich geändert, erwartet) und einmal `svc 0x17` ResetSignal mit 0xFA01 (nicht signalisiert, erwartet). Diese haben die 100 Zeilen aufgebraucht, bevor der CreateThread-Abbruch kam.
+- Geändert: jede Kombination aus svc, Ergebnis und Ort wird nur einmal geloggt.
+
 ### 2026-11-01: Argumente des Vibrations-Threads gültig
 - `nn::os::CreateThread(ThreadType 0x70046fc460 (main-.bss, genullt), Funktion main+0x783fc4, arg 0, Stack 0x70046fd000, Größe 0x2000, Priorität 16, x6 0x10)` vom Thread mit TLS `0x7010060000`. Stack 4-KiB-ausgerichtet, Größe Vielfaches von 4 KiB, Priorität im nn::os-Bereich: die Argumente sind in Ordnung.
 - Also scheitert etwas im SDK-Inneren (Funktion direkt vor `sdk+0x3783c0`), vermutlich ein svc mit Fehler-Result. Neu in `svc.c`: jeder svc mit Fehler-Result in x0 wird geloggt (Nummer, Ort, Ergebnis, x1–x3; ohne Timeout/Cancelled und svcs, deren x0 kein Result ist; höchstens 100 Zeilen).
