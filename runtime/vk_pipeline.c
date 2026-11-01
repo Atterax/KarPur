@@ -915,10 +915,63 @@ static void pin_subgroup32(VkPipelineShaderStageCreateInfo *st, VkPipelineShader
     st->pNext = rq;
 }
 
+// TOTK_RECONVERGE=1 (KarPur test): a shader with subgroup operations gets SPV_KHR_maximal_reconvergence and the
+// MaximallyReconvergesKHR execution mode on each entry point. Maxwell reconverges a warp explicitly (SSY/SYNC), so a
+// ballot, an atomic by the elected lane and the shuffle that hands its result out see the same lanes; Vulkan without
+// the mode leaves reconvergence after divergent code to the driver. Violet's GPU culling counts that way
+// (vk_exec_draw.c cs_note). NULL: unchanged.
+static uint32_t *reconverge(const uint32_t *w, uint64_t n, uint64_t *out_n) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("RECONVERGE", "0");
+        if (on) rt_log("vk_pipeline: shaders with subgroup operations reconverge maximally (TOTK_RECONVERGE=1)%s",
+                       vk_ctx()->has_max_reconvergence ? "" : ", but the device does not offer it: off");
+    }
+    if (!on || !vk_ctx()->has_max_reconvergence || n < 6 || !uses_subgroup_ops(w, n)) return NULL;
+    enum { OP_CAPABILITY = 17, OP_EXTENSION = 10, OP_ENTRY_POINT = 15, OP_EXECUTION_MODE = 16, MODE_MAX_RECONV = 6023 };
+    static const char name[32] = "SPV_KHR_maximal_reconvergence";   // 29 characters, NUL padded to 8 words
+    uint32_t entries[8], ne = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        if (!l || i + l > n) return NULL;
+        if (op == OP_ENTRY_POINT && l >= 3 && ne < 8) entries[ne++] = w[i + 2];
+        i += l;
+    }
+    if (!ne) return NULL;
+    uint32_t *o = malloc((n + 9 + 3 * ne) * 4);
+    if (!o) return NULL;
+    memcpy(o, w, 5 * 4);
+    uint64_t on_ = 5;
+    int ext_done = 0, mode_done = 0, seen_entry = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        if (!ext_done && op != OP_CAPABILITY && op != OP_EXTENSION) {   // extensions follow the capabilities
+            o[on_++] = 9u << 16 | OP_EXTENSION;
+            memcpy(o + on_, name, 32), on_ += 8;
+            ext_done = 1;
+        }
+        if (seen_entry && !mode_done && op != OP_ENTRY_POINT) {   // execution modes follow the entry points
+            for (uint32_t e = 0; e < ne; e++) o[on_++] = 3u << 16 | OP_EXECUTION_MODE, o[on_++] = entries[e], o[on_++] = MODE_MAX_RECONV;
+            mode_done = 1;
+        }
+        seen_entry |= op == OP_ENTRY_POINT;
+        memcpy(o + on_, w + i, l * 4), on_ += l;
+        i += l;
+    }
+    *out_n = on_;
+    return o;
+}
+
 static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    uint64_t rc_n = 0;
+    uint32_t *rc = reconverge(w, words, &rc_n);
+    if (rc) {
+        free(fixed);
+        fixed = rc, w = rc, words = rc_n;
+    }
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);

@@ -202,6 +202,9 @@ typedef struct {
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
+    VkPhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR sucf;
+    struct { VkStructureType sType; void *pNext; VkBool32 shaderMaximalReconvergence; } mrc;   // KHR, declared here:
+                                                                                                // older headers lack it
 } FeatureChain;
 
 static int create_device(void) {
@@ -209,7 +212,7 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-    const char *ext[28];
+    const char *ext[40];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
 
@@ -245,6 +248,17 @@ static int create_device(void) {
         ext[n_ext++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
         CHAIN(fbl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT);
         CHAIN(lr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR);
+    }
+    // Maximal reconvergence (KarPur): subgroup operations after divergent code see the invocations Maxwell's explicit
+    // reconvergence would give them; vk_pipeline.c make_module marks shaders with subgroup operations when it is on.
+    int has_mrc = 0;
+    if (has_ext(ep, ne, "VK_KHR_shader_maximal_reconvergence") &&
+        has_ext(ep, ne, VK_KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_EXTENSION_NAME)) {
+        has_mrc = 1;
+        ext[n_ext++] = VK_KHR_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_EXTENSION_NAME;
+        ext[n_ext++] = "VK_KHR_shader_maximal_reconvergence";
+        CHAIN(sucf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_FEATURES_KHR);
+        CHAIN(mrc, (VkStructureType)1000434000);   // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR
     }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU breadcrumbs for a lost device (vk_crumbs.c): AMD's drivers and RADV report it.
@@ -286,6 +300,8 @@ static int create_device(void) {
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
+    g_vk.has_max_reconvergence = has_mrc && c->mrc.shaderMaximalReconvergence && c->sucf.shaderSubgroupUniformControlFlow;
+    rt_log("vk: maximal reconvergence %s", g_vk.has_max_reconvergence ? "available" : has_mrc ? "extension without the feature" : "not offered");
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");

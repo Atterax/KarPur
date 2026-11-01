@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: SSBO_WHOLE ohne Wirkung; Test maximale Rekonvergenz
+- `SSBO_WHOLE=1`: ploppt weiter; Grenzprüfung der Storage-Buffer ist nicht die Ursache.
+- Neu: `VK_KHR_shader_maximal_reconvergence` (+ subgroup uniform control flow) wird aktiviert, wenn der Treiber es anbietet (Log `vk: maximal reconvergence …`). Test-Schalter `TOTK_RECONVERGE=1`: Shader mit Subgroup-Operationen bekommen `SPV_KHR_maximal_reconvergence` und `MaximallyReconvergesKHR` (vk_pipeline.c `reconverge`). Hintergrund: Ballot → Atomic des gewählten Lanes → Shuffle braucht dieselben aktiven Lanes; Maxwell rekonvergiert explizit, Vulkan ohne den Modus nach Ermessen des Treibers.
+
 ### 2026-11-01: Culling-Shader zählt mit Ballot + Atomic + Shuffle; Test ohne Grenzprüfung
 - SPIR-V-Zählung Shader 1: 18 atomare Additionen, 54 Ballots, 18 Aufrufe der Shuffle-Hilfsfunktion (Ryujinx ShufflePass), keine Barrieren: Warp-aggregiertes Zählen/Kompaktieren. Shader 2–4 ohne Atomics.
 - Unterschied zu Ryujinx/Switch: Wir binden Storage-Buffer exakt in der Spielgröße, und robustBufferAccess (alle Features an) liefert Nullen jenseits der Bindung; Maxwell prüft keine Grenzen. Test-Schalter `TOTK_SSBO_WHOLE=1`: nur gelesene Storage-Buffer bis zum Ende ihres Speichers binden.
