@@ -21,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Neue Bildfehler-Liste: Schatten, unsichtbare Objekte, Wasser
+- Maintainer-Befund (Startgebiet): Schatten zu dunkel/falsch (Kleidung, Fassade des Anwesens, Figuren in Zwischensequenz fast schwarz), teils sehr pixelig; ein Blumenbeet blockiert, ist aber unsichtbar; Wasser dunkelblau ohne Durchsicht.
+- Schatten: Seit dem Binden nach Stufen werden Draws ohne Fragment-Shader (Schattenkarten) gezeichnet statt übersprungen; vorher fehlten Schatten ganz. Verdacht: Kaskaden über mehrere Viewports/Scissors oder gl_Layer in einem Durchgang; die Wiedergabe setzt nur Viewport 0 und einen Scissor. Diagnose eingebaut: `vk_pipeline.c note_vs_builtins` (Vertex-Shader schreibt gl_Layer / gl_ViewportIndex), `vk_exec.c` meldet SetViewports mit unterschiedlichen Viewports.
+- Wasser: Kopien von `DEPTH24_STENCIL8`-Texturen (Format 0x35) wurden übersprungen (`copy of format 0x35 texture ... skipped`), Wasser liest vermutlich die kopierte Szenentiefe. `vk_exec_xfer.c sub_resolve(..., image_only)`: Textur→Textur-Kopien ignorieren jetzt die Byte-Layout-Prüfung und kopieren Tiefe+Stencil zusammen.
+- Unsichtbares Blumenbeet: noch offen; nächster Lauf sammelt alle „skipped/ignored/failed“-Meldungen.
+
 ### 2026-11-01: Baum-Flackern: Aufteilen der Command Buffer abgeschaltet
 - A/B-Ergebnisse: ohne Schalter Bäume flackern stark; `MEMORY=import` kein Flackern; `VK_RECORDER=0` wie ohne; `TEX_ALIAS=0` noch stärker; Memo-Caches aus: gelegentlich Büsche/Blumen; `SPLIT_DRAWS=0` kein Flackern und auch der „Matsch-Baum“ korrekt. Schatten flackerten in diesem Lauf nicht mehr.
 - Folgerung: Zusammenspiel von VRAM-Spiegeln und Teil-Submits. Vermutung: Pro Teil lädt der Spiegel-Prolog CPU-geschriebene Bereiche hoch, Rückschreiben von GPU-Ergebnissen erst am Ende der Submission – GPU-Schreibzugriffe (z. B. Compute für Vegetation) eines Teils werden vom Prolog des nächsten überschrieben.

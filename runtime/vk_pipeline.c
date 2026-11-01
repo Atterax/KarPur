@@ -1349,10 +1349,29 @@ static uint32_t vs_union_missing(const VkPipeState *s, GfxShaderIo fin[32]) {
     return missing;
 }
 
+// KarPur diagnostic: which built-in outputs select a viewport or a layer (BuiltIn 9 Layer, 10 ViewportIndex) in a vertex
+// module. The replay sets one viewport and one scissor (vk_exec_draw.c), so a shader that picks another viewport (shadow
+// cascades drawn in one pass) draws into the wrong place. Reported once per kind with the number of such shaders seen.
+static void note_vs_builtins(const uint32_t *w, uint64_t words) {
+    static int n_layer, n_vpi;
+    int layer = 0, vpi = 0;
+    for (uint64_t i = 5; w && i < words;) {
+        uint32_t op = w[i] & 0xffff, n = w[i] >> 16;
+        if (!n || i + n > words) break;
+        if (op == 71 && n >= 4 && w[i + 2] == 11) layer |= w[i + 3] == 9, vpi |= w[i + 3] == 10;        // OpDecorate BuiltIn
+        if (op == 72 && n >= 5 && w[i + 3] == 11) layer |= w[i + 4] == 9, vpi |= w[i + 4] == 10;        // OpMemberDecorate
+        if (op == 54) break;   // OpFunction: decorations are all before it
+        i += n;
+    }
+    if (layer && ++n_layer <= 3) rt_log("vk_pipeline: a vertex shader writes gl_Layer (%d so far)", n_layer);
+    if (vpi && ++n_vpi <= 3) rt_log("vk_pipeline: a vertex shader writes gl_ViewportIndex (%d so far): the replay sets one viewport", n_vpi);
+}
+
 static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Layout *l, uint32_t fs_off) {
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
     uint64_t vw, fw;
     const uint32_t *vcode = gfx_shader_spirv(s->vs, &vw);
+    note_vs_builtins(vcode, vw);
     uint32_t *vpatched = NULL, *fpatched = NULL;
     if (l->set1) {   // independent layouts: outputs from the vertex shader's union, not from this fragment shader
         GfxShaderIo fin[32];

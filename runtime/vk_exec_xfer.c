@@ -331,12 +331,16 @@ typedef struct {
 } Sub;
 
 // Resolves tex, its view and a copy region to image coordinates. 0 (warned) when the copy cannot be replayed.
+// image_only (KarPur): a texture-to-texture copy. The host image's byte layout then does not matter (both sides are
+// host images, copy_t2t requires the same format for anything but colour), so formats decoded or expanded on upload
+// pass, and depth-stencil images are copied with both aspects. Violet copies DEPTH24_STENCIL8 scene depth, which the
+// water reads; skipping it left the water dark.
 static int sub_resolve(const tex_t *t, const view_t *v, int has_v, const NVNcopyRegion *r, int defaults_to_level,
-                       Sub *s) {
+                       Sub *s, int image_only) {
     memset(s, 0, sizeof *s);
     if (!t) return 0;
     TexVkFormat f;
-    if (!tex_vk_format(t->d.format, &f) || f.vk != f.ideal || f.expand_rgb || f.astc_bw) {
+    if (!tex_vk_format(t->d.format, &f) || (!image_only && (f.vk != f.ideal || f.expand_rgb || f.astc_bw))) {
         warn_once(W_FORMAT, "copy of format %#x texture (decoded or expanded on upload): skipped", t->d.format);
         return 0;
     }
@@ -349,6 +353,7 @@ static int sub_resolve(const tex_t *t, const view_t *v, int has_v, const NVNcopy
     const VkTexImage *img = s->img;
     if (img->aspect & VK_IMAGE_ASPECT_COLOR_BIT) s->aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     else if (img->aspect == VK_IMAGE_ASPECT_DEPTH_BIT) s->aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+    else if (image_only) s->aspect = img->aspect;   // depth and stencil together (vkCmdCopyImage, same format)
     else {
         warn_once(W_FORMAT, "copy of depth-stencil format %#x texture: skipped", t->d.format);
         return 0;
@@ -414,7 +419,7 @@ static int buffer_side(const VkExec *ex, const Sub *s, uint64_t addr, uint64_t *
 
 static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     Sub s;
-    if (!sub_resolve(p->tex, &p->view, p->has_view, &p->r, 1, &s)) return;
+    if (!sub_resolve(p->tex, &p->view, p->has_view, &p->r, 1, &s, 0)) return;
     uint64_t size;
     VkBufferImageCopy c;
     VkMemSpan m;
@@ -431,8 +436,8 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
 
 static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
     Sub s, d;
-    if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, &s)) return;
-    if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, &d)) return;
+    if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, &s, 1)) return;
+    if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, &d, 1)) return;
     d.nz = s.nz;
     int same_size = s.w == d.w && s.h == d.h;
     int same_format = s.img->format == d.img->format;
@@ -554,7 +559,7 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
     const tex_t *t = p->tex;
     if (!t) return;
     Sub s;
-    if (!sub_resolve(t, &p->view, p->has_view, &p->r, 1, &s)) return;
+    if (!sub_resolve(t, &p->view, p->has_view, &p->r, 1, &s, 0)) return;
     const VkTexImage *img = s.img;
     int is3d = img->type == VK_IMAGE_TYPE_3D;
     uint32_t lw = max1(img->width >> s.level), lh = max1(img->height >> s.level);

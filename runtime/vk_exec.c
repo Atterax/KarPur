@@ -827,6 +827,15 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
             const p_viewports *v = a;
             for (int i = 0; i < v->n && v->first + i < 16; i++)
                 if (v->first + i >= 0) memcpy(ex->vp[v->first + i], v->v[i], sizeof ex->vp[0]);
+            // KarPur diagnostic: several differing viewports in one call (the replay draws with viewport 0 only)
+            for (int i = 1; i < v->n && i < 16; i++)
+                if (memcmp(v->v[i], v->v[0], 4 * sizeof(float))) {
+                    static int once;
+                    if (!once++)
+                        rt_log("vk_exec: SetViewports with %d differing viewports (first %d): only viewport 0 is replayed",
+                               v->n, v->first);
+                    break;
+                }
             ex->has_vp = 1;
             ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
             break;
