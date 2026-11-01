@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Culling-Shader zählt mit Ballot + Atomic + Shuffle; Test ohne Grenzprüfung
+- SPIR-V-Zählung Shader 1: 18 atomare Additionen, 54 Ballots, 18 Aufrufe der Shuffle-Hilfsfunktion (Ryujinx ShufflePass), keine Barrieren: Warp-aggregiertes Zählen/Kompaktieren. Shader 2–4 ohne Atomics.
+- Unterschied zu Ryujinx/Switch: Wir binden Storage-Buffer exakt in der Spielgröße, und robustBufferAccess (alle Features an) liefert Nullen jenseits der Bindung; Maxwell prüft keine Grenzen. Test-Schalter `TOTK_SSBO_WHOLE=1`: nur gelesene Storage-Buffer bis zum Ende ihres Speichers binden.
+- Weitere Kandidaten, falls das nicht hilft: Rekonvergenz bei Ballot/Shuffle (VK_KHR_shader_maximal_reconvergence), unsere Übersetzer-Patches 0001–0004.
+
 ### 2026-11-01: Compute-Shader 1 ist das GPU-Culling
 - Bericht: Shader 1 (120 Gruppen × 64, im Feld je Frame) liest Storage 0 (32784 B) und 2 (4 MiB), schreibt 1 (256 KiB), 3 (1 MiB, kompaktierte Instanzliste) und 4 (256 KiB, **die indirekten Argumente**). Keine Textur: Sichtfeld-/Abstands-Culling, kein Hi-Z. Shader 2–4: je 1 Gruppe × 32, viele kleine Storage-Buffer (Vorbereitung).
 - Datenwettläufe sind ausgeschlossen (SUBMIT_SYNC, MEMORY=import), Verdeckung auch. Verdacht: Übersetzung von Shader 1 (Atomics zum Zählen/Kompaktieren, Global-Memory-Zugriffe über Hilfsfunktionen). Bericht `vk_exec: compute shader N SPIR-V: …` zählt Funktionen, Aufrufe, Atomics, Gruppen-Ops, Barrieren (nur Zahlen).

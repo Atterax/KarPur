@@ -1023,7 +1023,15 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
-        if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
+        // TOTK_SSBO_WHOLE=1 (KarPur A/B test): a storage buffer the shader only reads is bound up to the end of its memory,
+        // not at the size the game gave (written ones keep it: their range is written back to guest memory). Maxwell does not bound-check storage accesses; Vulkan with robustBufferAccess returns zeros past the
+        // binding and drops writes there, so a shader that reaches past the size it was given behaves differently.
+        static int whole = -1;
+        if (whole < 0) {
+            whole = rt_knob("SSBO_WHOLE", "0");
+            if (whole) rt_log("vk_exec: storage buffers are bound up to the end of their memory (TOTK_SSBO_WHOLE=1)");
+        }
+        if (bind_range(ex, b->addr - lead, b->size && !(whole && !written) ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
                        written, &bi)) {
             if (written && bi.buffer != VK_NULL_HANDLE) note_written(ex, b->addr - lead, bi.range);
             return bi;
