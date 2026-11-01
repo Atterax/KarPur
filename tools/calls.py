@@ -8,7 +8,8 @@ branches out of the function are listed too. Output: addresses, sizes and symbol
 
   .venv\\Scripts\\python tools\\calls.py main+0x11bcec8 main+0x14fe804
 
---before / --after limit how many calls around the marked address are printed (default 40 / 15).
+--before / --after limit how many calls around the marked address are printed (default 40 / 15). For the start
+address of a function every call is listed.
 """
 
 import argparse
@@ -122,6 +123,12 @@ def report(mod, a, before, after):
         if here:
             mark = len(rows)
         rows.append(f'  +{p - lo:#07x}  {kind:10} {what}{"  <==" if here else ""}')
+    if mark is None and a == lo:
+        # The start of a function: list all of its calls.
+        print('  (function start: all calls)')
+        for r in rows:
+            print(r)
+        return
     if mark is None:
         mark = len(rows)
         print('  (no call at the given address; listing the calls before it)')

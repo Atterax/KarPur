@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `tools/calls.py main+0x11bcec8 main+0x14fe804 main+0x11acbb0` laufen lassen. Daraus ablesen, welcher Aufruf vor `main+0x11bcec8` das leere Objekt liefert, und dort weitersuchen (ggf. `calls.py` auf diese Funktion).
+1. Maintainer: `tools/calls.py main+0x14ff4dc main+0x14fd2d8` (alle Aufrufe beider Funktionen). Gesucht: was `main+0x14ff4dc` nachschlägt oder anlegt und warum es 0 liefert.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: calls.py auf den LockMutex-Absturz
+- `main+0x11bcec8` ist ein virtueller Aufruf (`indirect x8`, +0x240) in der Startfunktion `main+0x11bcc84` (607 Instruktionen), aufgerufen aus `main+0x11acb4c`.
+- Ziel ist `main+0x14fd2d8` (2160 Instruktionen), offenbar die Audio-Initialisierung des Spiels: ruft `nn::audio::AcquireAudioDeviceNotificationForOutput` (+0xe4c), viermal `bsearch` (+0x10b4…+0x13c0), dann `main+0x14ff4dc` (300 Instruktionen, +0x150c) und direkt danach den abstürzenden `LockMutex` (+0x1528) auf Offset 0xe0 eines Objekts, das 0 ist.
+- Vermutung: `main+0x14ff4dc` schlägt etwas nach (Audiogerät per Name? Eintrag einer Tabelle?) und findet es nicht. Kandidaten: der Gerätename (`AudioTvOutput`), den `IAudioDevice` cmd 10 meldet, oder ein Wert aus einer TotK-Ersatzfunktion mit SDK-20-Annahmen.
+- PLT-Auflösung in `calls.py` funktioniert am echten Spiel (`nn::os::*`, `bsearch`, `snprintf`, `nn::audio::*`).
 
 ### 2026-11-01: Trace vor dem LockMutex-Absturz
 - `TOTK_TRACE=ipc,host`: Kein IPC-Befehl liefert einen Fehler. Reihenfolge vor dem Absturz: Audio-Renderer offen (`audren:u` cmd 0, IAudioRenderer 7/4/5), `GetDesiredLanguage`, `set` cmd 5 (GetAvailableLanguageCodes2), einige NVN-State-Objekte, dann vier `IAudioDevice`-Sitzungen (cmd 5 GetActiveChannelCount, cmd 10 GetActiveAudioDeviceNameAuto zweimal, cmd 12 QueryAudioDeviceOutputEvent) und `nn::codec::GetHardwareOpusDecoderWorkBufferSize`. Die Antworten sehen plausibel aus (`AudioTvOutput`, 2 Kanäle).
