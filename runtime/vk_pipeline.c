@@ -889,8 +889,12 @@ static int uses_xfb(const GfxShader *sh) {
 // binds by stage, vk_xfb.c): these also take the single-set layout, because NVIDIA's driver (621.01) faults reading
 // address 0 in vkCmdPushDescriptorSetWithTemplateKHR for set 0 of an INDEPENDENT_SETS layout whose fragment set 1 is
 // empty. Without libraries a pipeline needs no independent layout; 0: libraries and fast links as usual.
+// 2 also for a vertex shader that writes gl_Layer: Violet draws its environment cubemap (64x64, 6 layers) and a 3D
+// colour table (32x32, 32 layers) that way; with libraries and independent layouts the shading came out without
+// ambient light (dark clothes, black metal), with TOTK_GPL=0 it was right. Those pipelines take the path of TOTK_GPL=0.
+int vk_pipeline_vs_writes_layer(const GfxShader *vs);
 static int whole_only(const VkPipeState *s) {
-    if (!s->fs) return 2;
+    if (!s->fs || vk_pipeline_vs_writes_layer(s->vs)) return 2;
     return uses_xfb(s->vs) ? 1 : 0;
 }
 

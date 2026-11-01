@@ -21,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: gl_Layer-Draws sind Cubemap und Farbtabelle, nicht Schatten
+- Diagnose: die Draws mit gl_Layer-Vertex-Shader sind Vollbild-Dreiecke in 64×64 × 6 Ebenen (Umgebungs-Cubemap) und 32×32 × 32 Ebenen (3D-Farbtabelle), mit Fragment-Shader, 8 Farbzielen; Gerät meldet shaderOutputLayer 1.
+- Neue Deutung der „zu dunklen Schatten“: fehlendes Umgebungslicht (Cubemap schwarz/falsch) – alles ohne direkte Sonne dunkel, Metall (Dunstabzugshaube im Spielerhaus) schwarz. In einem früheren Lauf mit `TOTK_GPL=0` sahen Kleidung und Figuren normal aus.
+- Umgesetzt: `whole_only()` gibt für Vertex-Shader mit gl_Layer 2 zurück: Ein-Set-Layout, keine Libraries, keine Vertex-Ausgabe-Union – wie mit `TOTK_GPL=0`.
+- Maintainer: einige Vasen fehlen (nicht alle), dazu das unsichtbare Blumenbeet. Noch keine Spur.
+
 ### 2026-11-01: Wasser korrekt; Schatten nutzen gl_Layer
 - Wasser sieht nach der Tiefen-Stencil-Kopie normal aus.
 - Diagnose: mindestens 3 Vertex-Shader schreiben `gl_Layer` (Schatten-Kaskaden in eine Array-Textur in einem Durchgang); keine Meldung zu mehreren Viewports. Schatten weiter zu dunkel, unsichtbare Objekte weiter unsichtbar; keine „skipped“-Meldungen dazu.
