@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: Lauf mit der Ordner-Korrektur; Dateifehler und Log-Ende schicken, dazu die Liste der RomFS-Dateinamen. Erwartung: `GetEntryType data:/audio/wwise/bin/Switch/` klappt, Wwise lädt seine Pakete, und `PM.bnk` wird im Paket gefunden statt als lose Datei.
+1. Maintainer: `git pull`, `tools/extract_fonts.py` (Abschnitt 14), `tools/build_game.py`, `karpur.exe` starten; Bericht von `extract_fonts.py` und Log-Ende schicken.
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,13 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Wwise lädt, nächster Abbruch an den Shared Fonts
+- Mit der Ordner-Korrektur läuft die Audio-Initialisierung durch. Wwise versucht jede Bank zuerst unter `audio/wwise/bin/Switch/English(US)/` (0x202, normal) und nimmt dann die lose Datei in `audio/wwise/bin/Switch/`. Init, BGM, ME, COMMON, DEMO, UI, VIB, ENV, UI_ADD, PM, PL, BATTLE_SYSTEM, PROPS, NPC, PM_SKILLS, PM_VOICE werden so geladen.
+- RomFS-Dateiliste (30 Dateien): `arc/data.trpfd`, `arc/data.trpfs`; zwei `audio/motion_detector/common/*.trmdd`; in `audio/wwise/bin/Switch/` 17 `.bnk` und vier `.pck` (`LooseMedia.pck` 56 B, `Patch00.pck` 56 B, `SDC0.pck` 188 MiB, `SDC2.pck` 379 MiB, `Stream.pck` 930 MiB); zwei `demo/movie/*/*.bk2`; `event/trevt/bin/event.trevt`; zwei `system/prefetch/data/global-resident_*.trpre`.
+- Zwischendurch: Grafik-Replay startet (`vk: replay on the submitting thread`), hid wird ein zweites Mal initialisiert.
+- Abbruch: `nn::pl::GetSharedFontAddress(4)` aus `main+0x120e46c`, keine Datei `4-korean.bfttf`. Anders als TotK fragt Purpur alle Shared Fonts beim Start ab.
+- Neu: `tools/extract_fonts.py` (eigener Aufrufer) mit MacNativeGames' `extract_shared_fonts.py` (unverändert, `tools/vendor/macnativegames/`), holt die Fonts aus der Update-Partition der Basis-XCI nach `game/firmware/shared-fonts`. Die Runtime sucht dort (`<romfs>/../firmware`, vorher `<romfs>/../../firmware`, das läge außerhalb von `game/`).
 
 ### 2026-11-01: Ursache des LockMutex-Absturzes gefunden (vermutlich)
 - Fehlgeschlagene Dateizugriffe beim Start: `OpenFile data:/config/trinity_config/data.trowc` (0x202, wohl optional), `GetEntryType data:/audio/wwise/bin/Switch/` (0x202) aus `main+0x157145c`, dann `OpenFile data:/audio/wwise/bin/Switch/English(US)/PM.bnk` (0x202) aus `main+0x10b4ae4`, direkt danach der Absturz.

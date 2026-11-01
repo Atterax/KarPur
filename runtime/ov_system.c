@@ -12,7 +12,7 @@
 //   TOTK_ASSUME_FOCUS=1|0              1 (default, the Game tab's row): GetCurrentFocusState always reports in focus,
 //                                      whatever the window says; 0: out of focus while the window is, as on a Switch
 //   TOTK_SHARED_FONTS=<dir>            nn::pl shared fonts (tools/extract_fonts.py output), default
-//                                      <romfs>/../../firmware/shared-fonts
+//                                      <romfs>/../firmware/shared-fonts
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -679,7 +679,8 @@ static void ov_user_difference(Cpu *c) {
 // them from the user's firmware. Each type is read on first use into guest-visible memory as the BFTTF file the pl
 // shared memory holds; Address is 8 bytes past the file start (after the BFTTF header) and Size the decoded font size,
 // as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
-// Address/Size instead of a hang. TOTK_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
+// Address/Size instead of a hang. TOTK_SHARED_FONTS=<dir> overrides <romfs>/../firmware/shared-fonts (KarPur: inside
+// game/, which git ignores; TotK used <romfs>/../../firmware). Violet asks for every type at start.
 #define SHARED_FONT_TYPES 6
 #define BFTTF_MAGIC 0x7f9a0218u
 static const char *const font_files[SHARED_FONT_TYPES] = {
@@ -697,7 +698,7 @@ const char *ov_shared_font_dir(char *buf, size_t n) {
         if (cut) *cut = 0;
         snprintf(probe, sizeof probe, "%s/shared-fonts/0-standard.bfttf", exe);
         if (cut && plat_file_exists(probe)) snprintf(buf, n, "%s/shared-fonts", exe);
-        else snprintf(buf, n, "%s/../../firmware/shared-fonts", rt_config()->romfs);
+        else snprintf(buf, n, "%s/../firmware/shared-fonts", rt_config()->romfs);   // KarPur: game/firmware/shared-fonts
     }
     return buf;
 }
@@ -729,8 +730,8 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         snprintf(path, sizeof path, "%s/%s", ov_shared_font_dir(dir, sizeof dir), font_files[t]);
         FILE *f = fopen(path, "rb");
         if (!f)
-            rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s (needed for Chinese and Korean text); run "
-                     "tools/extract_fonts.py --firmware <firmware NCA dir> or set TOTK_SHARED_FONTS", fn, (long long)t,
+            rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s; run tools/extract_fonts.py (takes them from the "
+                     "base game XCI) or set TOTK_SHARED_FONTS", fn, (long long)t,
                      caller(c, lr, sizeof lr), path);
         plat_fseek64(f, 0, SEEK_END);
         int64_t len = plat_ftell64(f);

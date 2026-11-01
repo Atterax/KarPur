@@ -379,3 +379,17 @@ Select-String -Path build\game\logs\karpur.log -Pattern "nvn|gfx|vk_|shader|fata
 ```
 
 Beide Ausgaben bitte schicken. Sie enthalten Funktionsnamen, Adressen und Fehlermeldungen, keine Spieldaten.
+
+## 14. Systemschriftarten holen (Meilenstein M4)
+
+Das Spiel benutzt beim Start die Schriftarten der Switch (die „Shared Fonts“). Sie stecken nicht im Spiel, sondern im System-Update, das auf jeder Spielkarte mitgeliefert wird. Das Werkzeug holt sie aus deinem Basisspiel (der XCI aus `config.local.toml`) und prüft dabei jede Prüfsumme. Es dauert nur ein paar Sekunden.
+
+```
+cd C:\KarPur\repo
+```
+
+```
+.venv\Scripts\python tools\extract_fonts.py
+```
+
+Erwartete Ausgabe zwischen zwei `=====`-Linien: sechs Zeilen `font 0 standard: ... bytes` bis `font 5 nintendo-extension: ... bytes` und `written to ...\game\firmware\shared-fonts`. Die Dateien bleiben in `game\` und werden nie hochgeladen.
