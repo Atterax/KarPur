@@ -300,11 +300,70 @@ static int oq_gpu(void) {
 }
 
 // Hands the segment to the completion thread with a report (addr; 0: no CPU-visible memory) or a reset.
+// Pages (4 KiB) holding samples-passed reports in the current window: an open-addressing set, for the precise binding
+// diagnostic (vk_exec_oq_page_hit). Replay thread only.
+#define OQ_PAGES 16384
+static uint64_t oq_page[OQ_PAGES];   // page number + 1, 0 empty
+static uint32_t oq_npage;
+
+static void oq_page_add(uint64_t addr) {
+    uint64_t pg = (addr >> 12) + 1;
+    if (oq_npage >= OQ_PAGES / 2) return;
+    for (uint32_t i = (uint32_t)(pg * 0x9e3779b97f4a7c15ull >> 50) % OQ_PAGES;; i = (i + 1) % OQ_PAGES) {
+        if (oq_page[i] == pg) return;
+        if (!oq_page[i]) { oq_page[i] = pg, oq_npage++; return; }
+    }
+}
+
+static int oq_page_has(uint64_t pg1) {
+    for (uint32_t i = (uint32_t)(pg1 * 0x9e3779b97f4a7c15ull >> 50) % OQ_PAGES;; i = (i + 1) % OQ_PAGES) {
+        if (oq_page[i] == pg1) return 1;
+        if (!oq_page[i]) return 0;
+    }
+}
+
+// 1 when [addr, addr+n) touches a page with a samples-passed report of this window (at most 4096 pages checked).
+int vk_exec_oq_page_hit(uint64_t addr, uint64_t n) {
+    if (!oq_npage || !n) return 0;
+    uint64_t a = addr >> 12, b = (addr + n - 1) >> 12;
+    if (b - a > 4096) b = a + 4096;
+    for (uint64_t pg = a; pg <= b; pg++)
+        if (oq_page_has(pg + 1)) return 1;
+    return 0;
+}
+
+uint32_t vk_exec_oq_pages(int reset) {
+    uint32_t n = oq_npage;
+    if (reset) memset(oq_page, 0, sizeof oq_page), oq_npage = 0;
+    return n;
+}
+
+// TOTK_OQ_FILL=1 (KarPur test): every samples-passed report into CPU-visible memory also fills the 16-byte report
+// on the GPU with a nonzero pattern (vkCmdFillBuffer, ends the open pass), so a shader later in the same submission
+// reads "visible". The GPU-side counterpart of TOTK_OCCLUSION=0, which only reaches the CPU after the fence.
+static int oq_fill(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("OQ_FILL", "0");
+        if (on) rt_log("vk: samples-passed reports are also filled with a nonzero value on the GPU (TOTK_OQ_FILL=1)");
+    }
+    return on;
+}
+
 static void oq_segment(VkExec *ex, uint64_t addr, int reset, VkMemSpan *m) {
     oq_close(ex);
     if (addr && !reset) {
         if (addr < oq_lo) oq_lo = addr;
         if (addr + 16 > oq_hi) oq_hi = addr + 16;
+        oq_page_add(addr);
+    }
+    if (m && oq_fill() && m->offset % 4 == 0) {
+        vk_exec_barrier(ex);
+        VK_MEM_PICK(*m);
+        vkCmdFillBuffer(ex->cb, m->buffer, m->offset, 16, 0x00010001u);
+        ex->recorded++;
+        vk_mem_gpu_wrote(m, 16);
+        note_gpu_write(ex, addr, 16);
     }
     if (m && oq_gpu()) {
         if (oq_nseg == 1 && !oq_keep && !oq_lost && m->offset % 8 == 0) {

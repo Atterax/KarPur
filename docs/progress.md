@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Kein Wettlauf nach dem Submit; Verdacht: Zeichen-Shader lesen Abfrage-Ergebnisse im selben Frame
+- `SUBMIT_SYNC=1` (auch mit `MEMORY=import`): Objekte ploppen unverändert. Datenwettlauf ausgeschlossen.
+- Erklärung, die zu allen Tests passt: Ein Vertex-/Fragment-Shader liest das Samples-Passed-Ergebnis auf der GPU im selben Befehlspuffer (auf der Switch schreibt die GPU den Bericht der Reihe nach) und blendet das Objekt bei 0 aus. `OCCLUSION=0` wirkt erst nach dem Fence über die CPU, daher ohne Effekt.
+- Genauere Diagnose: Seiten (4 KiB) mit Berichten als Menge; Zeile `samples-passed reports in N pages; bindings touching those pages: compute storage/uniform, draws storage/uniform` (UBOs vor dem Snapshot gezählt). Sicherer GPU-Test `TOTK_OQ_FILL=1`: jeder Bericht wird zusätzlich per vkCmdFillBuffer auf der GPU mit einem Nicht-Null-Wert gefüllt.
+
 ### 2026-11-01: Shared Memory nicht die Ursache; Verdacht Daten-Wettlauf nach dem Submit
 - Mit `CS_SHARED=49152` ploppt es weiter. Nur 2 Compute-Programme: Local-Size 32 bzw. 64 (+0x748), das zweite hat 0x600 bei +0x760 (vermutlich Shared-Memory-Größe 1536 Bytes, unter Ryujinx' Standard 4096). Das Feld +0x760 notiert, Schalter bleibt als Test.
 - Der Zähler „written by a shader“ ist wohl verfälscht (note_written-Bereiche sind ganze SSBO-Bindungen, auch von Fragment-Shadern).

@@ -192,6 +192,8 @@ void vk_xfb_draw_end(VkExec *ex, int prim, uint32_t n, uint32_t inst);
 void vk_exec_oq_draw(VkExec *ex);
 int vk_exec_oq_counting(void);
 void vk_exec_oq_range(uint64_t *lo, uint64_t *hi, int reset);
+int vk_exec_oq_page_hit(uint64_t addr, uint64_t n);   // [addr, addr+n) touches a page holding a report (diagnostic)
+uint32_t vk_exec_oq_pages(int reset);
 // KarPur diagnostic: what writes the depth target the occlusion proxies test against (set by the first counted draw),
 // summed per 600-frame window and logged by vk_exec_draw.c: clears (last value), draws that write depth (of them with
 // at most 6 vertices: full-screen passes), copies into it (same size / scaled), and the image size of copy sources.

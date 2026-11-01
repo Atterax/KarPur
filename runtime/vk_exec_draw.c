@@ -816,7 +816,7 @@ static int twin_dispatch;                // op_dispatch*: the resources being bo
 // KarPur diagnostic: buffer bindings that overlap the window's samples-passed report addresses, by compute dispatches
 // and by draws. Nonzero: shaders read occlusion results on the GPU (the replay writes them from the CPU after the
 // fence, too late for a shader in the same submission).
-static uint64_t oq_bind[2];
+static uint64_t oq_bind[4];   // compute storage, compute uniform, draw storage, draw uniform
 VkOqDepthDiag vk_oq_depth;
 
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
@@ -829,11 +829,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     uint64_t n = size && size < sp.avail ? size : sp.avail;
     if (n > max) n = max;
     if (!n) return 0;
-    {
-        uint64_t olo, ohi;
-        vk_exec_oq_range(&olo, &ohi, 0);
-        if (addr < ohi && olo < addr + n) oq_bind[twin_dispatch ? 0 : 1]++;
-    }
+    if (use != VK_MUSE_UBO && vk_exec_oq_page_hit(addr, n)) oq_bind[twin_dispatch ? 0 : 2]++;   // UBOs: ubo_info
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
@@ -940,6 +936,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         }
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
+        if (b->size && vk_exec_oq_page_hit(b->addr, b->size)) oq_bind[(st == NVN_STAGE_CS ? 0 : 2) + 1]++;   // diagnostic
         if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {   // as of the submit call
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;
@@ -2106,10 +2103,12 @@ static void skip_tick(void) {
     }
     uint64_t olo, ohi;
     vk_exec_oq_range(&olo, &ohi, 1);
+    uint32_t opages = vk_exec_oq_pages(1);
     if (ohi && ind_logs < 30)
-        rt_log("vk_exec: frames %llu-%llu: samples-passed reports span %#llx bytes; buffer bindings over them: compute %llu, "
-               "draws %llu", (unsigned long long)skip_frame0, (unsigned long long)f, (unsigned long long)(ohi - olo),
-               (unsigned long long)oq_bind[0], (unsigned long long)oq_bind[1]);
+        rt_log("vk_exec: frames %llu-%llu: samples-passed reports in %u pages; bindings touching those pages: compute storage "
+               "%llu uniform %llu, draws storage %llu uniform %llu", (unsigned long long)skip_frame0, (unsigned long long)f,
+               opages, (unsigned long long)oq_bind[0], (unsigned long long)oq_bind[1], (unsigned long long)oq_bind[2],
+               (unsigned long long)oq_bind[3]);
     memset(oq_bind, 0, sizeof oq_bind);
     if (vk_oq_depth.img && ind_logs < 30) {
         VkOqDepthDiag *o = &vk_oq_depth;
