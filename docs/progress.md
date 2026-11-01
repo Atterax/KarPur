@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Shared Memory nicht die Ursache; Verdacht Daten-Wettlauf nach dem Submit
+- Mit `CS_SHARED=49152` ploppt es weiter. Nur 2 Compute-Programme: Local-Size 32 bzw. 64 (+0x748), das zweite hat 0x600 bei +0x760 (vermutlich Shared-Memory-Größe 1536 Bytes, unter Ryujinx' Standard 4096). Das Feld +0x760 notiert, Schalter bleibt als Test.
+- Der Zähler „written by a shader“ ist wohl verfälscht (note_written-Bereiche sind ganze SSBO-Bindungen, auch von Fragment-Shadern).
+- Neuer Verdacht nach dem Muster des TotK-„LOD guard“ (nvn_api_core.c): Das Spiel schreibt Objektdaten (Storage-Buffer, ~150–400 MiB Bindungen pro Frame aus CPU_UNCACHED) kurz nach dem Submit neu; die Switch-GPU hat sie bis dahin gelesen, unsere GPU läuft erst nach der Wiedergabe. Uniform-Snapshots decken nur UBOs ab. Test-Schalter `TOTK_SUBMIT_SYNC=1`: jeder Submit wartet auf die GPU.
+
 ### 2026-11-01: OCCLUSION=0 hilft auch mit gl_BaseInstance nicht; Verdacht Shared Memory der Compute-Shader
 - `OCCLUSION=0` (jetzt mit gl_BaseInstance): Objekte ploppen weiter. Die Tiefe der Prüf-Boxen ist plausibel (pro Frame gelöscht, skalierte Kopie aus 1920x1080 D24S8, ein Vollbild-Draw schreibt Tiefe).
 - Fund: Compute-Shader werden immer mit Shared-Memory-Größe 0 übersetzt (`answers_for` setzt `shared_bytes` nie; TotK holte sie aus dem gepaarten PC-Shader). Ryujinx deklariert dann 4096 Bytes; braucht das Culling/Kompaktieren mehr, liegen Zugriffe außerhalb des Arrays → falsche Instanzzahlen/-listen.
