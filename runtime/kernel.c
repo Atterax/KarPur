@@ -1628,11 +1628,26 @@ int kern_svc(Cpu *c, uint32_t imm) {
     switch (imm) {
     case 0x08: {   // CreateThread(-> w1 handle; x1 entry, x2 arg, x3 stack top, w4 priority, w5 core)
         int prio = (int)x[4], core = (int)x[5];
-        if (!x[1] || !x[3] || prio < 28 || prio > 59 || core < -3 || core > 2) {
+        // KarPur: the whole Horizon range (priority 0-63, core -3..3). TotK's 28-59 and 0-2 refused a thread Violet
+        // creates, and the SDK aborted. Core 3 is the system core on hardware; here it runs on any game core. A
+        // refusal is logged with its values.
+        if (!x[1] || !x[3] || prio < 0 || prio > 63 || core < -3 || core > 3) {
+            char d[128];
+            rt_log("kernel: CreateThread refused: entry %s stack %#llx prio %d core %d",
+                   ldr_describe(x[1], d, sizeof d), (unsigned long long)x[3], prio, core);
             x[0] = R_BAD_STATE;
             return 1;
         }
-        RtThread *t = thr_new(prio, core >= 0 ? core : MAIN_CORE, core >= 0 ? 1ull << core : 7);
+        if (prio < 28 || prio > 59 || core == 3) {
+            static int32_t noted;
+            if (plat_inc32(&noted) <= 8) {
+                char d[128];
+                rt_log("kernel: CreateThread outside TotK's range: entry %s prio %d core %d",
+                       ldr_describe(x[1], d, sizeof d), prio, core);
+            }
+        }
+        int on = core >= 0 && core < NCORE ? core : -1;
+        RtThread *t = thr_new(prio, on >= 0 ? on : MAIN_CORE, on >= 0 ? 1ull << on : 7);
         t->entry = x[1];
         t->arg = x[2];
         t->stack_top = x[3] & ~15ull;

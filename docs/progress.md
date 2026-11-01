@@ -5,7 +5,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 ## Aktueller Meilenstein: M4, erstes Bild
 
 ### Nächste Schritte
-1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; Log-Ende schicken.
+1. Maintainer: `git pull`, `tools/build_game.py`, `karpur.exe`; Log-Ende und alle Zeilen mit `CreateThread` schicken. Steht dort kein `refused`, bricht das SDK schon vor dem Systemaufruf ab (eigene Prüfung in `ThreadManager::CreateThread`).
 2. Die 36 angeforderten NVN-Funktionen erst umsetzen, wenn sie aufgerufen werden.
 3. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), Ton der AudioOut-Ausgabe (stumm), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -19,6 +19,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-01: Erster Frame, Abbruch in nn::os::CreateThread
+- Mit `csrng` läuft das Spiel deutlich weiter: `set`-Zufall, Performance-Konfiguration `0x92220008`, Bluetooth-LE offline (GattService, InitializeBle, BLE-Events), AudioOut (stumm), Xbox-Controller erkannt, Sechsachsensensor und Vibration angefordert, Grafik-Replay mit Recorder-Thread, Shader-Übersetzung mit 2 Arbeitern, **`vk_exec: frame 1`** (ein Draw 64x64, 3 Vertices, Pipeline nach 28 ms).
+- Hinweis: `nvn: SetScissors: differing scissor 1 ignored (single-scissor replay)`. Purpur nutzt mehrere Scissors; später prüfen.
+- Abbruch: `Break` (SDK-Abort) in `nn::os::detail::ThreadManager::CreateThread` (`sdk+0x3783c0`) aus `nn::os::CreateThread`, Aufrufer `main+0x7839e0` auf einem Spiel-Thread.
+- Verdacht: Der Kernel lehnte svc CreateThread ab (nur Priorität 28–59 und Kern −3..2 erlaubt, TotK-Werte). Erweitert auf Priorität 0–63 und Kern −3..3 (Kern 3 läuft auf einem beliebigen Spielkern); Ablehnungen und Werte außerhalb des TotK-Bereichs werden geloggt.
 
 ### 2026-11-01: setjmp/longjmp läuft, Dienst csrng
 - `lift.py` mit setjmp-Stellen: main 2, subsdk0 0, sdk 2 setjmp-Ziele; alle 404 Dateien kompilieren. Das Spiel kommt über `main+0x26ca4` hinaus, der longjmp-Weg funktioniert.
