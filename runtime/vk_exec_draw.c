@@ -2863,6 +2863,17 @@ static void cs_note(VkExec *ex, const GfxShader *cs, const p_dispatch *d) {
             loads += op == 61, stores += op == 62;
             i += len;
         }
+        const char *notes = gfx_shader_notes(cs);
+        if (notes) {   // the translator's notes up to the end of the array: c1 reads out of range, unknown handles
+            const char *e = strchr(notes, ']');
+            int len = e ? (int)(e - notes + 1) : 200;
+            if (len > 600) len = 600;
+            char nb[640];
+            int j = 0;
+            for (int i = 0; i < len && j < 638; i++) nb[j++] = notes[i] == '\n' || notes[i] == '\r' ? ' ' : notes[i];
+            nb[j] = 0;
+            rt_log("vk_exec: compute shader %d translator %s", k + 1, nb);
+        }
         rt_log("vk_exec: compute shader %d SPIR-V: %llu words, functions %u, calls %u, loads %u, stores %u, atomics %u "
                "(add/inc %u, compare-exchange %u, min/max %u, atomic load %u, atomic store %u), group ops %u (ballot %u), "
                "control barriers %u, memory barriers %u, pointer conversions %u", k + 1, (unsigned long long)nw, func,

@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-01: Ausrichtung ausgeschlossen; Übersetzer-Hinweise der Compute-Shader
+- Storage-Adressen von Compute-Shader 1 liegen auf 32-Byte-Grenzen (+224/+192/+128 mod 256); keine Meldung über nicht ausgerichtete Storage-Bindungen in irgendeiner Stufe. Ausrichtungs-Verdacht widerlegt.
+- Neu: Der Dispatch-Bericht gibt die Hinweise des Übersetzers für jeden Compute-Shader aus (`vk_exec: compute shader N translator "notes": [...]`), z. B. c1-Lesezugriffe außerhalb des Bereichs (die dann 0 liefern und als Konstanten in den Shader eingebaut werden) oder unbekannte Handles. `gfx_shader_notes()` neu in gfx_shader.c.
+
 ### 2026-11-01: ARGS_FORCE bringt Objekte zurück; Verdacht Ausrichtung der Storage-Buffer
 - `ARGS_FORCE=1` (95–146 Instanzzahlen pro Submission von 0 auf 1): Großer Baum, viele Orangenbäume, Büsche und Gräser erscheinen, die vorher fehlten. Bewiesen: Compute-Shader 1 (GPU-Culling) rechnet sichtbare Objekte als unsichtbar; die CPU übernimmt das. Es ploppt weiter (die CPU liest auch Puffer 0 / Storage 1).
 - Beobachtung: Ein Baum ist sichtbar, wenn man links davon steht, nie von rechts. Passt zu verschoben gelesenen Hüllen (Bounding-Daten), nicht zu einer falschen Kamera.
