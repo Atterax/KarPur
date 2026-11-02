@@ -24,6 +24,14 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Neuer Spielstand: Durchlauf bis zur ersten Stadt
+- Maintainer hat den Stand mit den Mod-Tests gesichert und ein neues Spiel begonnen (normaler Lauf, keine Schalter).
+- Charaktererstellung läuft. **Fehlt:** das Bild der Spielfigur auf dem Ausweis direkt danach (Render-to-Texture/Foto-Aufnahme prüfen).
+- Intro läuft. **Kein Ton** in der vorgerenderten Zwischensequenz (Bink 2) mit dem Cover-Legendären; danach wieder Ton.
+- Direkt nach dem Intro in der Wohnung: großes rosa Dreieck/Streifen im Bild (einmalig, verschwindet nach Verlassen der Wohnung; erinnert an die früheren „Stachel“-Artefakte).
+- Draußen flimmern anfangs vereinzelt Bäume, nach längerem Laufen hört es von selbst auf. Folgerung: Es liegt **nicht** am alten Spielstand. Das Flackern ist der bekannte Wettlauf beim Laden neuer Gebiete, den `SUBMIT_SYNC` nur mildert (Nächste Schritte, Punkt 1).
+- **Partikel-Effekte** (Attacken, Wasser, fallende Blätter) laufen sichtbar ruckelig (gefühlt ~20 fps), der Rest flüssig mit 60 fps. Das ist der offene Punkt „Spiellogik über 60 fps (Effekte)“: Das Effektsystem bekommt den 60-fps-Zeitschritt vermutlich nicht über `fps_dt`.
+
 ### 2026-11-02: Baum-Flackern im normalen Lauf zurück
 - Maintainer: ohne Schalter flackern die Bäume wieder stark (karpur.ini sauber, Log ohne `data patch`/`data watch`, `lod_bias off`).
 - Code-Prüfung seit `f2a1b11` (letzter flackerfreier Standard): ohne Schalter ändert sich nichts am Bild (nur Pass-Größen-Zählung, Overlay-Anzeige, Menü; `data_patch_read` kehrt ohne Felder sofort zurück; Sätze `lod_bias`/`data_watch` aus). Der Lauf „Test 1: Läuft wie gehabt“ nach dem Menü-Aufräumen hatte dieselben Sätze schon drin.
