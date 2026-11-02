@@ -22,6 +22,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Mit SUBMIT_SYNC: Palmen flackern vereinzelt; Palme mit Rindentextur auf den Blättern
+- Statt Bäumen flackern jetzt vereinzelt Palmen schnell. Eine Palme zeigt auf den Blättern die Rindentextur, ohne Alpha-Ausschnitt (grobe Blattflächen); dieselbe Palme war vorher richtig. Verdacht: Textur veraltet/verwechselt (Speicher einer gestreamten Textur wiederverwendet, Alias-Übernahme `TOTK_TEX_ALIAS` oder Freigabe unter VRAM-Druck `TOTK_TEX_VRAM_PRESSURE`).
+- Log: Ab ca. Frame 1800 springt „index count 0“ bei indirekten Draws von ~0 auf 68000–85000 pro 600 Frames (vorher in anderen Szenen höchstens ~20000). Noch nicht eingeordnet.
+- A/B-Tests angefragt: `TEX_ALIAS=0`, `TEX_VRAM_PRESSURE=0`.
+
 ### 2026-11-02: Baum-Flackern ist ein Zeit-Wettlauf; SUBMIT_SYNC Standard
 - `OCCLUSION=0` (alle Occlusion-Zählungen groß): einzelne Bäume flackern weiter stark → nicht die Abfrage-Ergebnisse.
 - `SUBMIT_SYNC=1` (Spiel-Thread wartet nach jedem Submit auf die GPU): nichts flackert mehr, nur sehr weit entfernt (vermutlich normaler LOD-Wechsel). Bildrate unverändert: Minute 2 mean 30.0 fps, 1% low 28.4 (ohne Warten gleich); kein spürbarer Unterschied für den Maintainer.
