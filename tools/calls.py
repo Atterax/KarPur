@@ -29,9 +29,16 @@ FMOV immediates with their value, loads and stores with base register and offset
 arithmetic, calls and branches. Registers and immediates only, never instruction words.
 
   .venv\\Scripts\\python tools\\calls.py --insn main+0xd058dc
+
+--string TEXT lists the NUL-terminated strings of the module that contain TEXT (case-insensitive, at most 40) with
+their offset and the functions that compute their address (ADRP+ADD, ADR): to find library code such as a decoder by
+its error messages.
+
+  .venv\\Scripts\\python tools\\calls.py --string oodle --string kraken
 """
 
 import argparse
+import re
 import struct
 import sys
 from bisect import bisect_right
@@ -560,6 +567,26 @@ def report(mod, a, before, after):
         print(f'  ... {len(rows) - mark - after - 1} later calls')
 
 
+def string_report(mod, text, limit=40):
+    """Strings of the module image containing text, and the functions that reference each one."""
+    img = mod.m.image
+    pat = re.compile(rb'[\x20-\x7e]*' + re.escape(text.encode()) + rb'[\x20-\x7e]*\x00', re.I)
+    hits = list(pat.finditer(img))
+    print(f'strings in {mod.name} containing "{text}": {len(hits)}' + (f' (first {limit})' if len(hits) > limit else ''))
+    for m in hits[:limit]:
+        a = mod.base + m.start()
+        s = m.group()[:-1].decode('ascii')
+        users = []
+        for kind, idx in ref_hits(mod, a):
+            src = mod.m.lo + idx * 4
+            f = mod.function(src)
+            users.append(f'{kind.split(" ")[0]} at {mod.name}+{src - mod.base:#x} in function '
+                         f'{mod.name}+{f[0] - mod.base:#x}' if f else f'{kind} at {mod.name}+{src - mod.base:#x}')
+        print(f'  {mod.name}+{a - mod.base:#x}  "{s[:100]}"')
+        for u in users[:8] or ['(no ADRP+ADD/ADR to it; maybe through a pointer table)']:
+            print(f'      {u}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('addresses', nargs='*', help='module+offset as karpur.log prints them')
@@ -573,12 +600,15 @@ def main():
                     help='where register xN was last set before the instruction at MOD+OFF (repeatable)')
     ap.add_argument('--insn', action='append', default=[], metavar='MOD+OFF',
                     help='the instruction classes (register, immediate, load offset, call target) around MOD+OFF')
+    ap.add_argument('--string', action='append', default=[], metavar='TEXT',
+                    help='strings of main containing TEXT and the functions that use them')
     ap.add_argument('--around', type=int, default=4, help='instructions before and after for --insn (default 4)')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
     want = ({s.split('+', 1)[0] for s in a.addresses} | {o.split('+', 1)[0] for o in a.origin} |
-            {o.split('+', 1)[0] for o in a.returns} | {o.split('+', 1)[0] for o in a.insn})
+            {o.split('+', 1)[0] for o in a.returns} | {o.split('+', 1)[0] for o in a.insn} |
+            ({'main'} if a.string else set()))
     mods = {}
     for name, base, _ in layout(a.exefs):
         if name in want:
@@ -603,7 +633,9 @@ def main():
     for o in a.insn:
         mod, addr = parse(o, mods)
         insn_report(mod, addr, a.around)
-    if a.origin or a.returns or a.insn:
+    for t in a.string:
+        string_report(mods['main'], t)
+    if a.origin or a.returns or a.insn or a.string:
         print('=' * 72)
 
 
