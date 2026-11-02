@@ -740,5 +740,6 @@ NVN_API(nvnQueuePresentTexture) {
     o->ticket[idx] = o->presents;
     o->avail[idx] = slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
+    value_scan_present(o->presents);         // KarPur value_scan.c: TOTK_VALUE_SCAN, TOTK_POKE
     rt_frame_presented(t, o->presents);
 }
