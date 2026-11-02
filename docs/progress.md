@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Figur-Ruckeln nur in Gebäuden; step_ten ohne Wirkung
+- `STEP_TEN=1`: Figur ruckelt weiter, sonst nichts anders. Das Ruckeln gibt es **nur in Gebäuden**, draußen läuft die Figur flüssig.
+- Web: Eine Cheat-Liste auf GBAtemp (Cheat-Datenbank-Thread, Beitrag 10395321) nennt für den 60-fps-Cheat 3.0.1 „fixed stutter indoors“ und „stutter while walking/running“. Die Seite ist aus der Agent-Umgebung nicht erreichbar (gbatemp.net löst nicht auf). Der Maintainer soll die Code-Zeilen (Adressen und Werte) abschreiben; daraus lassen sich die Stellen für 4.0.0 suchen.
+
 ### 2026-11-02: Figur-Ruckeln: Konstanten-Halbierung ohne Treffer; Test step_ten
 - Halbierung über 26 Sätze (fs/fr/us), Kriterium „Figur läuft im Gebäude flüssig“: in jeder Hälfte F7. Keine 30-fps-Code-Konstante ist es.
 - Neu: optionaler Satz `step_ten` (`TOTK_STEP_TEN=1`, Standard aus) in `tools/fps_patches.py`: `main+0x170c408` `movz w10, #1.0f` (gespeichert nach `[x9, #0x90]`) → 10.0f, wie der feste Patch des Fremd-Mods an derselben Stelle (Bedeutung unbekannt; in 4.0.0 steht dort dieselbe Instruktion).
