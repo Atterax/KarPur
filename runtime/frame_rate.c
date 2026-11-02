@@ -88,7 +88,15 @@ void frame_step_init(void) {
            step_word ? "real-time step (5-frame average of display intervals, at most 1/15 s)" : "whole-vsync steps");
 }
 
-int frame_step_realtime(void) { return step_word != NULL; }
+// KarPur: Violet's patch set fps_dt (frame_dt.c) also gives the game the time that really passed, so the pacer then
+// holds frames to the limit as with the real-time step.
+static int dt_step(void) {
+    static int set = -2;
+    if (set == -2) set = rt_patch_set("fps_dt");
+    return rt_patch_enabled(set);
+}
+
+int frame_step_realtime(void) { return step_word != NULL || dt_step(); }
 
 // The frame limit (menu, TOTK_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 360, or display (the
 // refresh rate of the window's monitor). Unset, the older TOTK_FPS60=0 still means 30. A limit of 30 switches the set
@@ -124,7 +132,7 @@ static void frame_limit_live(void) {
     limit_hz = hz;
     if (fps60_set == -2) fps60_set = rt_patch_set("fps60");
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
-    if ((hz > 60 || hz == 0) && !step_word)
+    if ((hz > 60 || hz == 0) && !frame_step_realtime())
         rt_log("frame rate: limits above 60 need the real-time step (TOTK_REALTIME=1); 60 fps");
     else if (hz) rt_log("frame rate: limit %d fps", hz);
     else if (gfx_window_refresh_hz() > 0) rt_log("frame rate: limit at the monitor's refresh rate (%.3f Hz now)", gfx_window_refresh_hz());
@@ -146,7 +154,7 @@ double frame_step_limit_hz(void) {
     if (hz < 0) return 0;
     double r = hz ? hz : gfx_window_refresh_hz();
     if (r < LIMIT_MIN_HZ) r = 60;
-    return !step_word && r > 60 ? 60 : r > LIMIT_MAX_HZ ? LIMIT_MAX_HZ : r;
+    return !frame_step_realtime() && r > 60 ? 60 : r > LIMIT_MAX_HZ ? LIMIT_MAX_HZ : r;
 }
 
 // ---- TOTK_TRACE=perf speed lines

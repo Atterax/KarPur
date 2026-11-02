@@ -4,15 +4,17 @@ The table goes to build/ (it holds instruction words of the game, so it stays ou
 checked against the instruction it expects (register and immediate), so a different game version stops here with a
 report instead of producing a broken build.
 
-Sets (all off by default, each switched with its TOTK_ variable):
+Sets (switched with their TOTK_ variable):
 
-  fps_ns   main+0x2b7a7f8/+0x2b7a7fc: the 33333334 ns frame time the frame-mode function main+0x2b79f60 picks for
-           30 fps becomes 16666667 ns (its 60 fps value; same register w10)
-  fps_iv   main+0x2b7a808: the vsync count 2 that goes with it becomes 1
-  fps_dt   main+0x92dd2c: the thunk main+0x92dd20 (tail call of vtable slot 2 of the object in x0) gets x2 = the
+  fps_dt   (on by default) main+0x92dd2c: the thunk main+0x92dd20 (tail call of vtable slot 2 of the object in x0) gets x2 = the
            frame time in ns from the patch page +64, which runtime/frame_dt.c fills with the measured frame time
-           (the game passes 33333334 there at 30 fps; the third-party mod sets the same register)
+           (the game passes 33333334 there at 30 fps; the third-party mod sets the same register). With it on, the
+           runtime paces frames to the menu's frame limit (TOTK_FPS_LIMIT, 30..360 or display) and the game keeps
+           its speed at any rate (confirmed at 60 fps, docs/progress.md 2026-11-02).
 
+Tried and dropped: the 30 fps frame time and vsync count in main+0x2b79f60 (no effect on the interval or the speed).
+
+tools/lift.py uses build/fps_patches.txt by itself when the file exists.
 Background: docs/progress.md 2026-11-02 (a third-party frame-rate mod for Violet, read for behaviour only, and
 tools/consts.py / calls.py --insn reports of 4.0.0).
 
@@ -34,16 +36,8 @@ from module import Module  # noqa: E402
 EXEFS = ROOT / 'game' / 'extracted' / 'update' / 'exefs'
 
 
-def movz(rd, imm, hw=0, x=False):
-    return (0xD2800000 if x else 0x52800000) | hw << 21 | imm << 5 | rd
-
-
-def movk(rd, imm, hw=0, x=False):
-    return (0xF2800000 if x else 0x72800000) | hw << 21 | imm << 5 | rd
-
-
 def describe(w):
-    """Short text of a move-wide word or a 64-bit LDR (immediate) for the mismatch report."""
+    """Short text of a 64-bit LDR (immediate) or move-wide word for the mismatch report."""
     if (w & 0xFFC00000) == 0xF9400000:
         return f'ldr x{w & 31}, [x{(w >> 5) & 31}, #{((w >> 10) & 0xFFF) * 8:#x}]'
     if (w & 0x1F800000) == 0x12800000:
@@ -58,12 +52,10 @@ def ldr_x(rt, rn, off):
 
 PAGE_FRAME_NS = 64   # patch page byte offset of the frame time in ns (runtime/frame_dt.c; recomp/patches.py layout)
 
-# (set, switch, module offset, expected word, replacement word or words; '@page:x2' is adrp x2 of the patch page)
+# (set, switch, default, module offset, expected word, replacement word or words; '@page:x2' is adrp x2 of the
+# patch page)
 SITES = [
-    ('fps_ns', 'TOTK_FPS_NS', 0x2b7a7f8, movz(10, 0xa056), movz(10, 0x502b)),
-    ('fps_ns', 'TOTK_FPS_NS', 0x2b7a7fc, movk(10, 0x1fc, 1), movk(10, 0xfe, 1)),
-    ('fps_iv', 'TOTK_FPS_IV', 0x2b7a808, movz(9, 2), movz(9, 1)),
-    ('fps_dt', 'TOTK_FPS_DT', 0x92dd2c, ldr_x(8, 0, 0), [ldr_x(8, 0, 0), '@page:x2', ldr_x(2, 2, PAGE_FRAME_NS)]),
+    ('fps_dt', 'TOTK_FPS_DT', 1, 0x92dd2c, ldr_x(8, 0, 0), [ldr_x(8, 0, 0), '@page:x2', ldr_x(2, 2, PAGE_FRAME_NS)]),
 ]
 
 
@@ -78,14 +70,14 @@ def main():
     m = Module('main', a.exefs / 'main', base, 'c')
     lines, sets, bad = ['# frame-rate patch sets from tools/fps_patches.py (holds instruction words: not for the '
                         'repository)'], [], 0
-    for name, env, off, want, repl in SITES:
+    for name, env, default, off, want, repl in SITES:
         have = m.word(base + off)
         ok = have == want
         bad += not ok
         print(f'main+{off:#x}: expected {describe(want)}, found {describe(have)}: {"ok" if ok else "MISMATCH"}')
         if name not in sets:
             sets.append(name)
-            lines.append(f'set  {name} {env} 0')
+            lines.append(f'set  {name} {env} {default}')
         words = repl if isinstance(repl, list) else [repl]
         text = ' '.join(r if isinstance(r, str) else f'{r:08x}' for r in words)
         lines.append(f'site {name} main {off:x} {want:08x} {text}')

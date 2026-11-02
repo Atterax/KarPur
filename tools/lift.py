@@ -114,7 +114,7 @@ def main():
     ap.add_argument('--ninja', help='ninja executable (default: MSYS2 UCRT64, else PATH)')
     ap.add_argument('--skip-gen', action='store_true', help='compile what generated/ already holds')
     ap.add_argument('--patches', type=Path, help='code patch table for gen.py (recomp/patches.py), e.g. the one '
-                    'tools/consts.py --patch-file writes')
+                    'tools/consts.py --patch-file writes; default build/fps_patches.txt when it exists')
     ap.add_argument('--gen-only', action='store_true',
                     help='only lift (tools/build_game.py compiles what changed and links)')
     args = ap.parse_args()
@@ -127,6 +127,10 @@ def main():
     if free < 8 * 2**30:
         sys.exit(f'error: only {free / 2**30:.1f} GiB free on the drive of {ROOT}; lifting needs about 8 GiB')
 
+    default = ROOT / 'build' / 'fps_patches.txt'   # tools/fps_patches.py: Violet's frame-rate set
+    if args.patches is None and default.is_file():
+        args.patches = default
+        print(f'patch table: {default} (tools/fps_patches.py)')
     if args.patches and not args.patches.is_file():
         sys.exit(f'error: patch table {args.patches} not found')
     gen_s = 0.0 if args.skip_gen else generate(args.exefs, args.gen, modules, args.patches)
