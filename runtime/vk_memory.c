@@ -1165,10 +1165,16 @@ static PlatMutex mirror_stat_lock = PLAT_MUTEX_INIT;
 static volatile int64_t m_live_n, m_live_bytes, m_refused_n[MR_N], m_refused_bytes[MR_N];
 static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mismatch;
 
+// KarPur (2026-11-02): auto is import on every device class. With mirrors Violet's CPU read stale GPU results (its
+// culling and draw arguments, written back at the end of a submission) and objects went missing or flickered, ~100
+// indirect draws a frame came out with index count 0, and textures went stale; TOTK_MEMORY=import drew everything right
+// at 30 fps on an RTX 5080 (maintainer A/B test, docs/progress.md). TOTK_MEMORY=mirror brings the mirrors back for
+// slower PCIe paths once their write-back ordering is fixed.
 static void mirror_mode(int discrete) {
     const char *e = cfg_value("TOTK_MEMORY");
-    int mode = discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify
-    const char *why = discrete ? "auto, discrete gpu" : "auto, uma";
+    int mode = 0;   // 0 import, 1 mirror, 2 verify
+    const char *why = discrete ? "auto, discrete gpu: mirrors off in KarPur (TOTK_MEMORY=mirror turns them on)"
+                               : "auto, uma";
     if (strcmp(e, "auto")) {
         if (!strcmp(e, "import")) mode = 0, why = "TOTK_MEMORY=import";
         else if (!strcmp(e, "mirror")) mode = 1, why = "TOTK_MEMORY=mirror";

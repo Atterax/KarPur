@@ -6,7 +6,8 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Palme mit Rindentextur / Flackern**: Test `TEX_RECLAIM` (Standard an) abwarten; danach prüfen, ob `SUBMIT_SYNC=0` mit TEX_RECLAIM auch reicht.
+0. **Spiegel-Speicher (mirror) reparieren**: Mit `MEMORY=import` (jetzt Standard) ist alles richtig. Im Mirror-Modus liest die CPU veraltete GPU-Ergebnisse (Culling, Draw-Argumente; Write-back erst am Ende der Submission) und Texturen veralten. Erst reparieren, wenn Leistung auf schwächeren PCs nötig wird. Danach prüfen, ob `SUBMIT_SYNC=0` mit import reicht (dann Warten wieder abschalten).
+0b. **Sichtweite/LOD erweitern** (Wunsch des Maintainers, wie Switch-2-Fassung): LOD-/Distanz-Parameter im Spielcode finden, per Patch-Schalter vergrößern. Nach fehlerfreier Darstellung.
 1. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
@@ -22,6 +23,13 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Ursache für Flackern/fehlende Objekte: VRAM-Spiegel; import ist Standard
+- Mit TEX_RECLAIM: Log zeigt keine Rückholung (Fall trat nicht ein). Zweite Palme rechts vom Spieler fehlt (Vergleich mit Switch-2-Screenshot), Felsen/Palmen flackern gelegentlich. ~105 indirekte Draws pro Frame mit index count 0 in dieser Gegend.
+- `MEMORY=import`: **alles richtig** – kein Flackern von Objekten oder Schatten, alle Objekte da; index count 0 = 0. Ein- bis zweimal kurz niedrige FPS (unter 2 s). Minute 1 mean 29.0 / 1% low 20.3 (Laden), danach mean 30.0; schlimmste Frames mit 20–30 ms fence/present wait.
+- `IND_SHOW=1` (Mirror): alles da, aber vieles flackert.
+- Folgerung: Der Mirror-Modus (aus TotK, `vk_memory.c`) ist die Ursache. Die GPU schreibt in die VRAM-Kopie; zurück in den Gastspeicher erst am Ende der Submission. Violets CPU liest Culling-Ergebnisse und Draw-Argumente zurück und entscheidet damit; vermutlich sieht sie teils alte Daten (passt auch zu SPLIT_DRAWS-Befund vom 2026-11-01).
+- `runtime/vk_memory.c mirror_mode`: auto = import auf allen Geräteklassen. `TOTK_MEMORY=mirror` bleibt verfügbar.
 
 ### 2026-11-02: Veraltete GPU-Texturen nach CPU-Neubeschreiben werden neu geladen (TEX_RECLAIM)
 - Tests: `TEX_ALIAS=0` → Palmen und andere Objekte fehlen (leere Blatt-Texturen, Alpha-Test wirft alles weg). `TEX_VRAM_PRESSURE=0` → Palme wieder richtig, aber viele Bäume und Palmen flackern stark. Folgerung: Inhalte unserer Texturkopien sind veraltet; Verwerfen und frisches Laden aus dem Speicher hilft.
