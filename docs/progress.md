@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Halbierung über die 30-fps-Konstanten: Effekte nie flüssig
+- `PATCH_BISECT=1` über 26 Sätze (fs/fr/us): in jeder Hälfte F7 (Effekte weiter ruckelig). **Keine 30-fps-Konstante im Code bestimmt den Effekt-Takt.**
+- Neue Vermutung: Es ist gar nicht die Spiellogik, sondern unsere Speicher-Synchronisation. Die CPU schreibt Partikel-Daten jedes Bild neu; kommen sie über den VRAM-Spiegel (Standard `MEMORY=auto` → mirror, späte Sync, heiße Stücke) nur jedes zweite Bild bei der GPU an, ruckeln genau die Partikel. Test: `MEMORY=import` (GPU liest den Gastspeicher direkt).
+
 ### 2026-11-02: Effekt-Takt: Berichte und Halbierungs-Test
 - `main+0x13f39f8` ist eine 3-Instruktionen-Funktion `return 60.0f` (6 Aufrufer: `0x138b7b8`, `0x13f38dc`, `0x14ee500`, `0x1834d60`, `0x18e3f14`, `0x202fa5c`); `main+0x166781c` legt eine Struktur mit 60.0f an (1 Aufrufer).
 - `main+0x2b79f60` vergleicht eine Bildzeit mit 66666667 / 50000000 / 33333334 / 16666667 ns und wählt daraus das Intervall (33333334 → 2). Strings `FPS60`/`FPS30`/`FPS20`/`FPS15`/`FPS12` (Enum-Namen, ohne direkte Referenz) und `baseFrameRate`. Partikel-Dateien `.ptcl`, Effekt-Funktionen um `main+0x2936d94`.
