@@ -15,8 +15,11 @@ Function discovery runs in this process, vectorised over the module's .text word
 seeds (.eh_frame_hdr, exported FUNC symbols, RELATIVE relocation targets), every BL target, and code addresses
 materialised by ADR or ADRP+ADD (except an ADR that anchors a jump table: one with a `br` in the next 16
 instructions, or one an ADD register form uses as its base right after; and except an address strictly inside an
-.eh_frame FDE range, named from inside the same range). A function is [start, next start). A direct branch whose target lies outside its
-function makes the target a new start, until no new start appears.
+.eh_frame FDE range, named from inside the same range). A function with an .eh_frame FDE is lifted whole, from the
+FDE start to the first start at or after the FDE end; a start inside it (a BL target, an address taken from outside)
+becomes an extra C function holding the same range, entered at its own address. Any other function is
+[start, next start). A direct branch whose target lies outside its function makes the target a new start, until no
+new start appears.
 
 Emission runs in worker processes, one chunk per task. Each worker loads the modules itself, lifts one function at a
 time and resolves its jump tables (recomp/jumptables.py), so memory per worker does not grow with the module.
@@ -152,9 +155,7 @@ def discover(mod):
     # table whose anchor ADR the rule above missed (Violet: main+0x2a1fbfc split main+0x2a1f54c, and a case after the
     # split, reached by BR from the first part, was "not a function start"). Seeds and BL targets stay starts; the
     # branch fixpoint below still adds a start wherever a branch crosses one of those.
-    fde = sorted(mod.eh_frame_ranges())
-    fde_lo = (np.array([b for b, _ in fde], dtype=np.int64) - pc0) >> 2
-    fde_hi = (np.array([e for _, e in fde], dtype=np.int64) - pc0 + 3) >> 2
+    fde_lo, fde_hi = fde_arrays(mod)
 
     def inside_fde(x, src):
         """x lies strictly inside an FDE range and src (the instruction that names x) lies in the same range."""
@@ -169,24 +170,81 @@ def discover(mod):
     starts = np.unique(np.concatenate([seeds, bl_tgt, mat[~mat_in]]))
     stats = {'seeds': int(len(seeds)), 'bl_targets': int(len(np.unique(bl_tgt))),
              'materialised_targets': int(len(np.unique(mat))), 'initial_starts': int(len(starts)),
-             'fde_ranges': len(fde), 'inside_fde_dropped': int(len(np.unique(mat[mat_in])))}
+             'fde_ranges': len(fde_lo), 'inside_fde_dropped': int(len(np.unique(mat[mat_in])))}
 
+    # A branch leaving the function that holds it makes its target a start. The function holding an instruction is
+    # its .eh_frame function when there is one (lifted whole, see function_ranges), else [previous start, next).
     rounds = 0
     while True:
         rounds += 1
-        f = np.searchsorted(starts, br_src, side='right') - 1
-        live = f >= 0
-        f = np.where(live, f, 0)
-        lo = starts[f]
-        hi = np.where(f + 1 < len(starts), starts[np.minimum(f + 1, len(starts) - 1)], n)
-        out = live & ((br_tgt < lo) | (br_tgt >= hi))
+        lo, hi = owner_ranges(br_src, starts, fde_lo, fde_hi, n)
+        out = (lo >= 0) & ((br_tgt < lo) | (br_tgt >= hi))
         new = np.setdiff1d(br_tgt[out], starts, assume_unique=False)
         if not len(new):
             break
         starts = np.union1d(starts, new)
     stats['rounds'] = rounds
     stats['functions'] = int(len(starts))
+    stats['inner_entries'] = int(np.count_nonzero(inner_mask(starts, fde_lo, fde_hi)))
     return starts, stats
+
+
+def fde_arrays(mod):
+    """Sorted .eh_frame function ranges as word indices into mod.words: (lo, hi), each hi clipped to the next lo."""
+    fde = sorted(mod.eh_frame_ranges())
+    lo = (np.array([b for b, _ in fde], dtype=np.int64) - np.int64(mod.lo)) >> 2
+    hi = (np.array([e for _, e in fde], dtype=np.int64) - np.int64(mod.lo) + 3) >> 2
+    if len(lo) > 1:
+        hi[:-1] = np.minimum(hi[:-1], lo[1:])
+    ok = (lo >= 0) & (hi > lo) & (lo < len(mod.words))
+    return lo[ok], np.minimum(hi[ok], len(mod.words))
+
+
+def _fde_of(x, fde_lo, fde_hi):
+    """Index of the .eh_frame function holding each x, -1 for none."""
+    if not len(fde_lo):
+        return np.full(len(x), -1, dtype=np.int64)
+    k = np.searchsorted(fde_lo, x, side='right') - 1
+    ok = (k >= 0) & (x < fde_hi[np.maximum(k, 0)])
+    return np.where(ok, k, -1)
+
+
+def inner_mask(starts, fde_lo, fde_hi):
+    """Starts that lie strictly inside an .eh_frame function (extra entries into a function lifted whole)."""
+    k = _fde_of(starts, fde_lo, fde_hi)
+    return (k >= 0) & (starts > fde_lo[np.maximum(k, 0)])
+
+
+def owner_ranges(x, starts, fde_lo, fde_hi, n):
+    """[lo, hi) of the lifted function holding each word index x: the .eh_frame function holding x, or holding
+    the start before x (x in the tail between the FDE end and the next start), up to the first start at or after
+    the FDE end; otherwise [previous start, next start). lo is -1 before the first start."""
+    f = np.searchsorted(starts, x, side='right') - 1
+    live = f >= 0
+    fc = np.maximum(f, 0)
+    lo = np.where(live, starts[fc], -1)
+    hi = np.where(fc + 1 < len(starts), starts[np.minimum(fc + 1, len(starts) - 1)], n)
+    k = _fde_of(x, fde_lo, fde_hi)
+    k = np.where((k < 0) & live, _fde_of(starts[fc], fde_lo, fde_hi), k)
+    has = (k >= 0) & live
+    kc = np.maximum(k, 0)
+    if len(fde_lo):
+        nxt = np.searchsorted(starts, fde_hi[kc], side='left')
+        fhi = np.where(nxt < len(starts), starts[np.minimum(nxt, len(starts) - 1)], n)
+        lo = np.where(has, fde_lo[kc], lo)
+        hi = np.where(has, fhi, hi)
+    return lo, hi
+
+
+def function_ranges(mod, starts):
+    """(lo, end) word indices of the C function for each start. A function with .eh_frame info is lifted whole,
+    [FDE start, first start at or after the FDE end): the branch fixpoint no longer cuts it at internal branch
+    targets, so its jump tables stay inside it (Violet main+0x2a1f54c had been cut into 45 parts and a table case
+    was "not a function start"). A start strictly inside such a function (a BL target or an address taken from
+    outside) gets the same range and enters it at its own address (lo < start); other starts keep [start, next)."""
+    fde_lo, fde_hi = fde_arrays(mod)
+    lo, hi = owner_ranges(starts, starts, fde_lo, fde_hi, len(mod.words))
+    return lo, hi
 
 
 def estimate_sizes(mod, starts):
@@ -375,15 +433,21 @@ class Emitter:
             raise patches.PatchError(f'{a:#x}: a patched call that uses flags')
         return alts[0][0] or alts[1][0], alts[0][1]
 
-    def function(self, entry, end):
-        """(lines of C, referenced function starts) for the guest function [entry, end)."""
+    def function(self, entry, end, lo=None):
+        """(lines of C, referenced function starts) for the guest function [entry, end). With lo < entry the C
+        function holds [lo, end) and is entered at entry: an extra entry into a function lifted whole
+        (function_ranges). It uses the any-instruction dispatch of an unresolved computed br, which starts at c->pc."""
         mod, starts = self.mod, self.starts
-        insns = [mod.lift(a) for a in range(entry, end, 4)]
-        labels, tables = self.scan(insns, entry, end)
+        lo = entry if lo is None else lo
+        inner = lo != entry
+        if inner:
+            self.stats['inner_entries'] += 1
+        insns = [mod.lift(a) for a in range(lo, end, 4)]
+        labels, tables = self.scan(insns, lo, end)
         refs = set()
-        all_labels = 'all' in tables.values()
+        all_labels = inner or 'all' in tables.values()
         if all_labels:
-            labels = set(range(entry, end, 4))
+            labels = set(range(lo, end, 4))
         # An unresolved computed br re-enters the function through fb_<entry>, a C function of its own, which local
         # flags would not survive; such functions keep NZCV in c->nzcv.
         # The same holds for registers in locals (recomp/regs.py): fb_<entry> keeps them in the Cpu too.
@@ -407,7 +471,7 @@ class Emitter:
             return fp.publish(i) if fp and fp.used else ''
 
         def jump(t, i):
-            if entry <= t < end:
+            if lo <= t < end:
                 return f'goto L_{t:x};'
             if t in starts:
                 refs.add(t)
@@ -420,7 +484,7 @@ class Emitter:
             # instruction. A goto to a shared dispatch block inside the body instead turns every instruction into
             # a loop header, and clang's loop passes then take tens of seconds on one function.
             fb = f'fb_{entry:x}'
-            cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
+            cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(lo, end, 4))
             redispatch = f'{MUSTTAIL} {fb}(c);'
             out = [f'static void {fb}(Cpu *c);',
                    f'void {fname(entry)}(Cpu *c) {{', f'    FN_ENTER({hx(entry)});', f'    c->pc = {hx(entry)};',
@@ -478,7 +542,7 @@ class Emitter:
 
         k = None
         for i, ins in enumerate(insns):
-            a = entry + 4 * i
+            a = lo + 4 * i
             if a in labels:
                 emit(None, f'L_{a:x}:;')
             k = ins.kind
@@ -490,7 +554,7 @@ class Emitter:
                 emit(i, f'    {spill}{fx(i, ins.code)}')
             elif k in ('b', 'bcond'):
                 j = jump(ins.target, i)
-                if self.spins.get(a) == ins.target and entry <= ins.target < end:
+                if self.spins.get(a) == ins.target and lo <= ins.target < end:
                     j = f'rt_spin_gate(c, {hx(ins.target)}); {j}'   # a pass of a spin wait
                     self.stats['spin_gates'] += 1
                 emit(i, '    ' + j if k == 'b' else f'    if ({fx(i, ins.cond)}) {{ {j} }}')
@@ -523,7 +587,7 @@ class Emitter:
             for i, line in body:
                 if i is not None:
                     texts[i] += line
-            clean = {i for i, ins in enumerate(insns) if entry + 4 * i not in self.patched
+            clean = {i for i, ins in enumerate(insns) if lo + 4 * i not in self.patched
                      and (ins.kind in ('bl', 'blr') or (ins.kind == 'op' and regs.RELOAD in texts[i]))}
             rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept)
             if rp.regs:
@@ -545,12 +609,12 @@ class Emitter:
 
 
 def chunk_text(name, number, emitter, fns):
-    """C text of one chunk. fns: [(entry, end)]."""
+    """C text of one chunk. fns: [(entry, end)] or [(entry, end, lo)] (see Emitter.function)."""
     body, refs = [], set()
     emitter.uses_patches = False
     emitter.uses_setjmp = False
-    for entry, end in fns:
-        lines, r = emitter.function(entry, end)
+    for fn in fns:
+        lines, r = emitter.function(*fn)
         body.append('\n'.join(lines))
         refs |= r
     # Every referenced function gets a prototype, including ones defined later in this chunk.
@@ -694,6 +758,9 @@ def main():
     ap.add_argument('--big-fn', type=int, default=300000, help='estimated bytes of C from which a function gets '
                                                                'its own chunk')
     ap.add_argument('--patches', type=Path, help='code patch table (recomp/patches.py)')
+    ap.add_argument('--inner-entry-test', action='store_true',
+                    help='test only: lift every function after the first as an entry into a range starting at the '
+                         'previous start (tests/lifter/test_lifter.py --inner)')
     ap.add_argument('--reg-locals', type=int, default=regs.LOCALS,
                     help=f'guest registers per function kept in C locals (recomp/regs.py; default {regs.LOCALS}, 0: none)')
     ap.add_argument('--no-callee-saved-trust', action='store_true',
@@ -724,12 +791,15 @@ def main():
         est = estimate_sizes(mod, starts)
         abs_starts = mod.lo + starts * 4
         n = len(starts) if not args.limit else min(args.limit, len(starts))
-        ends = np.append(abs_starts[1:], mod.hi)
+        rlo, rhi = function_ranges(mod, starts)
+        if args.inner_entry_test:
+            rlo[1:] = np.minimum(rlo[1:], starts[:-1])
+        ends, los = mod.lo + rhi * 4, mod.lo + rlo * 4
         chunks = partition(est[:n], args.chunk_fns, args.chunk_bytes, args.big_fn)
         moddir = args.out / name
         moddir.mkdir(parents=True, exist_ok=True)
         for number, (i0, i1) in enumerate(chunks):
-            fns = list(zip(abs_starts[i0:i1].tolist(), ends[i0:i1].tolist()))
+            fns = list(zip(abs_starts[i0:i1].tolist(), ends[i0:i1].tolist(), los[i0:i1].tolist()))
             tasks.append((int(est[i0:i1].sum()), (name, number, str(moddir / f'{name}_{number:04d}.c'), fns)))
         paths[name] = (str(path), base)
         starts_abs[name] = abs_starts
@@ -738,7 +808,8 @@ def main():
                       'chunks': len(chunks), 'discover': dstats, 'discover_seconds': time.perf_counter() - t,
                       'moddir': moddir}
         print(f'{name}: {dstats["functions"]} functions ({dstats["seeds"]} seeds, {dstats["rounds"]} rounds, '
-              f'{dstats["inside_fde_dropped"]} addresses inside .eh_frame functions not taken as starts), '
+              f'{dstats["inside_fde_dropped"]} addresses inside .eh_frame functions not taken as starts, '
+              f'{dstats["inner_entries"]} entries inside .eh_frame functions), '
               f'{len(chunks)} chunks, {len(setjmp[name])} setjmp targets, discovery {time.perf_counter() - t:.1f}s',
               file=sys.stderr, flush=True)
         del mod

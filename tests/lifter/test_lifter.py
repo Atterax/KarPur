@@ -1,11 +1,13 @@
 """Differential test of the lifter: lift tests/lifter/guest.c from AArch64, run it on x86-64, compare with native.
 
-    python tests/lifter/test_lifter.py [--keep DIR]
+    python tests/lifter/test_lifter.py [--keep DIR] [--inner]
 
 Steps: build the guest as an NSO (build_guest.py), generate C with recomp/gen.py, load the image at its guest base
 with relocations applied, and run tests/lifter/harness.c, which calls every lifted test function on 400 inputs and
 compares each result with the host build of the same function. Linux only (the harness maps the image at a fixed
-address); needs clang, ld.lld, llvm-objcopy and llvm-nm.
+address); needs clang, ld.lld, llvm-objcopy and llvm-nm. --inner lifts every function after the first as an extra
+entry into a range that starts at the previous function (gen.py --inner-entry-test), to test entries inside a function
+lifted whole.
 """
 
 import argparse
@@ -51,6 +53,7 @@ def relocated_image(main, base):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--keep', type=Path, help='work in this directory and keep it')
+    ap.add_argument('--inner', action='store_true', help='lift with gen.py --inner-entry-test')
     args = ap.parse_args()
     cc = os.environ.get('CC', 'clang')
     with tempfile.TemporaryDirectory() as tmp:
@@ -60,7 +63,7 @@ def main():
         tests = build_guest.build(work)
         gen = work / 'gen'
         run([sys.executable, ROOT / 'recomp' / 'gen.py', '--exefs', work / 'exefs', '--out', gen,
-             '--modules', 'main', '--jobs', '2'])
+             '--modules', 'main', '--jobs', '2', *(['--inner-entry-test'] if args.inner else [])])
         stats = json.loads((gen / 'main' / 'manifest.json').read_text())['stats']
         print(f'lifted {stats["emitted_functions"]} functions, {stats["instructions"]} instructions, '
               f'{stats["jump_tables"]} jump tables, {stats["unsupported"]} unsupported')

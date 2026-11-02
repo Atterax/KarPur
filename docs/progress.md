@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Absturz im Fang-Tutorial** (`rt_dispatch: … main+0x2a1fc24: not a function start`): Korrektur in der Funktionsfindung (FDE-Bereiche, siehe Protokoll). Bestätigung nach `lift.py` + `build_game.py` abwarten.
+0. **Absturz im Fang-Tutorial** (`rt_dispatch: … main+0x2a1fc24: not a function start`): FDE-Funktionen werden jetzt ganz gehoben (siehe Protokoll). Bestätigung nach `lift.py` + `build_game.py` abwarten; dabei auf Anzahl innerer Einsprünge, all-label fallbacks und Kompilierzeit achten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
@@ -21,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Funktionen mit .eh_frame werden ganz gehoben
+- Dritter Bericht: Die FDE-Funktion `main+0x2a1f54c..main+0x2a2016c` (776 Instruktionen) war in **45 Stücke** zerlegt. Fast alle Schnitte kamen aus der Sprung-Fixpunktschleife (B/B.cond/CBZ/TBZ aus derselben FDE), ausgelöst durch wenige echte Anfänge darin (u. a. `main+0x2a20150`, per ADRP+ADD aus `main+0x1527cb4` und 7 weiteren Stellen genannt). Der `BR x10` der Sprungtabelle liegt bei `main+0x2a1f588` im ersten Stück, die Fälle in anderen Stücken; ein Fall ohne direkten Sprung dorthin (`main+0x2a1fc24`) war kein Anfang → Absturz.
+- Korrektur `recomp/gen.py`: Eine Funktion mit FDE wird als Ganzes gehoben, `[FDE-Anfang, erster Anfang ab FDE-Ende)`. Die Fixpunktschleife betrachtet Sprünge innerhalb dieses Bereichs als intern (`owner_ranges`). Ein Anfang strikt innerhalb (BL-Ziel, Adresse von außen) wird zu einer eigenen C-Funktion über denselben Bereich, die an ihrer Adresse einsteigt (`Emitter.function(entry, end, lo)`, nutzt den Alle-Labels-Modus mit `fb_<entry>`, ohne lokale Register/Flags). Statistik `inner_entries` in der gen-Ausgabe.
+- Geprüft: Lifter-Differenztest grün; neu `test_lifter.py --inner` (gen.py `--inner-entry-test`: jede Funktion ab der zweiten als innerer Einsprung in einen Bereich ab der vorherigen) ebenfalls grün, 6400 Läufe. Synthetischer Discovery-Test: keine Kaskade, ADR von außen → innerer Einsprung mit FDE-Bereich.
+- Risiken: Größere Funktionen können die Sprungtabellen-Auflösung (MAX_STEPS) überschreiten → mehr all-label fallbacks, längeres Kompilieren; viele innere Einsprünge verdoppeln Code. Zahlen aus der lift-Ausgabe beim Maintainer prüfen (vorher: main 29 / subsdk0 1 / sdk 16 all-label fallbacks).
 
 ### 2026-11-02: FDE-Korrektur greift hier nicht
 - Nach `lift.py`: main verwirft 12 Adressen, subsdk0 1, sdk 0; der Absturz bleibt identisch (gleiche Register). `main+0x2a1fbfc` ist also aus einem anderen Grund ein Anfang (BL-Ziel, Seed oder Sprung-Fixpunkt), nicht durch ein ADR aus derselben FDE.
