@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Absturz im Fang-Tutorial** (`rt_dispatch: … main+0x2a1fc24: not a function start`): FDE-Funktionen werden jetzt ganz gehoben (siehe Protokoll). Bestätigung nach `lift.py` + `build_game.py` abwarten; dabei auf Anzahl innerer Einsprünge, all-label fallbacks und Kompilierzeit achten.
+0. **Einzelne Bäume flackern schnell** (bleiben aus der Nähe sichtbar, schalten aber Bild für Bild ein/aus). A/B-Tests: `OCCLUSION=0` (Occlusion-Zählungen immer groß), `SUBMIT_SYNC=1` (Zeitpunkt der Abfrage-Ergebnisse).
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
@@ -21,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Fang-Tutorial läuft; Zahlen der ganzen FDE-Funktionen
+- Bestätigt: Tutorial-Kampf, weitere Story und Zwischensequenzen laufen ohne Absturz (über 30000 Frames, stabil 30 fps).
+- lift: main 179525 Funktionen (vorher 180254), 161 innere Einsprünge, 4396 Sprungtabellen (vorher 4392), 27 all-label fallbacks (29), br via dispatch 24802 (18238; die 161 Kopien ganzer Funktionen zählen ihre BRs erneut), 983 MB C (939). subsdk0: 1 innerer Einsprung, 0 fallbacks (1). sdk unverändert. Kompilieren 1,5 min, exe 249 MiB (237).
+- Neu gemeldet: einzelne Bäume flackern schnell ein/aus, auch aus der Nähe (nicht das alte Culling-Ploppen).
 
 ### 2026-11-02: Funktionen mit .eh_frame werden ganz gehoben
 - Dritter Bericht: Die FDE-Funktion `main+0x2a1f54c..main+0x2a2016c` (776 Instruktionen) war in **45 Stücke** zerlegt. Fast alle Schnitte kamen aus der Sprung-Fixpunktschleife (B/B.cond/CBZ/TBZ aus derselben FDE), ausgelöst durch wenige echte Anfänge darin (u. a. `main+0x2a20150`, per ADRP+ADD aus `main+0x1527cb4` und 7 weiteren Stellen genannt). Der `BR x10` der Sprungtabelle liegt bei `main+0x2a1f588` im ersten Stück, die Fälle in anderen Stücken; ein Fall ohne direkten Sprung dorthin (`main+0x2a1fc24`) war kein Anfang → Absturz.
