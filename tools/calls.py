@@ -10,6 +10,14 @@ branches out of the function are listed too. Output: addresses, sizes and symbol
 
 --before / --after limit how many calls around the marked address are printed (default 40 / 15). For the start
 address of a function every call is listed.
+
+--refs also lists where an address is referenced, for "not a function start" crashes (the lifter did not see the
+address as a function): direct branches to it, ADR and ADRP+ADD that compute it (and whether discovery skipped them as
+jump-table anchors), RELATIVE relocations and .eh_frame entries for it, and whether it directly follows a call (a
+return address). For an indirect call or branch at or right before the address it names where the register was last
+set in the function (load base and offset, address computation, or copy), as offsets and register numbers only.
+
+  .venv\\Scripts\\python tools\\calls.py --refs main+0x2a1fc24 main+0xfc3968
 """
 
 import argparse
@@ -26,7 +34,7 @@ sys.path.insert(0, str(ROOT / 'recomp'))
 from gen import discover  # noqa: E402
 from layout import layout  # noqa: E402
 from module import Module  # noqa: E402
-from nso import R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT  # noqa: E402
+from nso import R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE  # noqa: E402
 
 EXEFS = ROOT / 'game' / 'extracted' / 'update' / 'exefs'
 
@@ -75,6 +83,149 @@ class Mod:
         if sym:
             return sym
         return f'{self.name}+{t - self.base:#x}'
+
+
+def word_kind(w):
+    """Short class of an instruction word, for the reports (no operands beyond branch kinds)."""
+    if (w & 0xFC000000) == 0x94000000:
+        return 'BL'
+    if (w & 0xFFFFFC1F) == 0xD63F0000:
+        return f'BLR x{(w >> 5) & 31}'
+    if (w & 0xFFFFFC1F) == 0xD61F0000:
+        return f'BR x{(w >> 5) & 31}'
+    if (w & 0xFFFFFC1F) == 0xD65F0000:
+        return 'RET'
+    if (w & 0xFC000000) == 0x14000000:
+        return 'B'
+    return 'other'
+
+
+def reg_origin(mod, lo, p, r, depth=0):
+    """Where register x<r> was last written before p inside [lo, p), as text (scans back up to 64 instructions)."""
+    for q in range(p - 4, max(lo, p - 256) - 4, -4):
+        w = mod.m.word(q)
+        rel = f'+{q - lo:#x}'
+        if (w & 0x9F000000) == 0x90000000 and (w & 31) == r:
+            imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+            return f'{rel}: ADRP page {mod.name}+{((q & ~0xFFF) + (imm << 12)) - mod.base:#x}'
+        if (w & 0x9F000000) == 0x10000000 and (w & 31) == r:
+            imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+            return f'{rel}: ADR {mod.name}+{q + imm - mod.base:#x}'
+        if (w & 0xFFC00000) == 0xF9400000 and (w & 31) == r:          # LDR Xt, [Xn, #imm*8]
+            n, off = (w >> 5) & 31, ((w >> 10) & 0xFFF) * 8
+            base = 'sp' if n == 31 else f'x{n}'
+            more = '' if depth or n == 31 else f'; x{n} from {reg_origin(mod, lo, q, n, depth + 1)}'
+            return f'{rel}: load 8 bytes from [{base} + {off:#x}]{more}'
+        if (w & 0xFFE00C00) == 0xF8600800 and (w & 31) == r:          # LDR Xt, [Xn, Xm{, ext}]
+            return f'{rel}: load 8 bytes from [x{(w >> 5) & 31} + x{(w >> 16) & 31} (scaled/extended)]'
+        if (w & 0xFFC00000) == 0x91000000 and (w & 31) == r:          # ADD Xd, Xn, #imm
+            n = (w >> 5) & 31
+            imm = ((w >> 10) & 0xFFF) << (12 if (w >> 22) & 1 else 0)
+            if n == r and not depth:
+                prev = reg_origin(mod, lo, q, n, depth + 1)
+                return f'{rel}: add {imm:#x} to x{n} ({prev})'
+            return f'{rel}: x{n} + {imm:#x}'
+        if (w & 0xFF200000) == 0x8B000000 and (w & 31) == r:          # ADD Xd, Xn, Xm{, shift}
+            return f'{rel}: x{(w >> 5) & 31} + x{(w >> 16) & 31} (shifted register)'
+        if (w & 0xFFE00000) == 0x8B200000 and (w & 31) == r:          # ADD Xd, Xn, Wm, ext (relative tables)
+            return f'{rel}: x{(w >> 5) & 31} + x{(w >> 16) & 31} (extended register: relative table?)'
+        if (w & 0xFFE0FFE0) == 0xAA0003E0 and (w & 31) == r:          # MOV Xd, Xm
+            m = (w >> 16) & 31
+            if not depth:
+                return f'{rel}: copy of x{m} ({reg_origin(mod, lo, q, m, depth + 1)})'
+            return f'{rel}: copy of x{m}'
+        if (w & 0x3B000000) == 0x39000000 and (w >> 22) & 1 and (w & 31) == r:
+            return f'{rel}: other load'
+        if (w & 0x3FC00000) == 0x29400000 and ((w & 31) == r or ((w >> 10) & 31) == r):   # LDP
+            return f'{rel}: load pair from [x{(w >> 5) & 31}]'
+        if (w & 0xFC000000) == 0x94000000 or (w & 0xFFFFFC1F) == 0xD63F0000:
+            if r <= 18 or r == 30:
+                return f'{rel}: result or clobber of a call'
+    return 'not set in the 64 instructions before it'
+
+
+def refs(mod, a):
+    """Report where address a is referenced and how discovery saw it."""
+    m = mod.m
+    w = m.words
+    lo = m.lo
+    name = f'{mod.name}+{a - mod.base:#x}'
+    print(f'{name}: references')
+    if not m.in_text(a):
+        print('  not in .text')
+        return
+    i = (a - lo) >> 2
+    f = mod.function(a)
+    if f:
+        print(f'  discovery: {"function start" if f[0] == a else f"inside {mod.name}+{f[0] - mod.base:#x} at +{a - f[0]:#x}"}'
+              f' (function {(f[1] - f[0]) // 4} instructions)')
+    if i > 0:
+        k = word_kind(int(w[i - 1]))
+        print(f'  instruction before it: {k}' + ('  -> it is a return address' if k == 'BL' or k.startswith('BLR') else ''))
+    print(f'  instruction at it: {word_kind(int(w[i]))}')
+    # direct branches
+    hits = []
+    sel = np.flatnonzero((w & 0x7C000000) == 0x14000000)
+    tgt = sel + sext_np(w[sel] & 0x03FFFFFF, 26)
+    for s in sel[tgt == i]:
+        hits.append(('BL' if w[s] >> 31 else 'B', int(s)))
+    for mask, val, nb, k in ((0xFE000010, 0x54000000, 19, 'B.cond'), (0x7E000000, 0x34000000, 19, 'CBZ/CBNZ'),
+                             (0x7E000000, 0x36000000, 14, 'TBZ/TBNZ')):
+        sel = np.flatnonzero((w & mask) == val)
+        tgt = sel + sext_np((w[sel] >> 5) & ((1 << nb) - 1), nb)
+        for s in sel[tgt == i]:
+            hits.append((k, int(s)))
+    # ADR
+    sel = np.flatnonzero((w & 0x9F000000) == 0x10000000)
+    imm = sext_np(((w[sel] >> 5) & 0x7FFFF) << 2 | ((w[sel] >> 29) & 3), 21)
+    br = np.flatnonzero((w & 0xFFFFFC1F) == 0xD61F0000)
+    for s in sel[(lo + sel * 4 + imm) == a]:
+        s = int(s)
+        nb = br[np.searchsorted(br, s):][:1]
+        anchor = len(nb) and nb[0] - s <= 16
+        hits.append(('ADR' + (' (skipped by discovery: a BR follows within 16 instructions)' if anchor else ''), s))
+    # ADRP + ADD
+    adrp = np.flatnonzero((w & 0x9F000000) == 0x90000000)
+    page = ((lo + adrp * 4) & ~0xFFF) + (sext_np(((w[adrp] >> 5) & 0x7FFFF) << 2 | ((w[adrp] >> 29) & 3), 21) << 12)
+    for s in adrp[page == (a & ~0xFFF)]:
+        s = int(s)
+        rd = int(w[s]) & 31
+        for k in range(1, 9):
+            if s + k >= len(w):
+                break
+            x = int(w[s + k])
+            if (x & 0xFFC00000) == 0x91000000 and ((x >> 5) & 31) == rd and ((x >> 10) & 0xFFF) == (a & 0xFFF):
+                hits.append(('ADRP+ADD', s))
+                break
+    for k, s in hits:
+        src = lo + s * 4
+        g = mod.function(src)
+        where = f'{mod.name}+{src - mod.base:#x}' + (f' (in {mod.name}+{g[0] - mod.base:#x})' if g else '')
+        print(f'  {k:8} from {where}')
+    rel = [off for off, typ, _, add in m.nso.relocs if typ == R_AARCH64_RELATIVE and mod.base + add == a]
+    print(f'  RELATIVE relocations to it: {len(rel)}' + (f' (first at {mod.name}+{rel[0]:#x})' if rel else ''))
+    print(f'  .eh_frame entry starts at it: {"yes" if a in set(m.eh_frame_functions()) else "no"}')
+    # 32-bit words anywhere in the image holding the offset from some anchor are too common to search; report the
+    # 32-bit and 64-bit image words equal to the module offset (tables of offsets from the module base).
+    off = a - mod.base
+    img = np.frombuffer(m.image[:len(m.image) // 4 * 4], dtype='<u4')
+    n32 = int(np.count_nonzero(img == off))
+    print(f'  image words equal to the module offset {off:#x}: {n32}')
+    if not hits and not rel:
+        print('  no direct reference: the address is computed at run time (a table of relative offsets, pointer'
+              ' arithmetic, or a return address)')
+    # indirect branch at a-4 or a (the caller side of an lr)
+    for q in (a - 4, a):
+        k = word_kind(m.word(q)) if m.in_text(q) else 'other'
+        if k.startswith('BLR') or k.startswith('BR'):
+            g = mod.function(q)
+            r = (m.word(q) >> 5) & 31
+            print(f'  {k} at {mod.name}+{q - mod.base:#x}: x{r} from {reg_origin(mod, g[0], q, r)}')
+
+
+def sext_np(v, bits):
+    v = v.astype(np.int64)
+    return np.where(v & (1 << (bits - 1)), v - (1 << bits), v)
 
 
 def parse(addr, mods):
@@ -149,6 +300,7 @@ def main():
     ap.add_argument('--exefs', type=Path, default=EXEFS)
     ap.add_argument('--before', type=int, default=40)
     ap.add_argument('--after', type=int, default=15)
+    ap.add_argument('--refs', action='store_true', help='also list where each address is referenced')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
@@ -161,6 +313,8 @@ def main():
     for s in a.addresses:
         mod, addr = parse(s, mods)
         report(mod, addr, a.before, a.after)
+        if a.refs:
+            refs(mod, addr)
         print()
     print('=' * 72)
 

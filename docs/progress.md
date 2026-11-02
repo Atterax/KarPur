@@ -6,7 +6,8 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-2. **Bildfehler.** Unsichtbare Objekte **behoben** (Compute-Shader im DebugMode, siehe Protokoll 2026-11-02). Offen: sauberer Übersetzer-Patch für Ballots, Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
+0. **Absturz im Fang-Tutorial** (`rt_dispatch: no function at guest pc main+0x2a1fc24: not a function start`, lr `main+0xfc3968`): Bericht `calls.py --refs` abwarten, dann Funktionsfindung (`recomp/gen.py discover`) passend erweitern.
+2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -20,6 +21,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Patch 0010 bestätigt, Optimierer wieder Standard; Absturz im Fang-Tutorial
+- Test `XLATE_DEBUG=0` mit Übersetzer 1ab104289df9b0f2 (Patch 0010): Compute-Shader 1 hat **mit** Optimierer 18 Ballots (23441 statt 38475 SPIR-V-Wörter), nichts ploppt. Standard jetzt `XLATE_DEBUG=0` (alle Stufen mit Optimierer, eigene Cache-Schlüssel ohne `debug=cs`).
+- Neuer Absturz im Tutorial-Kampf (Schwächen und Fangen, nach der zweiten Text-/Bildtafel): `FATAL: rt_dispatch: no function at guest pc 0x7002a1fc24 (main+0x2a1fc24): not a function start (lr main+0xfc3968)`. lr ≠ pc, also kein setjmp/longjmp-Muster, sondern ein indirekter Sprung (BLR/BR) an eine Adresse, die die Funktionsfindung nicht als Funktionsanfang kennt. Hat nichts mit dem Übersetzer zu tun (CPU-Code).
+- `tools/calls.py --refs`: listet, wo eine Adresse referenziert wird (direkte Sprünge, ADR/ADRP+ADD samt „von der Funktionsfindung als Sprungtabellen-Anker übersprungen“, RELATIVE-Relocations, .eh_frame), ob sie direkt hinter einem Aufruf liegt (Rücksprungadresse), und für BLR/BR an bzw. vor der Adresse, woher das Register stammt (Lade-Basis und Offset, Adressrechnung, Kopie). Nur Adressen, Offsets, Registernummern.
 
 ### 2026-11-02: Übersetzer-Patch 0010 (Subgroup-Operationen bleiben an Ort und Stelle); Vergleich mit Switch 2
 - Ursache genau: `AstOptimizer.IsWorthPropagating` hält jede Operation mit einer Quelle für billig und kopiert sie in alle Verwendungen; `Ballot(pred)` hat eine Quelle → 18 → 54. DebugMode schaltet in Ryujinx nur diese Weitergabe ab (sonst nur Kommentare), der Patch deckt also genau den Fehler ab.
