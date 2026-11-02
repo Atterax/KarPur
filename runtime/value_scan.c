@@ -78,8 +78,12 @@ static void scan_range(uint64_t lo, uint64_t hi, int reg) {
     }
 }
 
+// Through the guest memory map, not plat_mem_readable: VirtualQuery on the large mapped views made the recheck of
+// ~50000 hits take 25 s.
 static int holds(int k, uint64_t a) {
-    if (!plat_mem_readable(a, 8)) return 0;
+    RtMemoryInfo mi;
+    mem_query(a, &mi);
+    if ((mi.perm & 3) != 3 || a + 8 > mi.base + mi.size) return 0;
     const uint32_t *w = (const uint32_t *)(uintptr_t)a;
     if (k == KIND_F32_30TH) return w[0] == f32_30th;
     if (k == KIND_F32_30) return w[0] == f32_30;
