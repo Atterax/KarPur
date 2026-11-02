@@ -8,6 +8,12 @@
 //
 // TOTK_FPS_DT_NS=n fixes the word at n nanoseconds instead (0, the default: measured). The measured time is the mean
 // of the last 8 present intervals, each clamped to 4..100 ms so a load stall does not throw the game forward.
+//
+// TOTK_FPS_DT_SNAP=1 (test, default off): the word never drops below one frame at the frame limit
+// (frame_step_cap_ns). At 60 fps the measured mean jitters around 16.67 ms and is often a little shorter; Violet's
+// particle effects then stepped irregularly (choppy at 60 fps, smooth at 45 fps and with a fixed 16666667 ns,
+// docs/progress.md 2026-11-02), as if they counted whole 60 Hz frames in the frame time. The pacer holds frames to the
+// limit, so a mean below it is jitter only.
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -51,7 +57,17 @@ void frame_dt_present(void) {
         unsigned k = n < 8 ? n : 8;
         uint64_t sum = 0;
         for (unsigned i = 0; i < k; i++) sum += hist[i];
-        __atomic_store_n(word, sum / k, __ATOMIC_RELAXED);
+        uint64_t dt = sum / k;
+        static int snap = -1;
+        if (snap < 0) {
+            snap = rt_knob("FPS_DT_SNAP", "0");
+            if (snap) rt_log("frame dt: never shorter than one frame at the frame limit (TOTK_FPS_DT_SNAP)");
+        }
+        if (snap) {
+            uint64_t cap = frame_step_cap_ns();
+            if (dt < cap) dt = cap;
+        }
+        __atomic_store_n(word, dt, __ATOMIC_RELAXED);
     }
     last = now;
 }

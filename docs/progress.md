@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Ursache der ruckelnden Effekte: schwankende gemessene Bildzeit
+- (D) `FPS_LIMIT=45 FPS_DT_NS=16666667`: Spiel langsamer, Effekte flüssig. (E) `FPS_DT_NS=22222222` bei 60 fps: Effekte flüssig.
+- Ruckelig also nur mit der **gemessenen** Bildzeit bei 60 fps, nie mit einer festen. Bei 60 fps schwankt der Mittelwert um 16,67 ms und liegt oft knapp darunter. Das Effektsystem zählt vermutlich ganze 60-Hz-Bilder in der Bildzeit (knapp unter 16,67 ms = 0 Schritte, sonst 1 → unregelmäßig). Passt auch zu den Effektfehlern über 60 fps (Pokéball).
+- Neu: `TOTK_FPS_DT_SNAP=1` (Test, Standard aus) in `frame_dt.c`: Die Bildzeit für das Spiel ist nie kürzer als ein Bild am Frame-Limit (`frame_step_cap_ns`, bei 60 fps 16666667 ns). Der Pacer hält die Bilder ohnehin am Limit, Werte darunter sind nur Schwankung. Bei langsameren Bildern bleibt die gemessene Zeit.
+
 ### 2026-11-02: Effekte bei 45 fps flüssig, auch mit Spiegel
 - (C) Standard mit `FPS_LIMIT=45`: überall stabil 45 fps, Effekte flüssig. Das Ruckeln entsteht erst über 45 fps.
 - Zwei Erklärungen bleiben: Spiellogik (das Effektsystem rechnet mit der Bildzeit von `fps_dt` und verwirft oder rundet zu kurze Schritte) oder Zeitpunkt (bei 60 fps schreibt die CPU Partikel später relativ zum Submit). Trennung über die Bildzeit, die das Spiel sieht: (D) `FPS_LIMIT=45 FPS_DT_NS=16666667` (Spiel bekommt 60-fps-Schritte bei 45 fps, läuft in 75 % Tempo); (E) `FPS_DT_NS=22222222` bei 60 fps (45-fps-Schritte, Spiel 133 % Tempo).
