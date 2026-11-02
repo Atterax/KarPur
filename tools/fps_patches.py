@@ -9,6 +9,9 @@ Sets (all off by default, each switched with its TOTK_ variable):
   fps_ns   main+0x2b7a7f8/+0x2b7a7fc: the 33333334 ns frame time the frame-mode function main+0x2b79f60 picks for
            30 fps becomes 16666667 ns (its 60 fps value; same register w10)
   fps_iv   main+0x2b7a808: the vsync count 2 that goes with it becomes 1
+  fps_dt   main+0x92dd2c: the thunk main+0x92dd20 (tail call of vtable slot 2 of the object in x0) gets x2 = the
+           frame time in ns from the patch page +64, which runtime/frame_dt.c fills with the measured frame time
+           (the game passes 33333334 there at 30 fps; the third-party mod sets the same register)
 
 Background: docs/progress.md 2026-11-02 (a third-party frame-rate mod for Violet, read for behaviour only, and
 tools/consts.py / calls.py --insn reports of 4.0.0).
@@ -40,18 +43,27 @@ def movk(rd, imm, hw=0, x=False):
 
 
 def describe(w):
-    """Short text of a move-wide word for the mismatch report (no other instruction kinds are expected here)."""
+    """Short text of a move-wide word or a 64-bit LDR (immediate) for the mismatch report."""
+    if (w & 0xFFC00000) == 0xF9400000:
+        return f'ldr x{w & 31}, [x{(w >> 5) & 31}, #{((w >> 10) & 0xFFF) * 8:#x}]'
     if (w & 0x1F800000) == 0x12800000:
         name = {0: 'movn', 2: 'movz', 3: 'movk'}.get((w >> 29) & 3, 'move-wide')
         return f'{name} {"x" if w >> 31 else "w"}{w & 31}, #{(w >> 5) & 0xFFFF:#x} lsl {16 * ((w >> 21) & 3)}'
     return 'another kind of instruction'
 
 
-# (set, switch, module offset, expected word, replacement word)
+def ldr_x(rt, rn, off):
+    return 0xF9400000 | (off // 8) << 10 | rn << 5 | rt
+
+
+PAGE_FRAME_NS = 64   # patch page byte offset of the frame time in ns (runtime/frame_dt.c; recomp/patches.py layout)
+
+# (set, switch, module offset, expected word, replacement word or words; '@page:x2' is adrp x2 of the patch page)
 SITES = [
     ('fps_ns', 'TOTK_FPS_NS', 0x2b7a7f8, movz(10, 0xa056), movz(10, 0x502b)),
     ('fps_ns', 'TOTK_FPS_NS', 0x2b7a7fc, movk(10, 0x1fc, 1), movk(10, 0xfe, 1)),
     ('fps_iv', 'TOTK_FPS_IV', 0x2b7a808, movz(9, 2), movz(9, 1)),
+    ('fps_dt', 'TOTK_FPS_DT', 0x92dd2c, ldr_x(8, 0, 0), [ldr_x(8, 0, 0), '@page:x2', ldr_x(2, 2, PAGE_FRAME_NS)]),
 ]
 
 
@@ -74,7 +86,9 @@ def main():
         if name not in sets:
             sets.append(name)
             lines.append(f'set  {name} {env} 0')
-        lines.append(f'site {name} main {off:x} {want:08x} {repl:08x}')
+        words = repl if isinstance(repl, list) else [repl]
+        text = ' '.join(r if isinstance(r, str) else f'{r:08x}' for r in words)
+        lines.append(f'site {name} main {off:x} {want:08x} {text}')
     if bad:
         sys.exit(f'{bad} sites differ from what this table expects (another game version?): nothing written')
     a.out.parent.mkdir(parents=True, exist_ok=True)

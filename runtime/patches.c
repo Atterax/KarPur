@@ -53,6 +53,7 @@ void rt_patches_init(void) {
         if (n >= sizeof list) n = sizeof list - 1;
     }
     rt_log("patches: %s (page %#llx)", list, RT_PATCH_PAGE);
+    frame_dt_init();   // frame_dt.c: the frame time word of set fps_dt before the game first reads it
 #endif
 }
 
