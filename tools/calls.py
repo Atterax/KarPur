@@ -116,6 +116,14 @@ def reg_origin(mod, lo, p, r, depth=0):
         if (w & 0x9F000000) == 0x10000000 and (w & 31) == r:
             imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
             return f'{rel}: ADR {mod.name}+{q + imm - mod.base:#x}'
+        if (w & 0x7FE00800) == 0x1A800000 and (w & 31) == r:          # CSEL / CSINC Wd, Wn, Wm, cond
+            n, m2, inc = (w >> 5) & 31, (w >> 16) & 31, (w >> 10) & 1
+            cond = ['eq', 'ne', 'hs', 'lo', 'mi', 'pl', 'vs', 'vc', 'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al', 'nv'][(w >> 12) & 15]
+            if depth > 1:
+                return f'{rel}: {"csinc" if inc else "csel"} x{n}, x{m2}, {cond}'
+            a_ = 'zero' if n == 31 else reg_origin(mod, lo, q, n, depth + 1)
+            b_ = ('one (zero + 1)' if inc else 'zero') if m2 == 31 else reg_origin(mod, lo, q, m2, depth + 1) + (' + 1' if inc else '')
+            return f'{rel}: if {cond} then [{a_}] else [{b_}]'
         if (w & 0x7F800000) == 0x52800000 and (w & 31) == r:          # MOVZ Wd/Xd, #imm16, LSL #hw
             return f'{rel}: constant {((w >> 5) & 0xFFFF) << (16 * ((w >> 21) & 3)):#x}'
         if (w & 0x7F800000) == 0x12800000 and (w & 31) == r:          # MOVN
@@ -436,12 +444,15 @@ def main():
     ap.add_argument('--before', type=int, default=40)
     ap.add_argument('--after', type=int, default=15)
     ap.add_argument('--refs', action='store_true', help='also list where each address is referenced')
+    ap.add_argument('--returns', action='append', default=[], metavar='MOD+OFF',
+                    help='for the function at MOD+OFF: where x0 comes from at each return, and its compares')
     ap.add_argument('--origin', action='append', default=[], metavar='MOD+OFF:xN',
                     help='where register xN was last set before the instruction at MOD+OFF (repeatable)')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
-    want = {s.split('+', 1)[0] for s in a.addresses} | {o.split('+', 1)[0] for o in a.origin}
+    want = ({s.split('+', 1)[0] for s in a.addresses} | {o.split('+', 1)[0] for o in a.origin} |
+            {o.split('+', 1)[0] for o in a.returns})
     mods = {}
     for name, base, _ in layout(a.exefs):
         if name in want:
@@ -460,7 +471,29 @@ def main():
         f = mod.function(addr)
         r = int(reg.lstrip('xXwW') or 0)
         print(f'{at} {reg}: {reg_origin(mod, f[0], addr, r) if f else "not inside a function"}')
-    if a.origin:
+    for o in a.returns:
+        mod, addr = parse(o, mods)
+        f = mod.function(addr)
+        if not f:
+            print(f'{o}: not inside a function')
+            continue
+        lo_, hi_ = f
+        print(f'{o}: function {mod.name}+{lo_ - mod.base:#x} ({(hi_ - lo_) // 4} instructions)')
+        for q in range(lo_, hi_, 4):
+            w = mod.m.word(q)
+            if (w & 0x7F20001F) == 0x6B00001F:   # CMP Wn/Xn, Wm/Xm (SUBS to zr, shifted register)
+                print(f'  +{q - lo_:#x}: compare x{(w >> 5) & 31} ({reg_origin(mod, lo_, q, (w >> 5) & 31)}) with '
+                      f'x{(w >> 16) & 31} ({reg_origin(mod, lo_, q, (w >> 16) & 31)})')
+            elif (w & 0x7F80001F) == 0x7100001F:   # CMP Wn/Xn, #imm
+                imm = ((w >> 10) & 0xFFF) << (12 if (w >> 22) & 1 else 0)
+                print(f'  +{q - lo_:#x}: compare x{(w >> 5) & 31} ({reg_origin(mod, lo_, q, (w >> 5) & 31)}) with {imm:#x}')
+            elif w == 0xD65F03C0:   # RET
+                print(f'  +{q - lo_:#x}: return x0 = {reg_origin(mod, lo_, q, 0)}')
+            elif (w & 0xFC000000) == 0x14000000:
+                t = q + sext(w & 0x3FFFFFF, 26) * 4
+                if not lo_ <= t < hi_:
+                    print(f'  +{q - lo_:#x}: tail call {mod.label(t)} with x0 = {reg_origin(mod, lo_, q, 0)}')
+    if a.origin or a.returns:
         print('=' * 72)
 
 
