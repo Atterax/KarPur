@@ -15,6 +15,8 @@
 //
 //   TOTK_VIEW_DIST=f   group "fade": far fade distances (objects and trees stay visible f times as far); 1 = off
 //   TOTK_SPAWN_DIST=f  group "spawn": create/destroy distances of objects and Pokémon; 1 = off (more CPU load)
+//   TOTK_SPAWN_COUNT=f group "count": maxGenerationNum, how many of a kind exist at once (15 for wild Pokémon in
+//                      4.0.0; a known spawn mod raises it to 20..48 together with the distances); 1 = off
 //   TOTK_DATA_PATCH_LIST=path  the list (default game/data_patch.txt)
 //
 // The original values never leave the player's PC; the log names fields and offsets only.
@@ -67,8 +69,8 @@ void data_patch_init(void) {
     static int done;
     if (done) return;
     done = 1;
-    float view = factor_of("TOTK_VIEW_DIST"), spawn = factor_of("TOTK_SPAWN_DIST");
-    if (view == 1.0f && spawn == 1.0f) return;
+    float view = factor_of("TOTK_VIEW_DIST"), spawn = factor_of("TOTK_SPAWN_DIST"), count = factor_of("TOTK_SPAWN_COUNT");
+    if (view == 1.0f && spawn == 1.0f && count == 1.0f) return;
     const char *path = cfg_get("TOTK_DATA_PATCH_LIST");
     if (!path || !*path) path = "game/data_patch.txt";
     uint64_t size = 0;
@@ -94,7 +96,8 @@ void data_patch_init(void) {
             if (oodle) f.packed = packed, f.unpacked = unpacked, f.print = print;
             f.type = !strcmp(type, "f32") ? 'f' : !strcmp(type, "i32") ? 'i' : !strcmp(type, "u32") ? 'u'
                    : !strcmp(type, "i16") ? 'h' : !strcmp(type, "u16") ? 'H' : 0;
-            f.factor = !strcmp(group, "fade") ? view : !strcmp(group, "spawn") ? spawn : 1.0f;
+            f.factor = !strcmp(group, "fade") ? view : !strcmp(group, "spawn") ? spawn : !strcmp(group, "count") ? count
+                     : 1.0f;
             if (!f.type || f.factor == 1.0f) skipped++;
             else if (romfs && nfields < MAX_FIELDS) fields[nfields++] = f;
             else if (oodle && ndecoded < MAX_FIELDS) decoded[ndecoded++] = f;
@@ -105,7 +108,7 @@ void data_patch_init(void) {
     qsort(fields, (size_t)nfields, sizeof fields[0], by_offset);
     if (nfields) lo = fields[0].at, hi = fields[nfields - 1].at + 4;
     rt_log("data patch: %d fields in stored files and %d in packed files from %s (%d left alone); view distance x%g, "
-           "spawn distance x%g", nfields, ndecoded, path, skipped, view, spawn);
+           "spawn distance x%g, spawn count x%g", nfields, ndecoded, path, skipped, view, spawn, count);
     if (!nfields && !ndecoded) rt_log("data patch: the list names no field: run tools/trpfs.py --view and check it");
 }
 

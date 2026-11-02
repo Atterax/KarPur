@@ -228,7 +228,8 @@ VIEW_PACKS = 'worlddata.*(model_dither_fade|object_generation_range)'
 PATCH_LIST = ROOT / 'game' / 'data_patch.txt'
 # (group, object name pattern, field name pattern): the fields runtime/data_patch.c scales
 VIEW_FIELDS = [('fade', r'DitherFade', r'^Far(Begin|End)Distance$'),
-               ('spawn', r'ObjectGenerationRange$', r'(Create|Destroy)Distance$')]
+               ('spawn', r'ObjectGenerationRange$', r'(Create|Destroy)Distance$'),
+               ('count', r'ObjectGenerationRange$', r'^maxGenerationNum$')]
 TYPE_NAMES = {11: 'f32', 7: 'i32', 8: 'u32', 5: 'i16', 6: 'u16'}
 
 
