@@ -22,6 +22,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Fang-Tutorial-Absturz: erster Bericht
+- Aufrufer `main+0xfc38dc` (+0x88): `x8 = [x19]; x8 = [x8 + 0x68]; blr x8`, ein virtueller Aufruf (vtable-Eintrag 13).
+- Ziel `main+0x2a1fc24` liegt in der von der Funktionsfindung angenommenen Funktion `main+0x2a1fbfc` bei +0x28, direkt hinter einem unbedingten `B` (Tail-Sprung). Kein direkter Sprung, kein ADR/ADRP+ADD, keine RELATIVE-Relocation, kein .eh_frame-Anfang, kein 32/64-Bit-Wort mit dem Offset. Also wahrscheinlich eine eigene Funktion, deren Zeiger zur Laufzeit entsteht oder über eine andere Relocation-Art in die vtable kommt.
+- Erweitert: `calls.py --refs` zeigt jetzt auch die überdeckende .eh_frame-FDE, ABS64/GLOB_DAT-Relocations mit lokalem Symbol (die Funktionsfindung nimmt nur RELATIVE) samt Zählung solcher Ziele, die keine Funktionsanfänge sind, und 32-Bit-PC-relative Wörter. `rt_dispatch`-Absturz loggt Register mit Moduladressen und Register, deren erstes Wort eine Moduladresse ist (Objekt → vtable).
+- Kandidat für die Korrektur: Code direkt hinter einem unbedingten Sprung (B/BR/RET), den kein direkter Sprung erreicht, als Funktionsanfang werten. Vorsicht: Sprungtabellen-Fälle (BR-Ziele) sehen genauso aus; die müsste die Funktionsfindung vorher ausschließen.
+
 ### 2026-11-02: Patch 0010 bestätigt, Optimierer wieder Standard; Absturz im Fang-Tutorial
 - Test `XLATE_DEBUG=0` mit Übersetzer 1ab104289df9b0f2 (Patch 0010): Compute-Shader 1 hat **mit** Optimierer 18 Ballots (23441 statt 38475 SPIR-V-Wörter), nichts ploppt. Standard jetzt `XLATE_DEBUG=0` (alle Stufen mit Optimierer, eigene Cache-Schlüssel ohne `debug=cs`).
 - Neuer Absturz im Tutorial-Kampf (Schwächen und Fangen, nach der zweiten Text-/Bildtafel): `FATAL: rt_dispatch: no function at guest pc 0x7002a1fc24 (main+0x2a1fc24): not a function start (lr main+0xfc3968)`. lr ≠ pc, also kein setjmp/longjmp-Muster, sondern ein indirekter Sprung (BLR/BR) an eine Adresse, die die Funktionsfindung nicht als Funktionsanfang kennt. Hat nichts mit dem Übersetzer zu tun (CPU-Code).

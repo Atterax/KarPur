@@ -183,6 +183,16 @@ __attribute__((noinline, noreturn, cold)) static void dispatch_fail(Cpu *c) {
     const char *why = (pc & 3) ? "misaligned address"
                     : module_at(pc) ? "not a function start"
                     : "outside every module, no host function registered";
+    // For a crash report: registers holding module addresses, and registers pointing at memory whose first word is a
+    // module address (an object and its vtable). With the BLR's load chain from tools/calls.py --refs this says which
+    // table the target came from. Addresses only, no memory contents beyond module addresses.
+    for (int i = 0; i < 31; i++) {
+        uint64_t v = c->x[i], w;
+        char n1[64], n2[64];
+        if (module_at(v)) rt_log("  x%d = %s", i, rt_guest_name(v, n1, sizeof n1));
+        else if (v && !(v & 7) && plat_mem_readable(v, 8) && module_at(w = *(const uint64_t *)(uintptr_t)v))
+            rt_log("  x%d = %#llx -> first word %s", i, (unsigned long long)v, rt_guest_name(w, n2, sizeof n2));
+    }
     rt_fatal("rt_dispatch: no function at guest pc %s: %s (lr %s)", rt_guest_name(pc, at, sizeof at), why,
              rt_guest_name(c->x[30], lr, sizeof lr));
 }

@@ -144,6 +144,65 @@ def reg_origin(mod, lo, p, r, depth=0):
     return 'not set in the 64 instructions before it'
 
 
+def fde_cover(mod, a):
+    """The .eh_frame FDE whose range holds a, from .eh_frame_hdr (FDE pc_begin pcrel sdata4, pc_range udata4)."""
+    m = mod.m
+    img, hdr = m.image, m.nso.eh_start
+    if not hdr or hdr >= len(img):
+        return 'no .eh_frame_hdr'
+    _, ptr_enc, cnt_enc, tbl_enc = img[hdr:hdr + 4]
+    from module import _read_encoded
+    off = hdr + 4
+    _, sz = _read_encoded(img, off, ptr_enc, hdr)
+    off += sz
+    count, sz = _read_encoded(img, off, cnt_enc, hdr)
+    off += sz
+    best = None
+    for _ in range(count):
+        loc, sz = _read_encoded(img, off, tbl_enc, hdr)
+        off += sz
+        fde, sz = _read_encoded(img, off, tbl_enc, hdr)
+        off += sz
+        if mod.base + loc <= a and (best is None or loc > best[0]):
+            best = (loc, fde)
+    if not best:
+        return 'no FDE at or before it'
+    loc, fde = best
+    begin = fde + 8 + int.from_bytes(img[fde + 8:fde + 12], 'little', signed=True)
+    rng = int.from_bytes(img[fde + 12:fde + 16], 'little')
+    if begin != loc:
+        return f'nearest FDE starts at {mod.name}+{loc:#x} (range not decoded: other pointer encoding)'
+    inside = loc <= a - mod.base < loc + rng
+    return (f'nearest FDE {mod.name}+{loc:#x}..{mod.name}+{loc + rng:#x}: '
+            + ('the address lies inside it' if inside else 'the address lies after its end (code without unwind info)'))
+
+
+def abs_refs(mod, a):
+    """ABS64 / GLOB_DAT relocations with a symbol of this module, whose symbol value + addend is a; and how many such
+    relocations into .text are not function starts (a gap in the discovery seeds, which take RELATIVE ones only)."""
+    m = mod.m
+    syms = m.nso.syms
+    starts = set(mod.starts)
+    hits, into_text, not_start, sample = [], 0, 0, []
+    for off, typ, sym, add in m.nso.relocs:
+        if typ not in (257, 1025) or not sym or sym >= len(syms) or not syms[sym][2]:
+            continue
+        t = mod.base + syms[sym][3] + add
+        if t == a:
+            hits.append((off, typ, syms[sym][0], add))
+        if m.in_text(t):
+            into_text += 1
+            if t not in starts:
+                not_start += 1
+                if len(sample) < 5:
+                    sample.append(f'{mod.name}+{t - mod.base:#x}')
+    for off, typ, name, add in hits:
+        print(f'  {"ABS64" if typ == 257 else "GLOB_DAT"} relocation to it at {mod.name}+{off:#x}'
+              f' (symbol {name or "unnamed"} + {add:#x})')
+    print(f'  ABS64/GLOB_DAT relocations into .text with a local symbol: {into_text}, not function starts: {not_start}'
+          + (f' (e.g. {", ".join(sample)})' if sample else ''))
+
+
 def refs(mod, a):
     """Report where address a is referenced and how discovery saw it."""
     m = mod.m
@@ -205,6 +264,17 @@ def refs(mod, a):
     rel = [off for off, typ, _, add in m.nso.relocs if typ == R_AARCH64_RELATIVE and mod.base + add == a]
     print(f'  RELATIVE relocations to it: {len(rel)}' + (f' (first at {mod.name}+{rel[0]:#x})' if rel else ''))
     print(f'  .eh_frame entry starts at it: {"yes" if a in set(m.eh_frame_functions()) else "no"}')
+    try:
+        print(f'  .eh_frame: {fde_cover(mod, a)}')
+    except (ValueError, IndexError) as e:
+        print(f'  .eh_frame: not decoded ({e})')
+    abs_refs(mod, a)
+    # 32-bit PC-relative words (`.word target - .`, relative vtables and offset tables) anywhere in the image
+    img32 = np.frombuffer(m.image[:len(m.image) // 4 * 4], dtype='<i4').astype(np.int64)
+    pos = np.arange(len(img32), dtype=np.int64) * 4
+    pcrel = np.flatnonzero(pos + img32 == a - mod.base)
+    print(f'  32-bit words holding (target - their own address): {len(pcrel)}'
+          + (f' (first at {mod.name}+{int(pcrel[0]) * 4:#x})' if len(pcrel) else ''))
     # 32-bit words anywhere in the image holding the offset from some anchor are too common to search; report the
     # 32-bit and 64-bit image words equal to the module offset (tables of offsets from the module base).
     off = a - mod.base
