@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Effekt-Tests A/B
+- (A) Standard (Spiegel) mit `FPS_LIMIT=30`: Effekte flüssig (wie der Rest).
+- (B) `MEMORY=import` an Stellen über 30–40 fps: Effekte flüssig. 60 fps erreicht import draußen nicht.
+- Noch nicht eindeutig. Gleicher Vergleich bei gleicher Bildrate: Standard mit `FPS_LIMIT=45` gegen `MEMORY=import` bei ~45 fps.
+
 ### 2026-11-02: Heiße Stücke ändern nichts an den Partikeln
 - `HOT_REFRESH=0`, `HOT_REFRESH=1`, `MIRROR_HOT=0`: Effekte bleiben in allen drei Läufen ruckelig.
 - Zweifel am Schluss „Spiegel“: Mit `MEMORY=import` lief das Spiel nur mit 22–47 fps. Laufen die Effekte fest mit 30 Hz, fällt das bei 30–45 fps kaum auf. Außerdem fand `MEMORY=verify` früher 0 Abweichungen zwischen Spiegel und Gastspeicher.
