@@ -105,6 +105,26 @@ class Table:
         return self.buf[start:start + min(n, ln)], ln
 
 
+ASSET_TYPES = {'.bntx', '.trmdl', '.trmbf', '.trmsh', '.trskl', '.tracm', '.trcma', '.truiv', '.truis', '.ptcl',
+               '.tracp', '.trtbf', '.trins', '.trmtr', '.trmmt', '.tranm', '.trtml', '.bk2', '.wem', '.bnk'}
+
+
+def inner_type(pack_name):
+    """Type of the pack's main file: the extension before .trpak."""
+    return Path(pack_name.removesuffix('.trpak')).suffix.lower() or '(none)'
+
+
+def codec(entry):
+    """Compression of one packed file: the byte vector is the last field; field 1 is the type (i8, -1 = none)."""
+    comp = entry.scalar(1, 'b', -1)
+    if comp == -1:
+        return 'none'
+    head, _ = entry.bytes_at(len(entry.slots) - 1, 2)
+    if len(head) == 2 and head[0] in (0x8C, 0xCC):
+        return OODLE.get(head[1], f'oodle id {head[1]}')
+    return f'type {comp}'
+
+
 def romfs_file(index, path):
     for e in index['files']:
         if e['path'] == path:
@@ -139,6 +159,8 @@ def main():
     ap.add_argument('--exefs', type=Path, default=EXEFS)
     ap.add_argument('--keywords', default=KEYWORDS, help='comma-separated, matched case-insensitively in names')
     ap.add_argument('--names', type=Path, help='extra candidate paths, one per line (e.g. from a modding wiki)')
+    ap.add_argument('--grep', help='list the packs whose name matches this regular expression instead of keywords')
+    ap.add_argument('--all-types', action='store_true', help='keyword list includes models, textures, animations, UI')
     ap.add_argument('--max-pack-mb', type=int, default=256, help='largest pack whose table of contents is read')
     a = ap.parse_args()
     index_path = a.romfs / 'index.json'
@@ -152,6 +174,9 @@ def main():
 
     def say(line=''):
         print(line)
+        out.append(line)
+
+    def note(line):   # report file only
         out.append(line)
 
     img = image_path.open('rb')
@@ -183,10 +208,27 @@ def main():
     named = sum(1 for n in pack_names if fnv1a64(n) in offset_of)
     say(f'archive: {len(pack_hashes)} packs; {named} of {len(pack_names)} pack names hash to a pack '
         f'({"FNV-1a confirmed" if named else "hash function differs"})')
-    exts = Counter(Path(n).suffix or '(none)' for n in pack_names)
-    say('pack name endings: ' + ', '.join(f'{e} {c}' for e, c in exts.most_common(6)))
-    tops = Counter(n.split('/', 1)[0] for n in pack_names)
-    say('pack name folders: ' + ', '.join(f'{t} {c}' for t, c in tops.most_common(15)))
+    # A pack is named after its main file: "arc/" + that file's path without slashes + ".trpak", so the ending
+    # before .trpak is the main file's type.
+    kinds = Counter(inner_type(n) for n in pack_names)
+    kind_size = Counter()
+    for i, n in enumerate(pack_names):
+        kind_size[inner_type(n)] += pack_info[i][0] if i < len(pack_info) else 0
+    say(f'main file types of the packs ({len(kinds)}; packs, MiB):')
+    for k, c in sorted(kinds.items(), key=lambda kc: -kc[1]):
+        say(f'  {c:6}  {kind_size[k] / 2**20:9.1f}  {k}')
+
+    toc_cache = {}
+
+    def toc(pi):
+        if pi not in toc_cache:
+            off, size = offset_of.get(fnv1a64(pack_names[pi])), pack_info[pi][0]
+            if off is None or size > a.max_pack_mb << 20:
+                toc_cache[pi] = None
+            else:
+                pk = Table.root(read(fs_off + off, size))
+                toc_cache[pi] = dict(zip(pk.u64s(0), pk.tables(1)))
+        return toc_cache[pi]
 
     # 3. names from the code
     hashes = {h: i for i, h in enumerate(file_hashes)}
@@ -205,26 +247,24 @@ def main():
     # 4. keyword matches with their compression
     say()
     say(f'keywords: {",".join(keys)}')
-    kw_packs = [i for i, n in enumerate(pack_names) if hit(n)]
-    say(f'packs whose name has a keyword: {len(kw_packs)}')
-    for i in kw_packs[:150]:
+    grep = re.compile(a.grep, re.I) if a.grep else None
+    kw_packs = [i for i, n in enumerate(pack_names)
+                if (grep.search(n) if grep else hit(n) and (a.all_types or inner_type(n) not in ASSET_TYPES))]
+    say(f'packs whose name {"matches " + a.grep if grep else "has a keyword (asset types left out)"}: '
+        f'{len(kw_packs)} (all in the report file, the first 60 here)')
+    for k, i in enumerate(kw_packs):
         size, count = pack_info[i] if i < len(pack_info) else (0, 0)
-        say(f'  pack {i:6}  {count:5} files  {size / 2**20:9.2f} MiB  {pack_names[i]}')
+        (say if k < 60 else note)(f'  pack {i:6}  {count:5} files  {size / 2**20:9.2f} MiB  {pack_names[i]}')
+
+    # compression of the files in every 50th pack (the file headers only)
+    sample = Counter()
+    for i in range(0, len(pack_names), 50):
+        t = toc(i) if pack_info[i][0] <= 4 << 20 else None   # small packs only, to keep the run short
+        for e in (t or {}).values():
+            sample[codec(e)] += 1
+    say('compression in a sample (every 50th pack up to 4 MiB): ' + ', '.join(f'{k} {c}' for k, c in sample.most_common()))
     kw_files = sorted((s, h) for h, s in found.items() if hit(s))
     say(f'found file names with a keyword: {len(kw_files)}')
-    toc_cache = {}
-
-    def toc(pi):
-        if pi not in toc_cache:
-            name = pack_names[pi]
-            off, size = offset_of.get(fnv1a64(name)), pack_info[pi][0]
-            if off is None or size > a.max_pack_mb << 20:
-                toc_cache[pi] = None
-            else:
-                pk = Table.root(read(fs_off + off, size))
-                toc_cache[pi] = dict(zip(pk.u64s(0), pk.tables(1)))
-        return toc_cache[pi]
-
     codecs = Counter()
     for s, h in kw_files[:300]:
         pi = file_pack[hashes[h]]
@@ -233,12 +273,7 @@ def main():
         if entry is None:
             say(f'  {s}  (pack {pi}: {"too big or missing" if t is None else "hash not in pack"})')
             continue
-        # the byte vector is the last field; the scalars before it are compression (i8), level (u8), size (u64)
-        data_field = len(entry.slots) - 1
-        comp, size = entry.scalar(1, 'b', -1), entry.scalar(3, 'Q')
-        head, packed = entry.bytes_at(data_field, 2)
-        kind = 'none' if comp == -1 else OODLE.get(head[1], f'type {comp}') if len(head) == 2 and head[0] in (
-            0x8C, 0xCC) else f'type {comp}'
+        kind, packed, size = codec(entry), entry.bytes_at(len(entry.slots) - 1, 0)[1], entry.scalar(3, 'Q')
         codecs[kind] += 1
         say(f'  {s}  pack {pi}, {kind}, packed {packed} B, unpacked {size} B')
     if codecs:
