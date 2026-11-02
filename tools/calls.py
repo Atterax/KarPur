@@ -484,7 +484,7 @@ def report(mod, a, before, after):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('addresses', nargs='+', help='module+offset as karpur.log prints them')
+    ap.add_argument('addresses', nargs='*', help='module+offset as karpur.log prints them')
     ap.add_argument('--exefs', type=Path, default=EXEFS)
     ap.add_argument('--before', type=int, default=40)
     ap.add_argument('--after', type=int, default=15)
