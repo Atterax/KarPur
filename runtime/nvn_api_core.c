@@ -616,15 +616,17 @@ NVN_API(nvnQueueSubmitCommands) {
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
     __atomic_store_n(&lod_issued, no, __ATOMIC_SEQ_CST);
-    // TOTK_SUBMIT_SYNC=1 (KarPur A/B switch): the game thread waits here until the GPU has finished this submission.
-    // It hid flickering trees for a while (2026-11-02); the cause was the VRAM mirrors receiving CPU writes late. With
-    // the late mirror sync and hot chunks (vk_memory.c) nothing flickers without the wait (maintainer test), so it is
-    // off by default again and the CPU and GPU overlap.
+    // TOTK_SUBMIT_SYNC (KarPur, default 1 since 2026-11-02 test M2; 0 lets CPU and GPU overlap): the game thread waits
+    // here until the GPU has finished this submission. With VRAM mirrors the GPU's writes reach guest memory only at a
+    // submission's end, and Violet reads some of them back (tree culling and LOD data) as on the Switch, where the GPU
+    // writes memory directly: walking into areas streamed after the load, trees flickered and vanished, while imported
+    // memory drew them right. With the wait every result is back before the game goes on; after the barrier tracking
+    // and the deferred submits the frame still holds 60 fps (maintainer test M2: no flicker, no missing trees).
     static int sync_mode = -1;
     if (sync_mode < 0) {
-        sync_mode = rt_knob("SUBMIT_SYNC", "0");
-        rt_log("nvn: %s", sync_mode ? "every submit waits for the GPU (TOTK_SUBMIT_SYNC=1)"
-                                    : "submits do not wait for the GPU (TOTK_SUBMIT_SYNC=1 makes them wait)");
+        sync_mode = rt_knob("SUBMIT_SYNC", "1");
+        rt_log("nvn: %s", sync_mode ? "every submit waits for the GPU (TOTK_SUBMIT_SYNC=0 lets them overlap)"
+                                    : "submits do not wait for the GPU (TOTK_SUBMIT_SYNC=0)");
     }
     if (sync_mode && f && gfx_backend()->fence_done() < f) gfx_backend()->fence_wait(f, 500000000ull);
 }
