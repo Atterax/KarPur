@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Ruckeln in Gebäuden: nur die eigene Spielfigur
+- `FPS_DT_NS=16666667`: unverändert. `VK_PRESENT=fifo`: unverändert. `FPS_LIMIT=45`: weniger schlimm, aber da.
+- Es ruckelt **nur die eigene Figur beim Laufen**; stehen und Kamera drehen ist flüssig. Also weder Bildzeit-Schwankung noch Bildausgabe: Die Position der Figur wird vermutlich in einem festen 30-Hz-Takt weitergeschoben (Havok-Physik/Charakter-Controller mit festem Schritt, ohne Interpolation), während Kamera und Bild mit 60 Hz laufen.
+- Test: dieselbe Halbierung über die 30-fps-Konstanten (fs/fr/us, 26 Sätze) wie bei den Effekten, Kriterium diesmal „Figur läuft im Gebäude flüssig“.
+
 ### 2026-11-02: Zusammenfassung Effekt-Ruckeln (für später, über 60 fps)
 - **Befund:** Partikel-Effekte ruckelten bei 60 fps, der Rest lief flüssig. Bei 45 fps, mit fester Bildzeit (`FPS_DT_NS`) und mit `MEMORY=import` (niedrige fps) war alles flüssig.
 - **Irrwege:** 30-fps-Code-Konstanten (Halbierung über 26 Sätze, ohne Wirkung), VRAM-Spiegel/heiße Stücke (`HOT_REFRESH`, `MIRROR_HOT` ohne Wirkung; import war nur wegen der niedrigeren fps flüssig).
