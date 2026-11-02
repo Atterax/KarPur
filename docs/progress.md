@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Effekte bei 45 fps flüssig, auch mit Spiegel
+- (C) Standard mit `FPS_LIMIT=45`: überall stabil 45 fps, Effekte flüssig. Das Ruckeln entsteht erst über 45 fps.
+- Zwei Erklärungen bleiben: Spiellogik (das Effektsystem rechnet mit der Bildzeit von `fps_dt` und verwirft oder rundet zu kurze Schritte) oder Zeitpunkt (bei 60 fps schreibt die CPU Partikel später relativ zum Submit). Trennung über die Bildzeit, die das Spiel sieht: (D) `FPS_LIMIT=45 FPS_DT_NS=16666667` (Spiel bekommt 60-fps-Schritte bei 45 fps, läuft in 75 % Tempo); (E) `FPS_DT_NS=22222222` bei 60 fps (45-fps-Schritte, Spiel 133 % Tempo).
+
 ### 2026-11-02: Effekt-Tests A/B
 - (A) Standard (Spiegel) mit `FPS_LIMIT=30`: Effekte flüssig (wie der Rest).
 - (B) `MEMORY=import` an Stellen über 30–40 fps: Effekte flüssig. 60 fps erreicht import draußen nicht.
