@@ -52,9 +52,9 @@ def ninja_path(p):
     return rel.replace('$', '$$').replace(' ', '$ ').replace(':', '$:')
 
 
-def generate(exefs, out, modules):
+def generate(exefs, out, modules, patches=None):
     cmd = [sys.executable, str(ROOT / 'recomp' / 'gen.py'), '--exefs', str(exefs), '--out', str(out),
-           '--modules', ','.join(modules)]
+           '--modules', ','.join(modules)] + (['--patches', str(patches)] if patches else [])
     print('Lifting (recomp/gen.py) ...', flush=True)
     t = time.perf_counter()
     r = subprocess.run(cmd, cwd=ROOT)
@@ -113,6 +113,10 @@ def main():
     ap.add_argument('--clang', help='clang executable (default: MSYS2 UCRT64, else PATH)')
     ap.add_argument('--ninja', help='ninja executable (default: MSYS2 UCRT64, else PATH)')
     ap.add_argument('--skip-gen', action='store_true', help='compile what generated/ already holds')
+    ap.add_argument('--patches', type=Path, help='code patch table for gen.py (recomp/patches.py), e.g. the one '
+                    'tools/consts.py --patch-file writes')
+    ap.add_argument('--gen-only', action='store_true',
+                    help='only lift (tools/build_game.py compiles what changed and links)')
     args = ap.parse_args()
 
     modules = args.modules.split(',')
@@ -123,7 +127,12 @@ def main():
     if free < 8 * 2**30:
         sys.exit(f'error: only {free / 2**30:.1f} GiB free on the drive of {ROOT}; lifting needs about 8 GiB')
 
-    gen_s = 0.0 if args.skip_gen else generate(args.exefs, args.gen, modules)
+    if args.patches and not args.patches.is_file():
+        sys.exit(f'error: patch table {args.patches} not found')
+    gen_s = 0.0 if args.skip_gen else generate(args.exefs, args.gen, modules, args.patches)
+    if args.gen_only:
+        print(f'lifted in {gen_s:.0f} s; next: tools\\build_game.py')
+        return
     total, ok, errors, cc_s = compile_all(clang, ninja, args.gen, args.build, modules)
 
     lines = ['=' * 27 + ' KarPur M2 report ' + '=' * 27]

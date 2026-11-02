@@ -15,6 +15,13 @@ code; the report never contains instruction or data bytes, only addresses, count
 
   .venv\\Scripts\\python tools\\consts.py
   .venv\\Scripts\\python tools\\consts.py --module main --module subsdk0 --show 60
+
+--patch-file FILE writes a patch table (recomp/patches.py) with one set per immediate site of float 1/30 (to 1/60),
+float 30.0 built by MOVZ/MOVK (to 60.0; FMOV #30.0 cannot hold 60.0) and 33333/33334 us (to 16667), each off by
+default; tools/lift.py --patches FILE --gen-only lifts with it, and TOTK_PATCH_BISECT=1 halves the sets by key in the
+running game (runtime/value_scan.c).
+
+  .venv\\Scripts\\python tools\\consts.py --patch-file build\\fps_candidates.txt
 """
 
 import argparse
@@ -136,7 +143,7 @@ def immediates(mod):
                     ok = k
             if ok is not False and ok not in hits:
                 hits.add(ok)
-                out[name].append((m.lo + ok * 4, 'mov/movk'))
+                out[name].append((m.lo + ok * 4, 'mov/movk', s))
     # FMOV (scalar, immediate): 0x1E201000 | type << 22 | imm8 << 13 | rd
     fm = np.flatnonzero((w & 0xFF201FE0) == 0x1E201000)
     for s in fm.tolist():
@@ -147,7 +154,7 @@ def immediates(mod):
         v = fmov_imm(imm8, typ == 1)
         for name, bitsz, pat in VALUES:
             if name.startswith('float' if typ == 0 else 'double') and v == pat:
-                out[name].append((m.lo + s * 4, 'fmov imm'))
+                out[name].append((m.lo + s * 4, 'fmov imm', s))
     return out
 
 
@@ -204,15 +211,54 @@ def literals(mod):
     return out
 
 
+# The 60 fps counterpart of each value a patch candidate replaces: (new top half-word or FMOV value, set name prefix).
+PATCH_TO = {'float 1/30': (f32(1 / 60), 'fs'), 'float 30.0': (f32(60.0), 'fr'),
+            'int 33333 us': (16667, 'us'), 'int 33334 us': (16667, 'us')}
+
+
+def patch_lines(mod, imm):
+    """Patch file lines (recomp/patches.py): one set per site, switch TOTK_<SET>, default off. Each site is the
+    instruction that writes the value's top half-word (MOVZ/MOVK; the lower half of 1/30 and 1/60 is the same) or the
+    FMOV, rewritten to give the 60 fps value. FMOV immediates stop at 31.0, so FMOV #30.0 sites get no set (60.0 would
+    need a second instruction and a scratch register)."""
+    m = mod.m
+    out, names = [], []
+    for vname, (new, prefix) in PATCH_TO.items():
+        for _, kind, s in imm[vname]:
+            x = int(m.words[s])
+            if kind == 'fmov imm':
+                imm8 = next((i for i in range(256) if fmov_imm(i, False) == new), None)
+                if imm8 is None:
+                    continue
+                y = (x & ~(0xFF << 13)) | imm8 << 13
+            else:
+                h = (x >> 21) & 3
+                if new >> (16 * (h + 1)) or (vname.startswith('int') and h):
+                    continue   # the new value does not fit the same instruction
+                y = (x & ~(0xFFFF << 5)) | ((new >> (16 * h)) & 0xFFFF) << 5
+            off = m.lo + s * 4 - mod.base
+            name = f'{prefix}_{off:x}'
+            if name in names:
+                continue
+            names.append(name)
+            out.append(f'set  {name} TOTK_{name.upper()} 0')
+            out.append(f'site {name} {mod.name} {off:x} {x:08x} {y:08x}')
+    return out, names
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exefs', type=Path, default=EXEFS)
     ap.add_argument('--module', action='append', default=[], help='module to search (default: main)')
     ap.add_argument('--show', type=int, default=40, help='sites listed per value and kind (default 40)')
+    ap.add_argument('--patch-file', type=Path, help='write a patch table with one switchable set per immediate site of '
+                    'float 1/30, float 30.0 and 33333 us (for gen.py --patches; keep it under build/, it holds '
+                    'instruction words)')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
     want = set(a.module or ['main'])
+    patch = []
     print('=' * 72)
     for name, base, _ in layout(a.exefs):
         if name not in want:
@@ -220,13 +266,17 @@ def main():
         mod = Mod(name, base, a.exefs / name)
         imm = immediates(mod)
         lit = literals(mod)
+        if a.patch_file:
+            lines, names = patch_lines(mod, imm)
+            patch += lines
+            print(f'module {name}: {len(names)} patch sets for {a.patch_file}')
         print(f'module {name}: {len(mod.starts)} functions')
         for vname, _, _ in VALUES:
             sites = imm[vname]
             addrs, loads = lit[vname]
             print(f'  {vname}: {len(sites)} immediate builds, {len(addrs)} words in .rodata/.data, '
                   f'{len(loads)} loads of them')
-            for s, kind in sites[:a.show]:
+            for s, kind, _ in sites[:a.show]:
                 print(f'    {kind:10s} {mod.where(s)}')
             if len(sites) > a.show:
                 print(f'    ... {len(sites) - a.show} more immediate builds')
@@ -238,6 +288,11 @@ def main():
             if unread:
                 print(f'    words without a found load: {len(unread)}'
                       + (f' (first {", ".join(f"{name}+{t - base:#x}" for t in unread[:6])})'))
+    if a.patch_file:
+        a.patch_file.parent.mkdir(parents=True, exist_ok=True)
+        a.patch_file.write_text('# frame-step candidates from tools/consts.py --patch-file (holds instruction words: '
+                                'not for the repository)\n' + '\n'.join(patch) + '\n')
+        print(f'patch table: {len(patch) // 2} sets written to {a.patch_file}')
     print('=' * 72)
 
 

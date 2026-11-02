@@ -15,6 +15,8 @@
 // get 1/60, f30 (float 30.0) gets 60.0. A thread writes them every millisecond, so a step the game recomputes each
 // frame is mostly overwritten before it is read. Run it with TOTK_PRESENT_INTERVAL=1 (the game then runs too fast).
 //
+// TOTK_PATCH_BISECT=1: the same bisection over the frame-step patch sets (see patch_bisect_start).
+//
 // TOTK_POKE=ADDR=VALUE[,ADDR=VALUE...]: before each present the 32-bit word at ADDR gets VALUE. ADDR is main+0x...,
 // subsdk0+0x... or a 0x... guest address; VALUE is f:<float>, d:<double> (64-bit) or i:<integer>. Writes only to pages
 // that are writable guest memory, or to a module's read-only constants (their host pages are made writable).
@@ -221,7 +223,7 @@ typedef struct { int kind, lo, hi; } PokeRange;
 static PokeRange pranges[8];
 static int npranges;
 
-typedef struct { uint64_t addr; int kind; int ours; int live; } Cand;
+typedef struct { uint64_t addr; int kind; int ours; int live; int set; } Cand;   // set >= 0: a patch set
 static Cand *cands;
 static int ncands, ccands;
 static volatile int blo, bhi;   // current candidates [blo, bhi); the poked half is [blo, bmid)
@@ -245,6 +247,10 @@ static void poke_scan_parse(void) {
 
 // Writes the value of kind k for 30 fps (fast = 0) or 60 fps (fast = 1) when the word holds the other one.
 static void poke_one(Cand *c, int fast) {
+    if (c->set >= 0) {
+        if (rt_patch_enabled(c->set) != fast) rt_patch_switch(c->set, fast);
+        return;
+    }
     static const uint32_t f32_60th = 0x3C888889u, f32_60 = 0x42700000u;
     static const uint64_t f64_60th = 0x3F91111111111111ull;
     if (!c->live) return;
@@ -261,19 +267,25 @@ static void poke_one(Cand *c, int fast) {
     else if (!fast && c->ours && v == a60) *w = a30;
 }
 
+static void cand_name(const Cand *c, char *buf, size_t n) {
+    if (c->set >= 0) snprintf(buf, n, "patch set %s", rt_patch_name(c->set));
+    else name_of(c->addr, buf, n);
+}
+
 static void bisect_log(const char *why) {
     int lo = blo, hi = bhi, mid = bmid();
     if (hi - lo <= 1) {
         if (hi > lo) {
             char nm[64];
-            name_of(cands[lo].addr, nm, sizeof nm);
-            rt_log("value scan: bisect %s: one candidate left: %s at %s (it stays poked)", why, kind_name[cands[lo].kind], nm);
+            cand_name(&cands[lo], nm, sizeof nm);
+            rt_log("value scan: bisect %s: one candidate left: %s%s%s (it stays poked)", why,
+                   cands[lo].set >= 0 ? "" : kind_name[cands[lo].kind], cands[lo].set >= 0 ? "" : " at ", nm);
         } else rt_log("value scan: bisect %s: no candidates left", why);
         return;
     }
     char a[64], b[64];
-    name_of(cands[lo].addr, a, sizeof a);
-    name_of(cands[mid - 1].addr, b, sizeof b);
+    cand_name(&cands[lo], a, sizeof a);
+    cand_name(&cands[mid - 1], b, sizeof b);
     rt_log("value scan: bisect %s: %d candidates left, poking %d of them (%s .. %s); F6 = normal speed now, "
            "F7 = still too fast", why, hi - lo, mid - lo, a, b);
 }
@@ -289,6 +301,7 @@ static void poke_scan_thread(void *arg) {
         // mapped views it is slow and it takes the address space lock the game's own mappings need.
         if (tick++ % 1000 == 0) {
             for (int i = 0; i < ncands; i++) {
+                if (cands[i].set >= 0) continue;
                 RtMemoryInfo mi;
                 mem_query(cands[i].addr, &mi);
                 cands[i].live = (mi.perm & 3) == 3 && cands[i].addr + 8 <= mi.base + mi.size;
@@ -304,30 +317,50 @@ static void poke_scan_thread(void *arg) {
     }
 }
 
-static void poke_scan_start(void) {
-    if (!npranges) return;
-    for (int r = 0; r < npranges; r++) {
-        int k = pranges[r].kind, hi = pranges[r].hi < nhits[k] - 1 ? pranges[r].hi : nhits[k] - 1;
-        rt_log("value scan: candidates: %s hits %d-%d (of %d)", kind_name[k], pranges[r].lo, hi, nhits[k]);
-        for (int i = pranges[r].lo; i <= hi; i++) {
-            if (ncands == ccands) {
-                ccands += 1024;
-                if (!(cands = realloc(cands, sizeof *cands * (size_t)ccands))) rt_fatal("value scan: out of memory");
-            }
-            cands[ncands++] = (Cand){.addr = hits[k][i], .kind = k};
-        }
+static void cand_add(Cand c) {
+    if (ncands == ccands) {
+        ccands += 1024;
+        if (!(cands = realloc(cands, sizeof *cands * (size_t)ccands))) rt_fatal("value scan: out of memory");
     }
+    cands[ncands++] = c;
+}
+
+static void bisect_go(void) {
     blo = 0;
     bhi = ncands;
     bisect_log("start");
     if (!plat_thread_spawn(poke_scan_thread, NULL, "value poke", 64 << 10)) rt_log("value scan: poke thread failed");
 }
 
+// TOTK_PATCH_BISECT=1: the candidates are the frame-step patch sets of tools/consts.py --patch-file (names fs_, fr_,
+// us_ + module offset), switched on and off instead of poked. Same keys, from present 900 on.
+static void patch_bisect_start(void) {
+    for (int i = 0; i < rt_patch_count(); i++) {
+        const char *n = rt_patch_name(i);
+        if (n && (!strncmp(n, "fs_", 3) || !strncmp(n, "fr_", 3) || !strncmp(n, "us_", 3)))
+            cand_add((Cand){.set = i});
+    }
+    rt_log("value scan: %d frame-step patch sets of %d are candidates (TOTK_PATCH_BISECT)", ncands, rt_patch_count());
+    if (ncands) bisect_go();
+}
+
+static void poke_scan_start(void) {
+    if (!npranges) return;
+    for (int r = 0; r < npranges; r++) {
+        int k = pranges[r].kind, hi = pranges[r].hi < nhits[k] - 1 ? pranges[r].hi : nhits[k] - 1;
+        rt_log("value scan: candidates: %s hits %d-%d (of %d)", kind_name[k], pranges[r].lo, hi, nhits[k]);
+        for (int i = pranges[r].lo; i <= hi; i++) cand_add((Cand){.addr = hits[k][i], .kind = k, .set = -1});
+    }
+    bisect_go();
+}
+
 void value_scan_present(uint64_t frame) {
-    static int on = -1;
+    static int on = -1, pb = -1;
     if (on < 0) on = rt_knob("VALUE_SCAN", "0");
+    if (pb < 0) pb = rt_knob("PATCH_BISECT", "0");
     if (npokes < 0) pokes_init();
     if (npokes) poke_all();
+    if (pb && frame == 900) patch_bisect_start();
     if (!on) return;
     if (frame == 900) {
         scan_all();

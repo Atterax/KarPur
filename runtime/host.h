@@ -262,6 +262,8 @@ void res_fov_live(void);                                   // TOTK_FOV to the ca
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets
 int rt_patch_set(const char *name);                        // index of a set of generated patches.h, -1 if absent
+int rt_patch_count(void);                                  // sets in the generated patches.h
+const char *rt_patch_name(int set);                        // a set's name, NULL out of range
 int rt_patch_enabled(int set);                             // the set is on (0 for -1)
 void rt_patch_disable(int set);                            // before the guest starts: a set needs another that is off
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
