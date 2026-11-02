@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Darstellung und Bildrate stimmen** (Mirror + späte Sync + Pool-Abgabe ≤64 MiB + heiße Stücke). Als Nächstes prüfen, ob `SUBMIT_SYNC=0` jetzt reicht (dann Warten abschalten). Heiße Stücke über längere Sitzungen beobachten (wächst die MiB-Zahl weiter?).
+0. **Darstellung und Bildrate stimmen** (Mirror + späte Sync + Pool-Abgabe ≤64 MiB + heiße Stücke; `SUBMIT_SYNC` wieder aus). Heiße Stücke über längere Sitzungen beobachten (wächst die MiB-Zahl weiter?). Danach: Test-Schalter aufräumen, Sichtweite/LOD, 60 fps.
 0b. **Sichtweite/LOD erweitern** (Wunsch des Maintainers, wie Switch-2-Fassung): LOD-/Distanz-Parameter im Spielcode finden, per Patch-Schalter vergrößern. Nach fehlerfreier Darstellung.
 1. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
@@ -23,6 +23,9 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: SUBMIT_SYNC wieder aus
+- Test `SUBMIT_SYNC=0` mit Mirror + später Sync + heißen Stücken: keine Einbrüche, kein Flackern, nichts Auffälliges (Maintainer). Das Warten nach jedem Submit hatte nur die zu späten Spiegel-Daten verdeckt. Standard jetzt 0 (`nvn_api_core.c`).
 
 ### 2026-11-02: Heiße Stücke bestätigt: kein Flackern, keine Einbrüche
 - Maintainer: nichts flackert, alles da; ein kurzer Einbruch am Anfang (Laden), danach keiner. Minute 2: mean 30.0 fps, 1% low 27.6, kein Frame über 50 ms.

@@ -616,17 +616,15 @@ NVN_API(nvnQueueSubmitCommands) {
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
     __atomic_store_n(&lod_issued, no, __ATOMIC_SEQ_CST);
-    // TOTK_SUBMIT_SYNC (KarPur, default 1 since 2026-11-02): the game thread waits here until the GPU has finished
-    // this submission. On the Switch the GPU starts within microseconds and has read the per-object data long before
-    // the game rewrites it; here it runs after the replay, and single trees flickered on and off frame by frame (an
-    // occlusion override did not help, this wait did). At 30 fps on the maintainer's PC it costs no frame rate
-    // (mean 30.0, 1% low 28.4 with and without). The proper fix copies the data the GPU reads at submit time; until
-    // the buffers are known this wait stands in. TOTK_SUBMIT_SYNC=0 turns it off.
+    // TOTK_SUBMIT_SYNC=1 (KarPur A/B switch): the game thread waits here until the GPU has finished this submission.
+    // It hid flickering trees for a while (2026-11-02); the cause was the VRAM mirrors receiving CPU writes late. With
+    // the late mirror sync and hot chunks (vk_memory.c) nothing flickers without the wait (maintainer test), so it is
+    // off by default again and the CPU and GPU overlap.
     static int sync_mode = -1;
     if (sync_mode < 0) {
-        sync_mode = rt_knob("SUBMIT_SYNC", "1");
-        rt_log("nvn: %s", sync_mode ? "every submit waits for the GPU (TOTK_SUBMIT_SYNC=0 turns it off)"
-                                    : "submits do not wait for the GPU (TOTK_SUBMIT_SYNC=0)");
+        sync_mode = rt_knob("SUBMIT_SYNC", "0");
+        rt_log("nvn: %s", sync_mode ? "every submit waits for the GPU (TOTK_SUBMIT_SYNC=1)"
+                                    : "submits do not wait for the GPU (TOTK_SUBMIT_SYNC=1 makes them wait)");
     }
     if (sync_mode && f && gfx_backend()->fence_done() < f) gfx_backend()->fence_wait(f, 500000000ull);
 }
