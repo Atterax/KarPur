@@ -15,8 +15,9 @@ Sets (switched with their TOTK_ variable):
   lod_bias (off by default; TOTK_LOD=1) main+0xc07dc4 and main+0x7f1a6c: each loads a float (ldr s0, [x19, #0x1c] /
            [x20, #0x10]) that a virtual call right after receives as its argument; a third-party mod for Violet 3.0.1
            replaces both loads with fmov s0, #-15.0 and calls it "LodBias" (read for behaviour only). The set loads s0
-           from the patch page +72 instead (adrp x17 + ldr s0), which runtime/lod.c fills from TOTK_LOD_BIAS (default
-           -15). x17 is free there: the check below finds no use of x16/x17 between the load and the call.
+           from the patch page +72 instead (adrp + ldr s0 through a scratch register from x9-x17 that no instruction
+           between the load and the call names; the call clobbers it), which runtime/lod.c fills from TOTK_LOD_BIAS
+           (default -15).
 
 Tried and dropped: the 30 fps frame time and vsync count in main+0x2b79f60 (no effect on the interval or the speed).
 
@@ -66,23 +67,34 @@ def ldr_s(rt, rn, off):
     return 0xBD400000 | (off // 4) << 10 | rn << 5 | rt
 
 
-def ip_free(m, a):
-    """No instruction from the one after a up to the next call names x16 or x17 in any register field (a coarse check:
-    immediates may look like them and then the site is refused, never wrongly accepted)."""
+SCRATCH = (17, 16, 15, 14, 13, 12, 11, 10, 9)   # registers a call clobbers that are no argument (x9-x17)
+
+
+def free_reg(m, a):
+    """A register from SCRATCH that no instruction after a names (any register field) before the next call, or None.
+    The call clobbers it, so the patch may use it; the field check is coarse: an immediate that looks like the register
+    only makes it pick another one."""
+    window = []
     for k in range(1, 12):
         w = m.word(a + 4 * k)
         if (w & 0xFC000000) == 0x94000000 or (w & 0xFFFFFC1F) == 0xD63F0000:
-            return True
-        if any(((w >> sh) & 31) in (16, 17) for sh in (0, 5, 10, 16)):
-            return False
-    return False
+            break
+        window.append(w)
+    else:
+        return None   # no call within reach: nothing is known to be free
+    for r in SCRATCH:
+        if not any(((w >> sh) & 31) == r for w in window for sh in (0, 5, 10, 16)):
+            return r
+    return None
+
 
 # (set, switch, default, module offset, expected word, replacement word or words; '@page:x2' is adrp x2 of the
 # patch page)
 SITES = [
     ('fps_dt', 'TOTK_FPS_DT', 1, 0x92dd2c, ldr_x(8, 0, 0), [ldr_x(8, 0, 0), '@page:x2', ldr_x(2, 2, PAGE_FRAME_NS)]),
-    ('lod_bias', 'TOTK_LOD', 0, 0xc07dc4, ldr_s(0, 19, 0x1c), ['@page:x17', ldr_s(0, 17, PAGE_LOD_BIAS)]),
-    ('lod_bias', 'TOTK_LOD', 0, 0x7f1a6c, ldr_s(0, 20, 0x10), ['@page:x17', ldr_s(0, 17, PAGE_LOD_BIAS)]),
+    # 'scratch': adrp into a free register from SCRATCH, then ldr s0 from the patch page through it (main picks it)
+    ('lod_bias', 'TOTK_LOD', 0, 0xc07dc4, ldr_s(0, 19, 0x1c), 'scratch'),
+    ('lod_bias', 'TOTK_LOD', 0, 0x7f1a6c, ldr_s(0, 20, 0x10), 'scratch'),
 ]
 OPTIONAL = {'lod_bias'}   # a mismatch drops the set with a note instead of stopping
 
@@ -97,14 +109,20 @@ def main():
     base = next(b for n, b, _ in layout(a.exefs) if n == 'main')
     m = Module('main', a.exefs / 'main', base, 'c')
     # Check every site first: an optional set with any failing site is left out whole.
-    dropped, bad = set(), 0
+    dropped, bad, words_of = set(), 0, {}
     for name, env, default, off, want, repl in SITES:
         have = m.word(base + off)
         ok = have == want
-        free = ok and (name != 'lod_bias' or ip_free(m, base + off))
-        note = 'ok' if free else ('x16/x17 used before the call' if ok else 'MISMATCH')
+        note = 'ok' if ok else 'MISMATCH'
+        if ok and repl == 'scratch':
+            r = free_reg(m, base + off)
+            if r is None:
+                ok, note = False, 'no free scratch register before the call'
+            else:
+                repl, note = [f'@page:x{r}', ldr_s(0, r, PAGE_LOD_BIAS)], f'ok (scratch x{r})'
+        words_of[off] = repl
         print(f'main+{off:#x}: expected {describe(want)}, found {describe(have)}: {note}')
-        if not free:
+        if not ok:
             if name in OPTIONAL:
                 dropped.add(name)
             else:
@@ -112,15 +130,16 @@ def main():
     if bad:
         sys.exit(f'{bad} sites differ from what this table expects (another game version?): nothing written')
     for name in sorted(dropped):
-        print(f'set {name} left out (its sites differ from what this table expects)')
+        print(f'set {name} left out (one of its sites failed the check above)')
     lines, sets, n = ['# frame-rate and LOD patch sets from tools/fps_patches.py (holds instruction words: not for the '
                       'repository)'], [], 0
-    for name, env, default, off, want, repl in SITES:
+    for name, env, default, off, want, _ in SITES:
         if name in dropped:
             continue
         if name not in sets:
             sets.append(name)
             lines.append(f'set  {name} {env} {default}')
+        repl = words_of[off]
         words = repl if isinstance(repl, list) else [repl]
         text = ' '.join(r if isinstance(r, str) else f'{r:08x}' for r in words)
         lines.append(f'site {name} main {off:x} {want:08x} {text}')
