@@ -1493,9 +1493,20 @@ static int mirror_written_here(const PoolRec *r, uint64_t off, uint64_t n) {   /
 static int race_on(void);
 static int race_pool(const PoolRec *r);
 
+// TOTK_HOT_REFRESH=1 (KarPur, default off): hot chunks are not read from imported memory; instead every submission
+// that uses the pool copies them from guest memory into the mirror at the start of its GPU work (the late sync's
+// prologue copies run on the GPU, when the submission starts). A binding that touches a hot chunk keeps the fast mirror,
+// and only the hot bytes cross PCIe, once per submission (with imported bindings a whole binding is read over PCIe).
+static int hot_refresh = -1;
+static int hot_refresh_on(void) {
+    if (hot_refresh < 0) hot_refresh = rt_knob("HOT_REFRESH", "0");
+    return hot_refresh;
+}
+static volatile int64_t m_refresh_bytes;
+
 static void mirror_choose(PoolRec *r, VkMemSpan *sp, VkDeviceSize n) {
     if (!n) n = sp->avail < HOT_UNKNOWN_SIZE ? sp->avail : HOT_UNKNOWN_SIZE;
-    if (r->nhot && hot_touch(r, sp->offset, n) && !mirror_written_here(r, sp->offset, n)) {
+    if (r->nhot && !hot_refresh_on() && hot_touch(r, sp->offset, n) && !mirror_written_here(r, sp->offset, n)) {
         plat_inc64(&m_hot_binds);
         return;   // the imported buffer stays in sp
     }
@@ -1781,6 +1792,15 @@ void vk_mem_mirror_late(uint64_t fence) {
                 }
         }
         r->mgen = gen_now;
+        if (r->nhot && hot_refresh_on()) {   // KarPur: hot chunks copied into the mirror at the submission's start
+            uint64_t span = 1ull << HOT_SHIFT;
+            for (uint32_t c = 0; c < r->nchunks; c++) {
+                if (!r->hot[c]) continue;
+                uint64_t off = (uint64_t)c << HOT_SHIFT, len = off + span > hi - lo ? hi - lo - off : span;
+                range_add(&pend, &npend, &cpend, r, off, len);
+                plat_add64(&m_refresh_bytes, (int64_t)len);
+            }
+        }
         if (fence && race_on() && race_pool(r) && r->chunk_sub) {   // KarPur: checked again when the GPU is done
             if (!rc) {
                 rc = malloc(sizeof *rc + sizeof *rc->p * (size_t)nm);
@@ -1967,10 +1987,12 @@ static void mirror_log(uint64_t frame) {
     if (mirror_late > 0) {   // KarPur: pages the late sync queued (read without a lock: a statistic)
         size_t used = strlen(ver);
         snprintf(ver + used, sizeof ver - used, "; late sync %.1f pages, mirrors given up %lld (%.1f MiB), hot chunks "
-                 "%lld (%.1f MiB), bindings to hot chunks %.1f, written while the GPU ran %.1f chunks, hot from that %lld",
+                 "%lld (%.1f MiB), bindings to hot chunks %.1f, written while the GPU ran %.1f chunks, hot from that %lld, "
+                 "hot bytes copied %.3f MiB",
                  __atomic_exchange_n(&late_pages, 0, __ATOMIC_RELAXED) / f, (long long)m_demoted_n, m_demoted_bytes / M,
                  (long long)m_hot_chunks, m_hot_chunks * (double)(1ull << HOT_SHIFT) / M,
-                 plat_xchg64(&m_hot_binds, 0) / f, plat_xchg64(&m_race_hits, 0) / f, (long long)m_race_chunks);
+                 plat_xchg64(&m_hot_binds, 0) / f, plat_xchg64(&m_race_hits, 0) / f, (long long)m_race_chunks,
+                 plat_xchg64(&m_refresh_bytes, 0) / f / M);
     }
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
