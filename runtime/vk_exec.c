@@ -655,19 +655,20 @@ void vk_exec_barrier(VkExec *ex) {
     VK_HZ_SET(ex, VK_HZ_OP);
 }
 
-// The game's own barrier (nvnCommandBufferBarrier). With barrier tracking (TOTK_GAME_BARRIER, default track) it records
+// The game's own barrier (nvnCommandBufferBarrier). Default: a full barrier. With TOTK_GAME_BARRIER=track it records
 // nothing while only tracked writes happened since the last full barrier: the hazards it orders (attachments sampled
 // later, attachment after attachment, clears) are what the tracking sees at the next pass, clear and draw. After
 // untracked writes (storage writes of draws, transform feedback, copies, dispatches) it is the full barrier as before.
-// TOTK_GAME_BARRIER=full keeps the full barrier at every game barrier.
+// Measured in Violet's forest (docs/progress.md 2026-11-02): the passes after them then sample what came before and
+// restart behind a full barrier (33 restarts a frame, more passes), slower than the full barrier at once.
 static void game_barrier(VkExec *ex) {
     static int track = -1;
     if (track < 0) {
         const char *e = cfg_get("TOTK_GAME_BARRIER");
-        track = !(e && !strcmp(e, "full"));
+        track = e && !strcmp(e, "track");
         if (vk_exec_track_on())
-            rt_log("vk_exec: game barriers %s", track ? "left to the barrier tracking (TOTK_GAME_BARRIER=full: a full "
-                                                        "barrier each)" : "full (TOTK_GAME_BARRIER=full)");
+            rt_log("vk_exec: game barriers %s", track ? "left to the barrier tracking (TOTK_GAME_BARRIER=track)"
+                                                      : "full (TOTK_GAME_BARRIER=track leaves them to the tracking)");
     }
     if (track && vk_exec_track_on() && !ex->hz_other) {   // untracked writes since the last full barrier: as before
         vk_exec_frame.game_barriers_tracked++;
