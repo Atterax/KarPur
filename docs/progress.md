@@ -24,6 +24,14 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: 4.0.0-Gegenstücke der Fl4sh-Patches; Testsätze indoor_fix und dynres_full
+- `calls.py --insn` in 4.0.0:
+  - `0x20a8d38/3c`: `movz w8, #0x5000` / `movk w8, #0x4743, lsl #16` = **50000.0f**, danach `fmov s1, w8`, FP-Vergleich, `b.cond`. Der Patch macht daraus 96.15625f (oberer Teil 0x42c0). **Gleiche Stelle wie in 3.0.1.**
+  - `0x2b7a874`: in 4.0.0 `add w1, w20, #1` (w20 aus `[x10, #0x20]`), vor einem virtuellen Aufruf; der Patch setzte in 3.0.1 `w1 = 1`. Noch nicht als Satz.
+  - `0x4877d0` (zweite Datei, andere Build-ID): passt nicht zu main 4.0.0.
+  - `0xbd7014..28`: gleiche Stelle. Zwei 64-bit-Wörter nach `[x20, #0x430]`/`[#0x438]`: Breiten (1280, 1920) und Höhen (720, 1080), wohl die Grenzen der dynamischen Auflösung. Der Qualitäts-Patch hebt die untere Grenze auf 1920×1080.
+- Neue optionale Sätze in `tools/fps_patches.py` (Standard aus): `indoor_fix` (`TOTK_INDOOR_FIX=1`, 50000.0 → 96.15625) und `dynres_full` (`TOTK_DYNRES_FULL=1`, untere Auflösungsgrenze = 1920×1080).
+
 ### 2026-11-02: GBAtemp-Patches des Mod-Autors (Fl4sh) für 3.0.1 gelesen
 - Der Maintainer hat die Patch-Dateien (`.pchtxt`, Build-ID 709BFD66…, Violet 3.0.1) geschickt; nur zum Lesen, nichts übernommen, nichts im Repository. Notizen des Autors: behoben werden Ruckeln in Gebäuden, Ruckeln beim Gehen/Laufen, Windrad-Animationen, NPC- und Kampf-Animationen, Menütempo. Die Offsets sind main-Offsets (`offset_shift 0x100`; `0x92dd2c`, `0xc07dc4`, `0x7f1a6c` passen zu unseren Funden).
 - **60 FPS (3.0.1):**

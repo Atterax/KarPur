@@ -28,6 +28,12 @@ Sets (switched with their TOTK_ variable):
   step_ten (off by default; TOTK_STEP_TEN=1, test) main+0x170c408: movz w10, #1.0f (stored to [x9, #0x90]) becomes
            10.0f, a fixed patch of the third-party mod at the same offset in 3.0.1 (meaning unknown).
 
+  indoor_fix (off by default; TOTK_INDOOR_FIX=1, test) main+0x20a8d3c: the float 50000.0 built there for a
+           comparison becomes 96.15625 (top half 0x42c0), as in a third-party 3.0.1 patch that fixes stutter indoors.
+
+  dynres_full (off by default; TOTK_DYNRES_FULL=1, test) main+0xbd7014 and +0xbd7020: the pair 1280x720 (the lower
+           bound of the dynamic resolution, it seems) becomes 1920x1080, as in a third-party 3.0.1 quality patch.
+
 Tried and dropped: the 30 fps frame time and vsync count in main+0x2b79f60 (no effect on the interval or the speed).
 
 tools/lift.py uses build/fps_patches.txt by itself when the file exists.
@@ -76,6 +82,14 @@ def movz_w(rd, imm16, shift):
     return 0x52800000 | (shift // 16) << 21 | imm16 << 5 | rd
 
 
+def movk_w(rd, imm16, shift):
+    return 0x72800000 | (shift // 16) << 21 | imm16 << 5 | rd
+
+
+def movz_x(rd, imm16, shift):
+    return 0xD2800000 | (shift // 16) << 21 | imm16 << 5 | rd
+
+
 def ldr_s(rt, rn, off):
     return 0xBD400000 | (off // 4) << 10 | rn << 5 | rt
 
@@ -111,8 +125,17 @@ SITES = [
     # step_ten (test): float 1.0 that main+0x170c408 stores to [x9, #0x90] becomes 10.0, as in the third-party mod
     # (meaning unknown; tried for the player character's stutter indoors at 60 fps, docs/progress.md 2026-11-02)
     ('step_ten', 'TOTK_STEP_TEN', 0, 0x170c408, movz_w(10, 0x3F80, 16), [movz_w(10, 0x4120, 16)]),
+    # indoor_fix (test): main+0x20a8d38/3c build w8 = 50000.0f, compared right after (fmov s1, w8; fcmp; b.cond);
+    # the third-party 60 fps patch for 3.0.1 writes the top half 0x42c0 at the same offset (96.15625f) and names
+    # "stutter indoors" among its fixes (docs/progress.md 2026-11-02)
+    ('indoor_fix', 'TOTK_INDOOR_FIX', 0, 0x20a8d3c, movk_w(8, 0x4743, 16), [movk_w(8, 0x42C0, 16)]),
+    # dynres_full (test): main+0xbd7014..28 store two 64-bit words, widths (1280, 1920) and heights (720, 1080), which
+    # look like the lower and upper bound of the dynamic resolution; the third-party quality patch raises the lower
+    # bound to 1920x1080
+    ('dynres_full', 'TOTK_DYNRES_FULL', 0, 0xbd7014, movz_x(8, 0x500, 0), [movz_x(8, 0x780, 0)]),
+    ('dynres_full', 'TOTK_DYNRES_FULL', 0, 0xbd7020, movz_x(8, 0x2D0, 0), [movz_x(8, 0x438, 0)]),
 ]
-OPTIONAL = {'lod_bias', 'data_watch', 'step_ten'}
+OPTIONAL = {'lod_bias', 'data_watch', 'step_ten', 'indoor_fix', 'dynres_full'}
 OODLE_DECOMPRESS = 0xcc8750   # main offset of OodleLZ_Decompress in 4.0.0 (calls.py --string oodle, 2026-11-02)
 PAGE_OODLE_HOST = 0xfd0       # patch page offset of the host wrapper (runtime/data_watch.c)
 
