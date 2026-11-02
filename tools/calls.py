@@ -203,25 +203,12 @@ def abs_refs(mod, a):
           + (f' (e.g. {", ".join(sample)})' if sample else ''))
 
 
-def refs(mod, a):
-    """Report where address a is referenced and how discovery saw it."""
+def ref_hits(mod, a):
+    """[(kind, word index of the source)] of direct branches, ADR and ADRP+ADD that name address a."""
     m = mod.m
     w = m.words
     lo = m.lo
-    name = f'{mod.name}+{a - mod.base:#x}'
-    print(f'{name}: references')
-    if not m.in_text(a):
-        print('  not in .text')
-        return
     i = (a - lo) >> 2
-    f = mod.function(a)
-    if f:
-        print(f'  discovery: {"function start" if f[0] == a else f"inside {mod.name}+{f[0] - mod.base:#x} at +{a - f[0]:#x}"}'
-              f' (function {(f[1] - f[0]) // 4} instructions)')
-    if i > 0:
-        k = word_kind(int(w[i - 1]))
-        print(f'  instruction before it: {k}' + ('  -> it is a return address' if k == 'BL' or k.startswith('BLR') else ''))
-    print(f'  instruction at it: {word_kind(int(w[i]))}')
     # direct branches
     hits = []
     sel = np.flatnonzero((w & 0x7C000000) == 0x14000000)
@@ -256,6 +243,67 @@ def refs(mod, a):
             if (x & 0xFFC00000) == 0x91000000 and ((x >> 5) & 31) == rd and ((x >> 10) & 0xFFF) == (a & 0xFFF):
                 hits.append(('ADRP+ADD', s))
                 break
+    return hits
+
+
+def pieces(mod, a):
+    """For the .eh_frame function holding a: every discovered function start inside it with the reasons it is a
+    start, and every BR (not a return) in it with where its register was set. Explains a function the discovery split."""
+    m = mod.m
+    rng = [(b, e) for b, e in m.eh_frame_ranges() if b <= a < e]
+    name = lambda x: f'{mod.name}+{x - mod.base:#x}'
+    if not rng:
+        print(f'{name(a)}: no .eh_frame function holds it')
+        return
+    b, e = rng[0]
+    print(f'{name(a)}: .eh_frame function {name(b)}..{name(e)} ({(e - b) // 4} instructions)')
+    eh = set(m.eh_frame_functions())
+    exports = set(mod.exports)
+    rel = {mod.base + add for _, typ, _, add in m.nso.relocs if typ == R_AARCH64_RELATIVE and b <= mod.base + add < e}
+    inner = [x for x in mod.starts if b <= x < e]
+    for x in inner:
+        why = []
+        if x in eh:
+            why.append('eh_frame')
+        if x in exports:
+            why.append('export')
+        if x in rel:
+            why.append('RELATIVE')
+        for k, src in ref_hits(mod, x):
+            sa = m.lo + src * 4
+            why.append(f'{k} from {name(sa)}' + (' (same .eh_frame function)' if b <= sa < e else ''))
+        nxt = next((y for y in mod.starts if y > x), m.hi)
+        print(f'  start {name(x)} (+{x - b:#x}, {(min(nxt, e) - x) // 4} instructions): '
+              + ('; '.join(why[:6]) if why else 'no reason found (branch fixpoint?)')
+              + (f'; ... {len(why) - 6} more' if len(why) > 6 else ''))
+    for q in range(b, e, 4):
+        wq = m.word(q)
+        if (wq & 0xFFFFFC1F) == 0xD61F0000 and ((wq >> 5) & 31) != 30:
+            g = mod.function(q)
+            r = (wq >> 5) & 31
+            print(f'  BR x{r} at {name(q)} (in {name(g[0])}): x{r} from {reg_origin(mod, g[0], q, r)}')
+
+
+def refs(mod, a):
+    """Report where address a is referenced and how discovery saw it."""
+    m = mod.m
+    w = m.words
+    lo = m.lo
+    name = f'{mod.name}+{a - mod.base:#x}'
+    print(f'{name}: references')
+    if not m.in_text(a):
+        print('  not in .text')
+        return
+    i = (a - lo) >> 2
+    f = mod.function(a)
+    if f:
+        print(f'  discovery: {"function start" if f[0] == a else f"inside {mod.name}+{f[0] - mod.base:#x} at +{a - f[0]:#x}"}'
+              f' (function {(f[1] - f[0]) // 4} instructions)')
+    if i > 0:
+        k = word_kind(int(w[i - 1]))
+        print(f'  instruction before it: {k}' + ('  -> it is a return address' if k == 'BL' or k.startswith('BLR') else ''))
+    print(f'  instruction at it: {word_kind(int(w[i]))}')
+    hits = ref_hits(mod, a)
     for k, s in hits:
         src = lo + s * 4
         g = mod.function(src)
@@ -385,6 +433,7 @@ def main():
         report(mod, addr, a.before, a.after)
         if a.refs:
             refs(mod, addr)
+            pieces(mod, addr)
         print()
     print('=' * 72)
 

@@ -22,6 +22,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: FDE-Korrektur greift hier nicht
+- Nach `lift.py`: main verwirft 12 Adressen, subsdk0 1, sdk 0; der Absturz bleibt identisch (gleiche Register). `main+0x2a1fbfc` ist also aus einem anderen Grund ein Anfang (BL-Ziel, Seed oder Sprung-Fixpunkt), nicht durch ein ADR aus derselben FDE.
+- `calls.py --refs` gibt jetzt zusätzlich für die FDE-Funktion jeden Funktionsanfang darin mit Grund aus (eh_frame, export, RELATIVE, BL/B/ADR/ADRP+ADD mit Quelle und ob die Quelle in derselben FDE liegt) und jeden `BR` darin mit Registerherkunft.
+
 ### 2026-11-02: Fang-Tutorial-Absturz: Ursache Sprungtabelle in zerschnittener Funktion, Korrektur
 - Zweiter Bericht: `main+0x2a1fc24` liegt **innerhalb** der FDE `main+0x2a1f54c..main+0x2a2016c`. Register beim Absturz: x10 = Ziel, x9 = `main+0x3c61c1e` (ungerade, also eine Byte-Tabelle in .rodata), x30 unverändert der Aufrufer der Funktion. Also kein virtueller Aufruf an dieser Stelle, sondern ein `BR x10` einer Clang-Sprungtabelle (Anker + Byte-Offset × 4) in der großen Funktion. Die Funktionsfindung hatte die Funktion bei `main+0x2a1fbfc` zerschnitten (vermutlich das ADR des Tabellen-Ankers, das die 16-Instruktionen/ADD-Basis-Regel nicht erkannte); der Fall hinter dem Schnitt war für den ersten Teil „außerhalb“ und wurde dynamisch angesprungen.
 - Korrektur `recomp/gen.py discover`: Eine FDE deckt genau eine Funktion ab. Mit ADR/ADRP+ADD erzeugte Adressen, die strikt innerhalb einer FDE liegen und von innerhalb derselben FDE genannt werden, sind keine Funktionsanfänge mehr. Seeds und BL-Ziele bleiben; die Sprung-Fixpunktschleife bleibt unverändert (sie fügt weiter Anfänge ein, wo ein Sprung einen echten Anfang kreuzt). `Module.eh_frame_ranges()` liest die FDE-Bereiche (pc_begin pcrel sdata4, mit Abgleich gegen die Tabelle). Neue Statistik `inside_fde_dropped` in der gen-Ausgabe und im Manifest.
