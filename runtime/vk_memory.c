@@ -1149,6 +1149,7 @@ static int mirror_verify;
 // vk_mem_mirror_begin.
 enum { DEMOTE_SUBS = 4 };
 static int mirror_demote = -1;
+static uint64_t demote_max;             // bytes: larger pools keep their mirror
 static PoolRec **demq;                    // replay
 static int ndemq, cdemq;
 static volatile int64_t m_demoted_n, m_demoted_bytes;
@@ -1551,7 +1552,11 @@ void vk_mem_mirror_late(void) {
         rt_log("mem: late mirror sync before each submit: %s", mirror_late ? "on (TOTK_MIRROR_LATE=0 turns it off)" : "off");
     }
     if (!mirror_late) return;
-    if (mirror_demote < 0) mirror_demote = rt_knob("MIRROR_DEMOTE", "1");
+    if (mirror_demote < 0) {
+        mirror_demote = rt_knob("MIRROR_DEMOTE", "1");
+        const char *m = cfg_get("TOTK_MIRROR_DEMOTE_MAX");
+        demote_max = (m && *m ? (uint64_t)strtoull(m, NULL, 10) : 64) << 20;
+    }
     uint64_t t0 = qpc();
     if (++late_ep == 0) late_ep = 0x80000000u;
     plat_mutex_lock_shared(&pool_lock);
@@ -1581,7 +1586,10 @@ void vk_mem_mirror_late(void) {
         // A pool the CPU keeps writing while submissions are recorded is likely written while the GPU runs them
         // too (TOTK_MEMORY=verify still found such pages after the late sync); only imported memory shows the GPU
         // those writes, as on the Switch. After DEMOTE_SUBS such submissions it gives up its mirror.
-        if (mirror_demote && late_pages != before && !r->demote && ++r->late_subs >= DEMOTE_SUBS) {
+        // Pools above TOTK_MIRROR_DEMOTE_MAX MiB (default 64) keep their mirror and rely on the late sync: Violet's
+        // 350 MiB pool giving up its mirror left 18 MiB mirrored and brought the frame drops of imported memory back.
+        if (mirror_demote && late_pages != before && !r->demote && hi - lo <= demote_max &&
+            ++r->late_subs >= DEMOTE_SUBS) {
             r->demote = 1;
             if (ndemq == cdemq) grow((void **)&demq, &cdemq, sizeof *demq);
             demq[ndemq++] = r;
