@@ -60,6 +60,10 @@ VALUES = [
     ('double 60.0', 64, f64(60.0)), ('double 33.333 ms', 64, f64(1000 / 30)), ('double 16.667 ms', 64, f64(1000 / 60)),
     ('int 33333 us', 32, 33333), ('int 33334 us', 32, 33334), ('int 16666 us', 32, 16666), ('int 16667 us', 32, 16667),
     ('int 33333333 ns', 32, 33333333), ('int 16666667 ns', 32, 16666667),
+    # Values a third-party frame-rate mod for Violet 3.0.1 writes or derives from the measured frame time (read for
+    # behaviour only, docs/progress.md 2026-11-02): to find the same spots in another game version.
+    ('int 33333334 ns', 32, 33333334), ('float 180.0 (0x43340000)', 32, f32(180.0)),
+    ('word 0x84e00000', 32, 0x84E00000), ('float 10.0', 32, f32(10.0)), ('float -15.0', 32, f32(-15.0)),
 ]
 
 
@@ -255,6 +259,8 @@ def main():
     ap.add_argument('--exefs', type=Path, default=EXEFS)
     ap.add_argument('--module', action='append', default=[], help='module to search (default: main)')
     ap.add_argument('--show', type=int, default=40, help='sites listed per value and kind (default 40)')
+    ap.add_argument('--only', action='append', default=[], metavar='TEXT',
+                    help='report only values whose name contains TEXT (repeatable), e.g. --only 33333334')
     ap.add_argument('--patch-file', type=Path, help='write a patch table with one switchable set per immediate site of '
                     'float 1/30, float 30.0 and 33333 us (for gen.py --patches; keep it under build/, it holds '
                     'instruction words)')
@@ -276,12 +282,16 @@ def main():
             print(f'module {name}: {len(names)} patch sets for {a.patch_file}')
         print(f'module {name}: {len(mod.starts)} functions')
         for vname, _, _ in VALUES:
+            if a.only and not any(t in vname for t in a.only):
+                continue
             sites = imm[vname]
             addrs, loads = lit[vname]
             print(f'  {vname}: {len(sites)} immediate builds, {len(addrs)} words in .rodata/.data, '
                   f'{len(loads)} loads of them')
-            for s, kind, _ in sites[:a.show]:
-                print(f'    {kind:10s} {mod.where(s)}')
+            for s, kind, i in sites[:a.show]:
+                x = int(mod.m.words[i])
+                reg = f's{x & 31}' if kind == 'fmov imm' else f'{"x" if x >> 31 else "w"}{x & 31}'
+                print(f'    {kind:10s} {reg:4s} {mod.where(s)}')
             if len(sites) > a.show:
                 print(f'    ... {len(sites) - a.show} more immediate builds')
             for s, kind, t in loads[:a.show]:
