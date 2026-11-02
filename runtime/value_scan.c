@@ -333,11 +333,12 @@ static void bisect_go(void) {
 }
 
 // TOTK_PATCH_BISECT=1: the candidates are the frame-step patch sets of tools/consts.py --patch-file (names fs_, fr_,
-// us_ + module offset), switched on and off instead of poked. Same keys, from present 900 on.
+// us_, fh_, fx_ + module offset, each halving one constant), switched on and off instead of poked. Same keys, from present 900 on.
 static void patch_bisect_start(void) {
     for (int i = 0; i < rt_patch_count(); i++) {
         const char *n = rt_patch_name(i);
-        if (n && (!strncmp(n, "fs_", 3) || !strncmp(n, "fr_", 3) || !strncmp(n, "us_", 3)))
+        if (n && (!strncmp(n, "fs_", 3) || !strncmp(n, "fr_", 3) || !strncmp(n, "us_", 3) || !strncmp(n, "fh_", 3) ||
+                  !strncmp(n, "fx_", 3)))
             cand_add((Cand){.set = i});
     }
     rt_log("value scan: %d frame-step patch sets of %d are candidates (TOTK_PATCH_BISECT)", ncands, rt_patch_count());

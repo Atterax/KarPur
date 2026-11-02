@@ -17,8 +17,8 @@ code; the report never contains instruction or data bytes, only addresses, count
   .venv\\Scripts\\python tools\\consts.py --module main --module subsdk0 --show 60
 
 --patch-file FILE writes a patch table (recomp/patches.py) with one set per immediate site of float 1/30 (to 1/60),
-float 30.0 built by MOVZ/MOVK (to 60.0; FMOV #30.0 cannot hold 60.0) and 33333/33334 us (to 16667), each off by
-default; tools/lift.py --patches FILE --gen-only lifts with it, and TOTK_PATCH_BISECT=1 halves the sets by key in the
+float 30.0 built by MOVZ/MOVK (to 60.0; FMOV #30.0 cannot hold 60.0), 33333/33334 us (to 16667), float 1/60 (to
+1/120) and float 60.0 (to 120.0), each off by default; tools/lift.py --patches FILE --gen-only lifts with it, and TOTK_PATCH_BISECT=1 halves the sets by key in the
 running game (runtime/value_scan.c).
 
   .venv\\Scripts\\python tools\\consts.py --patch-file build\\fps_candidates.txt
@@ -212,8 +212,12 @@ def literals(mod):
 
 
 # The 60 fps counterpart of each value a patch candidate replaces: (new top half-word or FMOV value, set name prefix).
+# Every patch halves a step: 1/30 -> 1/60 and 30 -> 60 (a step of one 30 fps frame), and also 1/60 -> 1/120 and
+# 60 -> 120 (a step built as vsync count x 1/60 or count / 60, where the game keeps its own count of 2). The lower
+# half-words stay (1/30, 1/60 and 1/120 all end in 0x8889; 30, 60 and 120 in 0).
 PATCH_TO = {'float 1/30': (f32(1 / 60), 'fs'), 'float 30.0': (f32(60.0), 'fr'),
-            'int 33333 us': (16667, 'us'), 'int 33334 us': (16667, 'us')}
+            'int 33333 us': (16667, 'us'), 'int 33334 us': (16667, 'us'),
+            'float 1/60': (f32(1 / 120), 'fh'), 'float 60.0': (f32(120.0), 'fx')}
 
 
 def patch_lines(mod, imm):
