@@ -1661,9 +1661,25 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     float lim = c->props.limits.maxSamplerLodBias;
     si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias));
-    if (d->aniso > 1) {
+    // TOTK_ANISO=n raises the anisotropic filtering of mipmapped linear samplers without a depth compare to at least n
+    // (2..16; 0, the default, keeps the game's): textures seen at a slant (ground, paths, roofs and trees in the
+    // distance) stay sharp instead of taking a blurry low mip level, as the emulators' "anisotropic filtering" option.
+    static int force = -1;
+    if (force < 0) {
+        const char *e = cfg_get("TOTK_ANISO");
+        force = e && *e ? atoi(e) : 0;
+        force = force < 2 ? 0 : force > 16 ? 16 : force;
+        if (force) rt_log("vk: anisotropic filtering raised to at least %dx (TOTK_ANISO)", force);
+    }
+    float aniso = d->aniso;
+    if (force && aniso < force && si.minFilter == VK_FILTER_LINEAR && si.mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR &&
+        !d->cmp_mode && !d->reduction)
+        aniso = (float)force;
+    static int logged;
+    if (logged < 1 && d->aniso > 1) logged++, rt_log("vk: the game asks for %gx anisotropic filtering on a sampler", d->aniso);
+    if (aniso > 1) {
         si.anisotropyEnable = VK_TRUE;
-        si.maxAnisotropy = fminf(d->aniso, c->props.limits.maxSamplerAnisotropy);
+        si.maxAnisotropy = fminf(aniso, c->props.limits.maxSamplerAnisotropy);
     }
     if (d->cmp_mode) {
         si.compareEnable = VK_TRUE;
