@@ -165,6 +165,7 @@ typedef struct {
     uint64_t barriers;   // full barriers recorded (pass starts, clears, copies, dispatches: each waits for all before)
     uint64_t light_barriers, deferred, hz_restarts;   // barrier tracking: attachment-only barriers, passes and clears
                                                       // without a full barrier, passes restarted for a sampled write
+    uint64_t game_barriers_tracked;   // game barriers that recorded nothing (vk_exec.c game_barrier)
     uint64_t full_why[VK_HZ_WHY_N];   // why a pass or clear took the full barrier (VK_HZ_WHY_*)
     uint64_t other_src[VK_HZ_N];      // for VK_HZ_WHY_OTHER: what made the untracked writes (VK_HZ_*)
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of

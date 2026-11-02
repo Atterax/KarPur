@@ -79,12 +79,13 @@ static void frame_summary(uint64_t frame) {
            f->fb_barriers / d, f->fb_restarts / d);
     rt_log("vk_exec:   full barrier before a pass or clear because of: untracked writes %.1f (ops %.1f, game barriers "
            "%.1f, storage writes of draws %.1f, transform feedback %.1f, after a pass %.1f, buffer start %.1f, list full "
-           "%.1f, restarts %.1f), images not named %.1f, feedback layouts %.1f, first in buffer %.1f, sampled before %.1f",
+           "%.1f, restarts %.1f), images not named %.1f, feedback layouts %.1f, first in buffer %.1f, sampled before %.1f; "
+           "game barriers left to the tracking %.1f",
            f->full_why[VK_HZ_WHY_OTHER] / d, f->other_src[VK_HZ_OP] / d, f->other_src[VK_HZ_GAME] / d,
            f->other_src[VK_HZ_DRAW_WRITES] / d, f->other_src[VK_HZ_XFB] / d, f->other_src[VK_HZ_AFTER_PASS] / d,
            f->other_src[VK_HZ_CB_START] / d, f->other_src[VK_HZ_OVERFLOW] / d, f->other_src[VK_HZ_RESTART] / d,
            f->full_why[VK_HZ_WHY_UNKNOWN] / d, f->full_why[VK_HZ_WHY_FBL] / d, f->full_why[VK_HZ_WHY_FIRST] / d,
-           f->full_why[VK_HZ_WHY_SAMPLED] / d);
+           f->full_why[VK_HZ_WHY_SAMPLED] / d, f->game_barriers_tracked / d);
     memset(f, 0, sizeof *f);
     since = frame;
 }
@@ -654,6 +655,28 @@ void vk_exec_barrier(VkExec *ex) {
     VK_HZ_SET(ex, VK_HZ_OP);
 }
 
+// The game's own barrier (nvnCommandBufferBarrier). With barrier tracking (TOTK_GAME_BARRIER, default track) it records
+// nothing while only tracked writes happened since the last full barrier: the hazards it orders (attachments sampled
+// later, attachment after attachment, clears) are what the tracking sees at the next pass, clear and draw. After
+// untracked writes (storage writes of draws, transform feedback, copies, dispatches) it is the full barrier as before.
+// TOTK_GAME_BARRIER=full keeps the full barrier at every game barrier.
+static void game_barrier(VkExec *ex) {
+    static int track = -1;
+    if (track < 0) {
+        const char *e = cfg_get("TOTK_GAME_BARRIER");
+        track = !(e && !strcmp(e, "full"));
+        if (vk_exec_track_on())
+            rt_log("vk_exec: game barriers %s", track ? "left to the barrier tracking (TOTK_GAME_BARRIER=full: a full "
+                                                        "barrier each)" : "full (TOTK_GAME_BARRIER=full)");
+    }
+    if (track && vk_exec_track_on() && !ex->hz_other) {   // untracked writes since the last full barrier: as before
+        vk_exec_frame.game_barriers_tracked++;
+        return;
+    }
+    vk_exec_barrier(ex);
+    ex->hz_other = VK_HZ_GAME;
+}
+
 // Why a pass or clear needs the full barrier (VK_HZ_WHY_*), -1: it does not; counted per frame.
 static int full_why(const VkExec *ex, int fbl) {
     int w = !vk_exec_track_on() ? VK_HZ_WHY_OFF : ex->hz_other ? VK_HZ_WHY_OTHER : ex->hz_rall ? VK_HZ_WHY_UNKNOWN
@@ -1032,7 +1055,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
         case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool; break;
-        case OP_BARRIER: vk_exec_barrier(ex), ex->hz_other = VK_HZ_GAME; break;
+        case OP_BARRIER: game_barrier(ex); break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND)
                 vk_exec_frame.draws_seen++, split_draws++, vk_prog_select(ex, 0);
