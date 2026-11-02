@@ -9,14 +9,16 @@ Lifted code cannot be byte-patched when the game runs, so a patch is applied whe
   spin <module> <head> <back-edge> [<back-edge> ...]
 
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
-the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
-encoded for the site's address. The patch page is the first 4 KiB page after main's image (layout.py leaves the rest
+the generator), each <replacement> an instruction word (hex), `@page:x<n>`, which is `adrp x<n>, <patch page>`
+encoded for the site's address, or `@pagebl:<hex offset>`, which is `bl <patch page + offset>` (a host function the
+runtime registers there). The patch page is the first 4 KiB page after main's image (layout.py leaves the rest
 of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents. Words in use, by byte offset:
 +0..15 the frame-rate step (runtime/frame_rate.c), +16..55 the output, swapchain and scene sizes
 (runtime/resolution.c res_init), +56..59 the camera's aspect ratio (runtime/resolution.c res_init, set aspect), +60..63
 the field-of-view factor (runtime/resolution.c res_fov_live, set fov), +64..71 Violet's frame time in ns
 (runtime/frame_dt.c, set fps_dt from tools/fps_patches.py), +72..75 Violet's LOD bias float (runtime/lod.c, set
-lod_bias). A new
+lod_bias); host function entries: +0xfd0 Violet's Oodle decoder wrapper (runtime/data_watch.c, set data_watch),
++0xfe0 and +0xff0 TotK's zstd decoder (runtime/ov_zstd.c). A new
 set takes words outside these.
 
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
@@ -47,6 +49,20 @@ def adrp(pc, target, rd):
     return 0x90000000 | (imm & 3) << 29 | (imm >> 2) << 5 | rd
 
 
+def bl(pc, target):
+    imm = (target - pc) >> 2
+    if not -(1 << 25) <= imm < (1 << 25):
+        raise PatchError(f'{pc:#x}: {target:#x} out of BL range')
+    return 0x94000000 | (imm & 0x3FFFFFF)
+
+
+def resolve(a, page, w):
+    """Replacement word w for the site at a: a plain word, ('page', reg) or ('pagebl', offset)."""
+    if not isinstance(w, tuple):
+        return w
+    return adrp(a, page, w[1]) if w[0] == 'page' else bl(a, page + w[1])
+
+
 class Table:
     """sets: [(name, env, default)]; sites: {module: {offset: (set index, [word | ('page', reg)], original)}}; page."""
 
@@ -65,7 +81,7 @@ class Table:
         out = {}
         for off, (k, repl, _) in self.sites.get(name, {}).items():
             a = base + off
-            out[a] = (k, [adrp(a, self.page, w[1]) if isinstance(w, tuple) else w for w in repl])
+            out[a] = (k, [resolve(a, self.page, w) for w in repl])
         return out
 
 
@@ -90,9 +106,13 @@ def load(path, mods):
                 raise PatchError(f'{where}: module {f[2]} not in the layout')
             off, orig = int(f[3], 16), int(f[4], 16)
             repl = []
-            for w in f[5:]:
+            for j, w in enumerate(f[5:], 5):
                 if w.startswith('@page:x'):
                     repl.append(('page', int(w[7:])))
+                elif w.startswith('@pagebl:'):
+                    if j != len(f) - 1:
+                        raise PatchError(f'{where}: @pagebl must be the last replacement word')
+                    repl.append(('pagebl', int(w[8:], 16)))
                 else:
                     repl.append(int(w, 16))
             mod = sites.setdefault(f[2], {})

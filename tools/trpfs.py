@@ -13,6 +13,12 @@ from one big archive; files in it are known only by a 64-bit FNV-1a hash of thei
 It prints names, counts and sizes only, never file contents, and writes the full report to
 game/report/trpfs-report.txt.
 
+--watch REGEX: for the packs whose name matches, writes the stored (not packed) files to game/dump and lists the Oodle
+ones in game/data_watch.txt; a run with TOTK_DATA_WATCH=1 (runtime/data_watch.c) dumps those when the game unpacks
+them. Everything stays under game/ on the player's PC.
+--report: field names and numbers of the dumped files, read with a schema (.bfbs) from the same pack, to
+game/report/data-dump-report.txt.
+
 Formats (Game Freak "Trinity" engine, all FlatBuffers; field order as community tools describe it):
   data.trpfd  root { file_hashes: [u64], pack_names: [string], file_info: [{pack_index: u64}], pack_info:
               [{size: u64, file_count: u64}] }
@@ -23,6 +29,8 @@ Formats (Game Freak "Trinity" engine, all FlatBuffers; field order as community 
 
     .venv\\Scripts\\python tools\\trpfs.py
     .venv\\Scripts\\python tools\\trpfs.py --keywords lod,dist,cull,far
+    .venv\\Scripts\\python tools\\trpfs.py --watch "dither_fade|generation_range"
+    .venv\\Scripts\\python tools\\trpfs.py --report
 
 Standard library only.
 """
@@ -99,6 +107,14 @@ class Table:
             out.append(self.buf[s + 4:s + 4 + ln].decode('utf-8', 'replace'))
         return out
 
+    def strings_at(self, i):
+        """String field i."""
+        if not self.has(i):
+            return ''
+        at = self.pos + self.slots[i]
+        s = at + struct.unpack_from('<I', self.buf, at)[0]
+        return self.buf[s + 4:s + 4 + struct.unpack_from('<I', self.buf, s)[0]].decode('utf-8', 'replace')
+
     def bytes_at(self, i, n):
         """The first n bytes of byte vector field i (only for a codec check, never printed)."""
         start, ln = self._vec(i)
@@ -153,6 +169,183 @@ def code_strings(exefs):
     return names
 
 
+DUMP = ROOT / 'game' / 'dump'
+WATCH_LIST = ROOT / 'game' / 'data_watch.txt'
+HEAD = 4096   # packed bytes the runtime's fingerprint covers (runtime/data_watch.c)
+
+
+def watch(regex, pack_names, pack_info, toc, read, fs_off, offset_of):
+    """Files of the matching packs: stored ones are written to game/dump now, Oodle ones are listed for the runtime."""
+    pat = re.compile(regex, re.I)
+    packs = [i for i, n in enumerate(pack_names) if pat.search(n)]
+    print(f'packs matching {regex}: {len(packs)}')
+    DUMP.mkdir(parents=True, exist_ok=True)
+    lines, stored, listed = ['# packed unpacked fnv1a64-of-first-4KiB name (tools/trpfs.py --watch; runtime/data_watch.c)'], 0, 0
+    for i in packs[:2000]:
+        t = toc(i)
+        if not t:
+            print(f'  pack {i}: too big, left out')
+            continue
+        stem = pack_names[i].removeprefix('arc/').removesuffix('.trpak')[:200]
+        for h, e in t.items():
+            start, packed = e._vec(len(e.slots) - 1)
+            name = f'{stem}__{h:016x}'
+            if codec(e) == 'none':
+                (DUMP / name).write_bytes(e.buf[start:start + packed])
+                stored += 1
+            else:
+                head = e.buf[start:start + min(packed, HEAD)]
+                lines.append(f'{packed} {e.scalar(3, "Q")} {fnv1a64_bytes(head):016x} {name}')
+                listed += 1
+        print(f'  pack {i:6}  {len(t):4} files  {pack_names[i]}')
+    WATCH_LIST.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    print(f'{stored} stored files written to {DUMP}; {listed} Oodle files listed in {WATCH_LIST} for the runtime')
+
+
+def fnv1a64_bytes(data):
+    h = 0xCBF29CE484222645
+    for b in data:
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+# FlatBuffers reflection (reflection.fbs) base types
+SCALAR = {2: '?', 3: 'b', 4: 'B', 5: 'h', 6: 'H', 7: 'i', 8: 'I', 9: 'q', 10: 'Q', 11: 'f', 12: 'd', 1: 'B'}
+STRING, VECTOR, OBJ, UNION, ARRAY = 13, 14, 15, 16, 17
+
+
+class Schema:
+    """A .bfbs file: objects with their fields (name, base type, element type, object index, vtable slot or struct
+    offset), and the root table."""
+
+    def __init__(self, buf):
+        root = Table.root(buf)
+        self.objects = []
+        for o in root.tables(0):
+            fields = []
+            for f in o.tables(1):
+                t = Table(f.buf, f.pos + f.slots[1] + struct.unpack_from('<I', f.buf, f.pos + f.slots[1])[0])
+                fields.append(dict(name=f.strings_at(0), base=t.scalar(0, 'b'), elem=t.scalar(1, 'b'),
+                                   index=t.scalar(2, 'i', -1), offset=f.scalar(3, 'H'),
+                                   fixed=t.scalar(3, 'H')))
+            self.objects.append(dict(name=o.strings_at(0), fields=sorted(fields, key=lambda x: x['offset']),
+                                     struct=bool(o.scalar(2, '?')), size=o.scalar(4, 'i')))
+        r = root.slots[4] if root.has(4) else 0
+        at = root.pos + r
+        self.root = None
+        if r:
+            pos = at + struct.unpack_from('<I', buf, at)[0]
+            name = Table(buf, pos).strings_at(0)
+            self.root = next((k for k, o in enumerate(self.objects) if o['name'] == name), None)
+
+
+def fmt(v):
+    return f'{v:.6g}' if isinstance(v, float) else str(v)
+
+
+def show_table(sc, oi, buf, pos, depth, rows, say):
+    """Fields of a table (pos) or struct (pos = its first byte) of object oi."""
+    o = sc.objects[oi]
+    pad = '  ' * depth
+    t = None if o['struct'] else Table(buf, pos)
+    for f in o['fields']:
+        b, name = f['base'], f['name']
+        if o['struct']:
+            at = pos + f['offset']
+        else:
+            slot = (f['offset'] - 4) // 2
+            if not t.has(slot):
+                continue   # default value
+            at = t.pos + t.slots[slot]
+        if b in SCALAR:
+            say(f'{pad}{name} = {fmt(struct.unpack_from("<" + SCALAR[b], buf, at)[0])}')
+        elif b == STRING:
+            s = at + struct.unpack_from('<I', buf, at)[0]
+            n = struct.unpack_from('<I', buf, s)[0]
+            say(f'{pad}{name} = "{buf[s + 4:s + 4 + min(n, 60)].decode("utf-8", "replace")}"')
+        elif b == OBJ:
+            sub = sc.objects[f['index']]
+            say(f'{pad}{name} ({sub["name"]}):')
+            show_table(sc, f['index'], buf, at if sub['struct'] else at + struct.unpack_from('<I', buf, at)[0],
+                       depth + 1, rows, say)
+        elif b == VECTOR:
+            v = at + struct.unpack_from('<I', buf, at)[0]
+            n = struct.unpack_from('<I', buf, v)[0]
+            e = f['elem']
+            if e in SCALAR:
+                fm = SCALAR[e]
+                vals = struct.unpack_from(f'<{n}{fm}', buf, v + 4)
+                more = f' ... ({n})' if n > 8 * rows else ''
+                say(f'{pad}{name} [{n}] = ' + ', '.join(fmt(x) for x in vals[:8 * rows]) + more)
+            elif e == OBJ:
+                sub = sc.objects[f['index']]
+                say(f'{pad}{name} [{n} x {sub["name"]}]')
+                for k in range(min(n, rows)):
+                    say(f'{pad}  [{k}]')
+                    if sub['struct']:
+                        show_table(sc, f['index'], buf, v + 4 + k * sub['size'], depth + 2, rows, say)
+                    else:
+                        el = v + 4 + 4 * k
+                        show_table(sc, f['index'], buf, el + struct.unpack_from('<I', buf, el)[0], depth + 2, rows, say)
+            else:
+                say(f'{pad}{name} [{n}] (element type {e})')
+        else:
+            say(f'{pad}{name}: type {b}')
+
+
+def dump_report(rows):
+    """Field names and numbers of the dumped files, read with a schema (.bfbs) of the same pack."""
+    if not DUMP.is_dir():
+        sys.exit(f'error: {DUMP} is empty: run tools\\trpfs.py --watch and then the game with DATA_WATCH=1 first')
+    files = sorted(p for p in DUMP.iterdir() if p.is_file())
+    schemas, data = {}, []
+    for p in files:
+        buf = p.read_bytes()
+        if buf[4:8] == b'BFBS':
+            try:
+                schemas.setdefault(p.name.rsplit('__', 1)[0], []).append(Schema(buf))
+            except Exception as e:  # noqa: BLE001
+                print(f'{p.name}: schema not read ({e})')
+        else:
+            data.append((p, buf))
+    out = ['=' * 25 + ' KarPur data dump report ' + '=' * 22,
+           f'{len(files)} files in {DUMP}: {sum(len(v) for v in schemas.values())} schemas, {len(data)} data files']
+
+    def say(line):
+        out.append(line)
+
+    for p, buf in data:
+        stem = p.name.rsplit('__', 1)[0]
+        say('')
+        say(f'{p.name} ({len(buf)} bytes)')
+        done = False
+        for sc in schemas.get(stem, []):
+            if sc.root is None:
+                continue
+            try:
+                lines = []
+                show_table(sc, sc.root, buf, struct.unpack_from('<I', buf, 0)[0], 1, rows, lines.append)
+                say(f'  schema root {sc.objects[sc.root]["name"]}:')
+                out.extend(lines)
+                done = True
+                break
+            except Exception as e:  # noqa: BLE001
+                say(f'  schema {sc.objects[sc.root]["name"]} does not fit ({type(e).__name__})')
+        if not done:
+            try:
+                t = Table.root(buf)
+                say(f'  no schema; root table with {len(t.slots)} fields')
+            except Exception:  # noqa: BLE001
+                say('  no schema; not a FlatBuffer')
+    out.append('=' * 72)
+    text = '\n'.join(out) + '\n'
+    print(text)
+    report = ROOT / 'game' / 'report' / 'data-dump-report.txt'
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(text, encoding='utf-8')
+    print(f'full report: {report}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--romfs', type=Path, default=ROMFS)
@@ -161,8 +354,14 @@ def main():
     ap.add_argument('--names', type=Path, help='extra candidate paths, one per line (e.g. from a modding wiki)')
     ap.add_argument('--grep', help='list the packs whose name matches this regular expression instead of keywords')
     ap.add_argument('--all-types', action='store_true', help='keyword list includes models, textures, animations, UI')
+    ap.add_argument('--watch', metavar='REGEX', help='packs whose name matches: unpacked files to game/dump, Oodle '
+                    'ones to the list game/data_watch.txt for the runtime (TOTK_DATA_WATCH=1)')
+    ap.add_argument('--report', action='store_true', help='field names and numbers of the files in game/dump')
+    ap.add_argument('--rows', type=int, default=4, help='--report: elements shown per vector (default 4)')
     ap.add_argument('--max-pack-mb', type=int, default=256, help='largest pack whose table of contents is read')
     a = ap.parse_args()
+    if a.report:
+        return dump_report(a.rows)
     index_path = a.romfs / 'index.json'
     image_path = a.romfs / 'romfs.bin'
     if not index_path.is_file() or not image_path.is_file():
@@ -229,6 +428,9 @@ def main():
                 pk = Table.root(read(fs_off + off, size))
                 toc_cache[pi] = dict(zip(pk.u64s(0), pk.tables(1)))
         return toc_cache[pi]
+
+    if a.watch:
+        return watch(a.watch, pack_names, pack_info, toc, read, fs_off, offset_of)
 
     # 3. names from the code
     hashes = {h: i for i, h in enumerate(file_hashes)}

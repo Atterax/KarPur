@@ -55,6 +55,7 @@ void rt_patches_init(void) {
     rt_log("patches: %s (page %#llx)", list, RT_PATCH_PAGE);
     frame_dt_init();   // frame_dt.c: the frame time word of set fps_dt before the game first reads it
     lod_init();        // lod.c: the LOD bias of set lod_bias
+    data_watch_init(); // data_watch.c: the host entry of set data_watch (before hostfn_seal)
 #endif
 }
 
