@@ -173,6 +173,7 @@ typedef struct {
 void ldr_load(const char *exefs_dir);                      // load, relocate (overrides applied), seal; once
 int ldr_count(void);
 const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
+void lod_init(void);                                       // KarPur lod.c: from rt_patches_init
 void frame_dt_init(void);                                  // KarPur frame_dt.c: from rt_patches_init
 void frame_dt_present(void);                               // KarPur frame_dt.c: before each present
 void value_scan_present(uint64_t frame);                   // KarPur value_scan.c: before each present

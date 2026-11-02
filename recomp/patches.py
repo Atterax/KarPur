@@ -15,7 +15,8 @@ of the 2 MiB-aligned module slot free); the runtime commits it and owns its cont
 +0..15 the frame-rate step (runtime/frame_rate.c), +16..55 the output, swapchain and scene sizes
 (runtime/resolution.c res_init), +56..59 the camera's aspect ratio (runtime/resolution.c res_init, set aspect), +60..63
 the field-of-view factor (runtime/resolution.c res_fov_live, set fov), +64..71 Violet's frame time in ns
-(runtime/frame_dt.c, set fps_dt from tools/fps_patches.py). A new
+(runtime/frame_dt.c, set fps_dt from tools/fps_patches.py), +72..75 Violet's LOD bias float (runtime/lod.c, set
+lod_bias). A new
 set takes words outside these.
 
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
