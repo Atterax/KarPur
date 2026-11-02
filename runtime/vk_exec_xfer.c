@@ -377,7 +377,7 @@ static void oq_segment(VkExec *ex, uint64_t addr, int reset, VkMemSpan *m) {
     }
     if (m && oq_fill() && m->offset % 4 == 0) {
         vk_exec_barrier(ex);
-        VK_MEM_PICK(*m);
+        VK_MEM_PICK_N(*m, 16);
         vkCmdFillBuffer(ex->cb, m->buffer, m->offset, 16, 0x00010001u);
         ex->recorded++;
         vk_mem_gpu_wrote(m, 16);
@@ -386,7 +386,7 @@ static void oq_segment(VkExec *ex, uint64_t addr, int reset, VkMemSpan *m) {
     if (m && oq_gpu()) {
         if (oq_nseg == 1 && !oq_keep && !oq_lost && m->offset % 8 == 0) {
             vk_exec_barrier(ex);
-            VK_MEM_PICK(*m);   // as the other copies: the mirror only when the pool already has one
+            VK_MEM_PICK_N(*m, 8);   // as the other copies: the mirror only when the pool already has one
             vkCmdCopyQueryPoolResults(ex->cb, oq_pool, oq_seg[0], 1, m->buffer, m->offset, 8,
                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
             ex->recorded++;
@@ -593,7 +593,7 @@ static int buffer_side(const VkExec *ex, const Sub *s, uint64_t addr, uint64_t *
                   (unsigned long long)addr, (unsigned long long)*size);
         return 0;
     }
-    VK_MEM_PICK(m);
+    VK_MEM_PICK_N(m, *size);
     *span = m;
     *c = (VkBufferImageCopy){.bufferOffset = m.offset, .bufferRowLength = (uint32_t)(row / (uint64_t)s->bpb) * (uint32_t)s->bw,
                              .bufferImageHeight = hb * (uint32_t)s->bh, .imageSubresource = sub_layers(s),
@@ -677,8 +677,8 @@ static void copy_b2b(VkExec *ex, const p_copy_b2b *p) {
         }
         uint64_t n = left < s.avail ? left : s.avail;
         if (n > d.avail) n = d.avail;
-        VK_MEM_PICK(s);
-        VK_MEM_PICK(d);
+        VK_MEM_PICK_N(s, n);
+        VK_MEM_PICK_N(d, n);
         if (s.buffer == d.buffer && s.offset < d.offset + n && d.offset < s.offset + n) {
             warn_once(W_OVERLAP, "buffer copy %#llx -> %#llx overlaps within one buffer: skipped",
                       (unsigned long long)p->src, (unsigned long long)p->dst);
@@ -718,7 +718,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
         uint64_t n = left < d.avail ? left : d.avail & ~3ull;
         if (!n) break;
         if (!started) vk_exec_pass_end(ex), vk_exec_barrier(ex), started = 1;
-        VK_MEM_PICK(d);
+        VK_MEM_PICK_N(d, n);
         vkCmdFillBuffer(ex->cb, d.buffer, d.offset, n, p->value);
         vk_mem_gpu_wrote(&d, n);
         ex->recorded++;

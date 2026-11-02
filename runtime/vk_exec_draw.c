@@ -832,7 +832,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (!n) return 0;
     if (use != VK_MUSE_UBO && vk_exec_oq_page_hit(addr, n)) oq_bind[twin_dispatch ? 0 : 2]++;   // UBOs: ubo_info
     if (sp.offset % align == 0) {
-        VK_MEM_USE(sp);
+        VK_MEM_USE_N(sp, n);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
         if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
@@ -1995,7 +1995,7 @@ static void bind_vertex_buffers(VkExec *ex) {
         }
         VkMemSpan sp;
         if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
-        VK_MEM_USE(sp);
+        VK_MEM_USE_N(sp, r->size && r->size < sp.avail ? r->size : sp.avail);
         // TOTK_VB_WHOLE=1 (KarPur A/B test): vertex buffers bound up to the end of their memory instead of the size the
         // game gave; robust vertex fetch reads zeros past the binding where Maxwell reads on.
         static int vb_whole = -1;
@@ -2988,7 +2988,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     VkBuffer b;
     VkDeviceSize o;
     memcpy(scratch(ex, u->size, &b, &o), u->data, u->size);
-    VK_MEM_PICK(sp);
+    VK_MEM_PICK_N(sp, u->size);
     VkBufferCopy cp = {o, sp.offset, u->size};
     vkCmdCopyBuffer(ex->cb, b, sp.buffer, 1, &cp);
     vk_mem_gpu_wrote(&sp, u->size);

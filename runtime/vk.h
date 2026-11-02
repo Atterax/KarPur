@@ -186,6 +186,12 @@ void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its l
 extern int vk_mirror_on;
 void vk_mem_use(VkMemSpan *sp);
 void vk_mem_pick(VkMemSpan *sp);
+// KarPur: the same with the binding's size in bytes (0: unknown), so a binding that touches a hot chunk of a mirrored
+// pool (vk_memory.c) gets the imported buffer.
+void vk_mem_use_n(VkMemSpan *sp, VkDeviceSize n);
+void vk_mem_pick_n(VkMemSpan *sp, VkDeviceSize n);
+#define VK_MEM_USE_N(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_use_n(&(sp), (n)); } while (0)
+#define VK_MEM_PICK_N(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_pick_n(&(sp), (n)); } while (0)
 #define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
