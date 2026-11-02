@@ -11,9 +11,9 @@
 // temporary). Reports addresses only, never memory contents.
 //
 // TOTK_POKE_SCAN=KIND:LO-HI[,KIND:LO-HI...] (needs TOTK_VALUE_SCAN=1): from the first scan on, the hits LO..HI (scan
-// order, 0-based) of KIND get the 60 fps value: f32 (float 1/30) and d64 (double 1/30) get 1/60, f30 (float 30.0)
-// gets 60.0. A thread writes them every millisecond, so a step the game recomputes each frame is mostly overwritten
-// before it is read. With TOTK_PRESENT_INTERVAL=1: normal game speed means the step is among those hits (then halve).
+// order, 0-based) of KIND are candidates for a bisection by key (see below): f32 (float 1/30) and d64 (double 1/30)
+// get 1/60, f30 (float 30.0) gets 60.0. A thread writes them every millisecond, so a step the game recomputes each
+// frame is mostly overwritten before it is read. Run it with TOTK_PRESENT_INTERVAL=1 (the game then runs too fast).
 //
 // TOTK_POKE=ADDR=VALUE[,ADDR=VALUE...]: before each present the 32-bit word at ADDR gets VALUE. ADDR is main+0x...,
 // subsdk0+0x... or a 0x... guest address; VALUE is f:<float>, d:<double> (64-bit) or i:<integer>. Writes only to pages
@@ -24,6 +24,8 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "input_map.h"
+#include "input_wsys.h"
 #include "platform/platform.h"
 
 enum { KIND_F32_30TH, KIND_F32_30, KIND_F64_30TH, KIND_N };
@@ -32,7 +34,6 @@ static const uint32_t f32_30th = 0x3D088889u, f32_30 = 0x41F00000u;
 static const uint64_t f64_30th = 0x3FA1111111111111ull;
 
 enum { REG_MODULE, REG_HEAP, REG_ALIAS, REG_N };
-static const char *const reg_name[REG_N] = {"module data", "heap", "mapped memory"};
 
 #define SHOW 24            // hits logged per kind
 static uint64_t *hits[KIND_N];   // every hit of the first scan, in scan order
@@ -184,11 +185,23 @@ static void poke_all(void) {
     }
 }
 
-// ---- poke of scan hits (TOTK_POKE_SCAN)
+// ---- poke of scan hits with a bisection by key (TOTK_POKE_SCAN)
+// The candidates are the hits that TOTK_POKE_SCAN selects. The thread sets the first half of the current candidates
+// to the 60 fps value and keeps the rest at 1/30 (30.0); the player says what they see: F6 = the game now runs at
+// normal speed (the step is in the poked half), F7 = still twice as fast (it is in the other half). Each answer halves
+// the candidates, so a few hundred hits take about ten presses, all in one run (the scan order differs between runs).
+// Only words that still hold the 30 fps value (or our 60 fps value) are written: memory that moved on to other data
+// is left alone, which keeps the poke from corrupting the game (an earlier version crashed on reused heap words).
 typedef struct { int kind, lo, hi; } PokeRange;
 static PokeRange pranges[8];
 static int npranges;
-static volatile int poke_scan_live;
+
+typedef struct { uint64_t addr; int kind; int ours; } Cand;
+static Cand *cands;
+static int ncands, ccands;
+static volatile int blo, bhi;   // current candidates [blo, bhi); the poked half is [blo, bmid)
+
+static int bmid(void) { return bhi - blo > 1 ? blo + (bhi - blo) / 2 : bhi; }
 
 static void poke_scan_parse(void) {
     const char *e = cfg_get("TOTK_POKE_SCAN");
@@ -205,39 +218,72 @@ static void poke_scan_parse(void) {
     }
 }
 
-static void poke_scan_once(void) {
-    const float f60th = 1.0f / 60.0f, f60 = 60.0f;
-    const double d60th = 1.0 / 60.0;
-    for (int r = 0; r < npranges; r++) {
-        int k = pranges[r].kind;
-        for (int i = pranges[r].lo; i <= pranges[r].hi && i < nhits[k]; i++) {
-            void *a = (void *)(uintptr_t)hits[k][i];
-            if (k == KIND_F32_30TH) memcpy(a, &f60th, 4);
-            else if (k == KIND_F32_30) memcpy(a, &f60, 4);
-            else memcpy(a, &d60th, 8);
-        }
+// Writes the value of kind k for 30 fps (fast = 0) or 60 fps (fast = 1) when the word holds the other one.
+static void poke_one(Cand *c, int fast) {
+    static const uint32_t f32_60th = 0x3C888889u, f32_60 = 0x42700000u;
+    static const uint64_t f64_60th = 0x3F91111111111111ull;
+    if (!plat_mem_readable(c->addr, 8)) return;
+    volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)c->addr;
+    if (c->kind == KIND_F64_30TH) {
+        volatile uint64_t *d = (volatile uint64_t *)(uintptr_t)c->addr;
+        uint64_t v = *d, from = fast ? f64_30th : f64_60th, to = fast ? f64_60th : f64_30th;
+        if (v == from && (fast || c->ours)) { *d = to; c->ours = 1; }
+        return;
     }
+    uint32_t a30 = c->kind == KIND_F32_30TH ? f32_30th : f32_30, a60 = c->kind == KIND_F32_30TH ? f32_60th : f32_60;
+    uint32_t v = *w;
+    if (fast && v == a30) { *w = a60; c->ours = 1; }
+    else if (!fast && c->ours && v == a60) *w = a30;
+}
+
+static void bisect_log(const char *why) {
+    int lo = blo, hi = bhi, mid = bmid();
+    if (hi - lo <= 1) {
+        if (hi > lo) {
+            char nm[64];
+            name_of(cands[lo].addr, nm, sizeof nm);
+            rt_log("value scan: bisect %s: one candidate left: %s at %s (it stays poked)", why, kind_name[cands[lo].kind], nm);
+        } else rt_log("value scan: bisect %s: no candidates left", why);
+        return;
+    }
+    char a[64], b[64];
+    name_of(cands[lo].addr, a, sizeof a);
+    name_of(cands[mid - 1].addr, b, sizeof b);
+    rt_log("value scan: bisect %s: %d candidates left, poking %d of them (%s .. %s); F6 = normal speed now, "
+           "F7 = still too fast", why, hi - lo, mid - lo, a, b);
 }
 
 static void poke_scan_thread(void *arg) {
     (void)arg;
+    int was6 = 0, was7 = 0;
     for (;;) {
-        poke_scan_once();
+        int lo = blo, hi = bhi, mid = bmid();
+        for (int i = 0; i < ncands; i++) poke_one(&cands[i], i >= lo && i < mid);
+        int fg = ikb_foreground(), k6 = fg && ikb_down(KEY_F6), k7 = fg && ikb_down(KEY_F7);
+        if (k6 && !was6 && hi - lo > 1) { bhi = mid; bisect_log("F6 (normal speed)"); }
+        if (k7 && !was7 && hi - lo > 1) { blo = mid; bisect_log("F7 (still too fast)"); }
+        was6 = k6;
+        was7 = k7;
         plat_sleep_ms(1);
     }
 }
 
 static void poke_scan_start(void) {
     if (!npranges) return;
-    int n = 0;
     for (int r = 0; r < npranges; r++) {
         int k = pranges[r].kind, hi = pranges[r].hi < nhits[k] - 1 ? pranges[r].hi : nhits[k] - 1;
-        if (hi >= pranges[r].lo) n += hi - pranges[r].lo + 1;
-        rt_log("value scan: poking %s hits %d-%d (of %d) with the 60 fps value", kind_name[k], pranges[r].lo, hi, nhits[k]);
+        rt_log("value scan: candidates: %s hits %d-%d (of %d)", kind_name[k], pranges[r].lo, hi, nhits[k]);
+        for (int i = pranges[r].lo; i <= hi; i++) {
+            if (ncands == ccands) {
+                ccands += 1024;
+                if (!(cands = realloc(cands, sizeof *cands * (size_t)ccands))) rt_fatal("value scan: out of memory");
+            }
+            cands[ncands++] = (Cand){hits[k][i], k, 0};
+        }
     }
-    rt_log("value scan: %d addresses poked every millisecond from now on (TOTK_POKE_SCAN)", n);
-    poke_scan_once();
-    poke_scan_live = 1;
+    blo = 0;
+    bhi = ncands;
+    bisect_log("start");
     if (!plat_thread_spawn(poke_scan_thread, NULL, "value poke", 64 << 10)) rt_log("value scan: poke thread failed");
 }
 
