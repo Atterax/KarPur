@@ -260,6 +260,37 @@ def walk_fields(sc, oi, buf, pos):
                                        el if sub['struct'] else el + struct.unpack_from('<I', buf, el)[0])
 
 
+def walk_paths(sc, oi, buf, pos, path=''):
+    """(path, base type, byte position) of every scalar field present, the path naming vector elements by index
+    (e.g. values[3].minCreateDistance): the same field of two files of one layout has the same path, also when other
+    elements leave fields at their default (absent)."""
+    o = sc.objects[oi]
+    t = None if o['struct'] else Table(buf, pos)
+    for f in o['fields']:
+        b, name = f['base'], f['name']
+        if o['struct']:
+            at = pos + f['offset']
+        else:
+            slot = (f['offset'] - 4) // 2
+            if not t.has(slot):
+                continue
+            at = t.pos + t.slots[slot]
+        here = f'{path}.{name}' if path else name
+        if b in SCALAR:
+            yield here, b, at
+        elif b == OBJ:
+            sub = sc.objects[f['index']]
+            yield from walk_paths(sc, f['index'], buf, at if sub['struct'] else at + struct.unpack_from('<I', buf, at)[0],
+                                  here)
+        elif b == VECTOR and f['elem'] == OBJ:
+            sub = sc.objects[f['index']]
+            v = at + struct.unpack_from('<I', buf, at)[0]
+            for k in range(struct.unpack_from('<I', buf, v)[0]):
+                el = v + 4 + (k * sub['size'] if sub['struct'] else 4 * k)
+                yield from walk_paths(sc, f['index'], buf,
+                                      el if sub['struct'] else el + struct.unpack_from('<I', buf, el)[0], f'{here}[{k}]')
+
+
 def view(regex, pack_names, toc, fs_off, offset_of):
     """game/data_patch.txt: romfs.bin offset, type, group and name of every distance field of the matching packs."""
     pat = re.compile(regex, re.I)

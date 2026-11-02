@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import trpfs  # noqa: E402
 from trpfs import (HEAD, SCALAR, TYPE_NAMES, Schema, Table, codec, fmt, fnv1a64, fnv1a64_bytes,  # noqa: E402
-                   romfs_file, walk_fields)
+                   romfs_file, walk_paths)
 
 MAX_WORD_DIFFS = 24
 
@@ -66,8 +66,8 @@ def fields_of(sc, data):
     if sc.root is None:
         return None
     try:
-        return [(f'{o}.{f}', b, struct.unpack_from('<' + SCALAR[b], data, at)[0], at)
-                for o, f, b, at in walk_fields(sc, sc.root, data, struct.unpack_from('<I', data, 0)[0])]
+        return [(p, b, struct.unpack_from('<' + SCALAR[b], data, at)[0], at)
+                for p, b, at in walk_paths(sc, sc.root, data, struct.unpack_from('<I', data, 0)[0])]
     except Exception:  # noqa: BLE001
         return None
 
@@ -86,25 +86,27 @@ def compare(orig, mod, schemas, say, loc=None, sink=None):
         if a is None or b is None:
             continue
         say(f'    schema {sc.objects[sc.root]["name"]}: {len(a)} fields in the game, {len(b)} in the mod')
-        # fields in walk order, matched by name and occurrence
-        seen_a, seen_b = Counter(), Counter()
-        ka = {}
-        for name, bt, v, at in a:
-            ka[(name, seen_a[name])] = (v, at, bt)
-            seen_a[name] += 1
-        changed = 0
-        for name, bt, v, _ in b:
-            k = (name, seen_b[name])
-            seen_b[name] += 1
-            old = ka.get(k)
+        # fields matched by their path (vector elements by index); a field the game's file leaves at its default is
+        # absent there and cannot be set in place
+        ka = {p: (v, at, bt) for p, bt, v, at in a}
+        kb = {p for p, _, _, _ in b}
+        changed = absent = 0
+        for p, bt, v, _ in b:
+            old = ka.get(p)
             if old is None:
-                say(f'      {name}[{k[1]}]: (not in the game) -> {fmt(v)}')
+                say(f'      {p}: (default in the game, not settable in place) -> {fmt(v)}')
                 changed += 1
+                absent += 1
             elif old[0] != v:
-                say(f'      {name}[{k[1]}]: {fmt(old[0])} -> {fmt(v)}')
+                say(f'      {p}: {fmt(old[0])} -> {fmt(v)}')
                 changed += 1
                 if sink is not None and loc and old[2] in TYPE_NAMES:
-                    sink.append(patch_line(loc, old[1], TYPE_NAMES[old[2]], v, f'{name}[{k[1]}]'))
+                    sink.append(patch_line(loc, old[1], TYPE_NAMES[old[2]], v, p[-60:]))
+        for p in sorted(set(ka) - kb):
+            say(f'      {p}: {fmt(ka[p][0])} -> (default in the mod, left as it is)')
+            changed += 1
+        if absent:
+            say(f'    {absent} changes need fields the game file does not have: the mod applies only in part')
         say(f'    {changed} fields differ')
         return
     if len(orig) != len(mod):
