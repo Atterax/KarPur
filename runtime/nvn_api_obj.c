@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "dispatch.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -623,9 +624,20 @@ NVN_API(nvnWindowSetPresentInterval) {
     if (o->interval != v) {
         // KarPur: how the game paces itself, for the 60 fps work (a few lines, then TOTK_TRACE=gfx only)
         static int logged;
-        if (logged++ < 8) rt_log("nvn: the game sets the present interval %d -> %d (frame %llu)", o->interval, v,
-                                 (unsigned long long)o->presents);
-        else NVN_LOG("present interval %d -> %d", o->interval, v);
+        if (logged++ < 8) {
+            rt_log("nvn: the game sets the present interval %d -> %d (frame %llu)", o->interval, v,
+                   (unsigned long long)o->presents);
+            // The caller chain (lr, then the frame records x29 points at), as module offsets for tools/calls.py: where
+            // the interval comes from, and so where the game's frame step might come from.
+            char nm[64];
+            rt_log("nvn:   called from %s", rt_guest_name(c->x[30], nm, sizeof nm));
+            uint64_t fp = c->x[29];
+            for (int i = 0; i < 6 && fp && !(fp & 7) && plat_mem_readable(fp, 16); i++) {
+                uint64_t ret = ((const uint64_t *)(uintptr_t)fp)[1];
+                rt_log("nvn:   frame %d returns to %s", i, rt_guest_name(ret, nm, sizeof nm));
+                fp = ((const uint64_t *)(uintptr_t)fp)[0];
+            }
+        } else NVN_LOG("present interval %d -> %d", o->interval, v);
     }
     o->interval = v;
 }
