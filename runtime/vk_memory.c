@@ -65,6 +65,7 @@ typedef struct PoolRec {
     uint32_t *chunk_sub;               // per chunk: the last submission that bound it from the mirror (mirror_choose)
     uint8_t *race_cnt;                 // per chunk: submissions during whose GPU run the CPU wrote it (race_apply)
     uint32_t *race_seen;               // per chunk: the last such submission
+    uint8_t *gpu_w;                    // per chunk: the GPU wrote it into the mirror (written back to guest memory)
     uint32_t nchunks, nhot;
     uint8_t demote;                    // replay: queued to give up its mirror at the next submission (KarPur)
     uint32_t refresh_sub;              // replay: the last submission that copied its hot chunks at first use (KarPur)
@@ -248,7 +249,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
     free(r->hot), free(r->late_cnt), free(r->late_seen);
-    free(r->chunk_sub), free(r->race_cnt), free(r->race_seen);
+    free(r->chunk_sub), free(r->race_cnt), free(r->race_seen), free(r->gpu_w);
     free(r);
 }
 
@@ -1459,7 +1460,8 @@ static int hot_init(PoolRec *r) {
     uint32_t n = (uint32_t)((r->import_hi - r->import_lo + (1ull << HOT_SHIFT) - 1) >> HOT_SHIFT);
     r->hot = calloc(n, 1), r->late_cnt = calloc(n, 1), r->late_seen = calloc(n, sizeof *r->late_seen);
     r->chunk_sub = calloc(n, sizeof *r->chunk_sub), r->race_cnt = calloc(n, 1), r->race_seen = calloc(n, sizeof *r->race_seen);
-    if (!r->hot || !r->late_cnt || !r->late_seen || !r->chunk_sub || !r->race_cnt || !r->race_seen)
+    r->gpu_w = calloc(n, 1);
+    if (!r->hot || !r->late_cnt || !r->late_seen || !r->chunk_sub || !r->race_cnt || !r->race_seen || !r->gpu_w)
         rt_fatal("vk: out of memory for a pool's hot chunks");
     r->nchunks = n;
     return 1;
@@ -1522,15 +1524,32 @@ static int nhrng, chrng;
 
 int vk_mem_hot_refresh_due(void) { return hot_due; }
 
+// TOTK_HOT_SAFE=1 (KarPur, default off): the hot refresh never copies over what the GPU wrote. A chunk the GPU writes
+// into the mirror (compute or transform feedback output, written back to guest memory at the submission's end) is not
+// refreshed and does not turn hot from the race check: the refresh would put last submission's bytes over this
+// submission's GPU output (Violet's trees and palms vanished or flickered, more the further one walked, as the hot set
+// only grows). Ranges the GPU wrote earlier in the same submission are skipped too.
+static int hot_safe(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("HOT_SAFE", "0");
+    return on;
+}
+static volatile int64_t m_refresh_skipped;
+
 int vk_mem_hot_refresh_record(VkCommandBuffer cb) {   // replay thread, outside a pass, after a full barrier
     hot_due = 0;
     nhrng = 0;
+    int safe = hot_safe();
     for (int i = 0; i < nhotq; i++) {
         PoolRec *r = hotq[i];
         uint64_t span = 1ull << HOT_SHIFT, size = r->import_hi - r->import_lo;
         for (uint32_t c = 0; c < r->nchunks; c++) {
             if (!r->hot[c]) continue;
             uint64_t off = (uint64_t)c << HOT_SHIFT, len = off + span > size ? size - off : span;
+            if (safe && ((r->gpu_w && r->gpu_w[c]) || mirror_written_here(r, off, len))) {
+                plat_inc64(&m_refresh_skipped);
+                continue;
+            }
             range_add(&hrng, &nhrng, &chrng, r, off, len);
             plat_add64(&m_refresh_bytes, (int64_t)len);
         }
@@ -1598,6 +1617,11 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
         return;
     }
     range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
+    if (r->gpu_w) {   // KarPur TOTK_HOT_SAFE: chunks the GPU writes are never refreshed from guest memory
+        uint64_t a = sp->offset >> HOT_SHIFT, b = (sp->offset + size - 1) >> HOT_SHIFT;
+        if (b >= r->nchunks) b = r->nchunks - 1;
+        for (uint64_t c = a; c <= b; c++) r->gpu_w[c] = 1;
+    }
 }
 
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
@@ -1769,6 +1793,7 @@ static void race_apply(void) {   // replay thread, pool_lock held shared
         int live = 0;
         for (int j = 0; j < nm && !live; j++) live = mlist[j] == r;
         if (!live || r->import_lo != h->lo || !r->race_cnt || h->chunk >= r->nchunks || r->hot[h->chunk]) continue;
+        if (hot_safe() && r->gpu_w && r->gpu_w[h->chunk]) continue;   // the GPU's own output, not a late CPU write
         plat_inc64(&m_race_hits);
         if (r->race_seen[h->chunk] == h->sub) continue;
         r->race_seen[h->chunk] = h->sub;
@@ -2035,11 +2060,12 @@ static void mirror_log(uint64_t frame) {
         size_t used = strlen(ver);
         snprintf(ver + used, sizeof ver - used, "; late sync %.1f pages, mirrors given up %lld (%.1f MiB), hot chunks "
                  "%lld (%.1f MiB), bindings to hot chunks %.1f, written while the GPU ran %.1f chunks, hot from that %lld, "
-                 "hot bytes copied %.3f MiB at %.1f draws",
+                 "hot bytes copied %.3f MiB at %.1f draws, GPU-written hot chunks skipped %.1f",
                  __atomic_exchange_n(&late_pages, 0, __ATOMIC_RELAXED) / f, (long long)m_demoted_n, m_demoted_bytes / M,
                  (long long)m_hot_chunks, m_hot_chunks * (double)(1ull << HOT_SHIFT) / M,
                  plat_xchg64(&m_hot_binds, 0) / f, plat_xchg64(&m_race_hits, 0) / f, (long long)m_race_chunks,
-                 plat_xchg64(&m_refresh_bytes, 0) / f / M, plat_xchg64(&m_refresh_points, 0) / f);
+                 plat_xchg64(&m_refresh_bytes, 0) / f / M, plat_xchg64(&m_refresh_points, 0) / f,
+                 plat_xchg64(&m_refresh_skipped, 0) / f);
     }
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
