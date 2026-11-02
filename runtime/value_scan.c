@@ -196,7 +196,7 @@ typedef struct { int kind, lo, hi; } PokeRange;
 static PokeRange pranges[8];
 static int npranges;
 
-typedef struct { uint64_t addr; int kind; int ours; } Cand;
+typedef struct { uint64_t addr; int kind; int ours; int live; } Cand;
 static Cand *cands;
 static int ncands, ccands;
 static volatile int blo, bhi;   // current candidates [blo, bhi); the poked half is [blo, bmid)
@@ -222,7 +222,7 @@ static void poke_scan_parse(void) {
 static void poke_one(Cand *c, int fast) {
     static const uint32_t f32_60th = 0x3C888889u, f32_60 = 0x42700000u;
     static const uint64_t f64_60th = 0x3F91111111111111ull;
-    if (!plat_mem_readable(c->addr, 8)) return;
+    if (!c->live) return;
     volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)c->addr;
     if (c->kind == KIND_F64_30TH) {
         volatile uint64_t *d = (volatile uint64_t *)(uintptr_t)c->addr;
@@ -256,8 +256,19 @@ static void bisect_log(const char *why) {
 static void poke_scan_thread(void *arg) {
     (void)arg;
     int was6 = 0, was7 = 0;
+    uint64_t tick = 0;
     for (;;) {
         int lo = blo, hi = bhi, mid = bmid();
+        // Whether each word is still mapped guest memory, once a second through the guest memory map (cheap, no
+        // system call). Asking Windows per word and tick (VirtualQuery) slowed the game to about 1 fps: on the large
+        // mapped views it is slow and it takes the address space lock the game's own mappings need.
+        if (tick++ % 1000 == 0) {
+            for (int i = 0; i < ncands; i++) {
+                RtMemoryInfo mi;
+                mem_query(cands[i].addr, &mi);
+                cands[i].live = (mi.perm & 3) == 3 && cands[i].addr + 8 <= mi.base + mi.size;
+            }
+        }
         for (int i = 0; i < ncands; i++) poke_one(&cands[i], i >= lo && i < mid);
         int fg = ikb_foreground(), k6 = fg && ikb_down(KEY_F6), k7 = fg && ikb_down(KEY_F7);
         if (k6 && !was6 && hi - lo > 1) { bhi = mid; bisect_log("F6 (normal speed)"); }
@@ -278,7 +289,7 @@ static void poke_scan_start(void) {
                 ccands += 1024;
                 if (!(cands = realloc(cands, sizeof *cands * (size_t)ccands))) rt_fatal("value scan: out of memory");
             }
-            cands[ncands++] = (Cand){hits[k][i], k, 0};
+            cands[ncands++] = (Cand){.addr = hits[k][i], .kind = k};
         }
     }
     blo = 0;
