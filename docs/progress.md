@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Restflackern mit Spiegeln**: Mirror + späte Synchronisation ist wieder Standard (flüssig). Vereinzelt flackern noch kleine Büsche/Gegenstände in der Entfernung, bis man nah ist (mit import nicht). Nächster Test: `MEMORY=verify` mit später Synchronisation – bleiben übersprungene Seiten, schreibt das Spiel noch nach dem Submit. Danach `SUBMIT_SYNC=0` mit Mirror prüfen.
+0. **Restflackern mit Spiegeln**: Pools mit wiederholten späten CPU-Schreibzugriffen geben ihren Spiegel ab (`MIRROR_DEMOTE`, Standard an). Test im Normalbetrieb abwarten: Flackern weg? Einbrüche? Wie viele MiB werden abgegeben (Mirror-Zusammenfassung)?
 0b. **Sichtweite/LOD erweitern** (Wunsch des Maintainers, wie Switch-2-Fassung): LOD-/Distanz-Parameter im Spielcode finden, per Patch-Schalter vergrößern. Nach fehlerfreier Darstellung.
 1. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
@@ -23,6 +23,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: verify mit später Synchronisation: CPU schreibt auch während der GPU-Ausführung; Spiegel-Abgabe
+- `MEMORY=verify` (mit `MIRROR_LATE`): Palmen und große Bäume flackern dauernd (verify ändert das Timing durch zusätzliche Kopien je Submission, also kein Maßstab fürs Bild). Wichtig: weiterhin übersprungene Seiten (147 bzw. 348 je Zusammenfassung) bei 0 Abweichungen – die CPU schreibt Seiten noch nach der späten Synchronisation, also während die GPU die Submission ausführt (vermutlich andere Spiel-Threads; der Spielthread selbst wartet wegen SUBMIT_SYNC).
+- Umgesetzt `MIRROR_DEMOTE` (Standard 1, `vk_memory.c`): Ein Pool, in dem die späte Synchronisation in 4 Submissions CPU-Schreibzugriffe findet, gibt beim nächsten `vk_mem_mirror_begin` seinen Spiegel ab (`mirror_forget`, `MS_REFUSED`, `vk_defer_buffer`) und wird ab dann importiert gelesen (wie auf der Switch: GPU sieht CPU-Schreibzugriffe beim Ausführen). Log der ersten 8 Abgaben mit Pool und Flags; Zusammenfassung zeigt „mirrors given up N (X MiB)“.
 
 ### 2026-11-02: Späte Spiegel-Synchronisation wirkt; Mirror wieder Standard
 - `MEMORY=mirror` mit `MIRROR_LATE`: keine Einbrüche mehr (Maintainer), fast alles richtig; nur vereinzelt kleine Büsche/Gegenstände flackern in der Entfernung, bis man nah herangeht. Späte Synchronisation: 135 Seiten/Frame (erste Minute), 510 Seiten/Frame (Minute 3), also bis ~2 MiB, die die CPU während der Aufzeichnung schreibt. Kosten der Verfolgung 0,41–0,45 ms/Frame.

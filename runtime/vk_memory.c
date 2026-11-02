@@ -56,6 +56,8 @@ typedef struct PoolRec {
     VmaAllocation malloc_;
     uint32_t acc_sub;                  // replay: the last submission that synced the mirror (mirror_sync)
     uint32_t wb_sub;                   // replay: the last submission that wrote mirror bytes back to guest memory
+    uint16_t late_subs;                // replay: submissions whose late sync found CPU writes in it (KarPur)
+    uint8_t demote;                    // replay: queued to give up its mirror at the next submission (KarPur)
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
                                        // (or in a copy queued before its next use)
     uint64_t fl_lo, fl_hi;             // flush_lock: nvnMemoryPoolFlushMappedRange bytes not copied yet (fl_hi 0: none)
@@ -1143,6 +1145,13 @@ enum { MR_BUDGET, MR_UNTRACKED, MR_OVERLAP, MR_ALLOC, MR_N };
 
 int vk_mirror_on;
 static int mirror_verify;
+// KarPur: pools that give up their mirror (TOTK_MIRROR_DEMOTE, default 1), queued by the late sync, done at the next
+// vk_mem_mirror_begin.
+enum { DEMOTE_SUBS = 4 };
+static int mirror_demote = -1;
+static PoolRec **demq;                    // replay
+static int ndemq, cdemq;
+static volatile int64_t m_demoted_n, m_demoted_bytes;
 static int mirror_gap = 2;             // pre-snap: hot pools at most this many 2 MiB regions apart share one query
 static PoolRec **mlist;                // pool_lock: mirrored pools by import_lo
 static int nm, mcap;
@@ -1472,6 +1481,27 @@ void vk_mem_mirror_begin(void) {
         return;
     }
     uint64_t t0 = qpc();
+    if (ndemq) {   // KarPur: queued pools read imported memory from this submission on (vk_mem_mirror_late)
+        plat_mutex_lock(&pool_lock);
+        for (int i = 0; i < ndemq; i++) {
+            PoolRec *r = demq[i];
+            if (r->mstate != MS_ON || !r->mbuf) continue;   // finalized or refused meanwhile
+            mirror_forget(r);
+            r->mstate = MS_REFUSED;
+            vk_defer_buffer(r->mbuf, r->malloc_);   // the GPU may still read it in a submission in flight
+            r->mbuf = VK_NULL_HANDLE, r->malloc_ = NULL;
+            uint64_t n = r->import_hi - r->import_lo;
+            if (plat_inc64(&m_demoted_n) <= 8) {
+                char f[160];
+                flag_names(r->flags, f, sizeof f);
+                rt_log("mem: pool %#llx+%#llx (%s) gives up its mirror: the CPU writes it while submissions are "
+                       "recorded (TOTK_MIRROR_DEMOTE=0 keeps it)", (unsigned long long)r->lo, (unsigned long long)r->size, f);
+            }
+            plat_add64(&m_demoted_bytes, (int64_t)n);
+        }
+        ndemq = 0;
+        plat_mutex_unlock(&pool_lock);
+    }
     uint32_t prev = msub;
     msub = msub + 1 ? msub + 1 : 1;
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
@@ -1521,6 +1551,7 @@ void vk_mem_mirror_late(void) {
         rt_log("mem: late mirror sync before each submit: %s", mirror_late ? "on (TOTK_MIRROR_LATE=0 turns it off)" : "off");
     }
     if (!mirror_late) return;
+    if (mirror_demote < 0) mirror_demote = rt_knob("MIRROR_DEMOTE", "1");
     uint64_t t0 = qpc();
     if (++late_ep == 0) late_ep = 0x80000000u;
     plat_mutex_lock_shared(&pool_lock);
@@ -1532,6 +1563,7 @@ void vk_mem_mirror_late(void) {
         uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
         mrep.sync_queries += snap_regions(r0, r1, late_ep);
         uint32_t since = r->mgen;
+        uint64_t before = late_pages;
         for (uint64_t k = r0; k <= r1; k++) {
             if (reg_max[k] <= since) continue;
             uint64_t a = k << SNAP_SHIFT, b = a + (1ull << SNAP_SHIFT);
@@ -1546,6 +1578,14 @@ void vk_mem_mirror_late(void) {
                 }
         }
         r->mgen = gen_now;
+        // A pool the CPU keeps writing while submissions are recorded is likely written while the GPU runs them
+        // too (TOTK_MEMORY=verify still found such pages after the late sync); only imported memory shows the GPU
+        // those writes, as on the Switch. After DEMOTE_SUBS such submissions it gives up its mirror.
+        if (mirror_demote && late_pages != before && !r->demote && ++r->late_subs >= DEMOTE_SUBS) {
+            r->demote = 1;
+            if (ndemq == cdemq) grow((void **)&demq, &cdemq, sizeof *demq);
+            demq[ndemq++] = r;
+        }
     }
     plat_mutex_unlock(&gen_lock);
     plat_mutex_unlock_shared(&pool_lock);
@@ -1704,14 +1744,15 @@ static void mirror_log(uint64_t frame) {
     double f = frame > last ? (double)(frame - last) : 1.0, M = 1048576.0;
     last = frame;
     uint64_t fc = (uint64_t)plat_xchg64(&m_flush_calls, 0), fb = (uint64_t)plat_xchg64(&m_flush_bytes, 0);
-    char ver[160] = "";
+    char ver[256] = "";
     if (mirror_verify)
         snprintf(ver, sizeof ver, "; verify: pages compared %lld, skipped %lld (written since), mismatches %lld",
                  (long long)plat_xchg64(&v_pages, 0), (long long)plat_xchg64(&v_skipped, 0),
                  (long long)plat_xchg64(&v_mismatch, 0));
     if (mirror_late > 0) {   // KarPur: pages the late sync queued (read without a lock: a statistic)
         size_t used = strlen(ver);
-        snprintf(ver + used, sizeof ver - used, "; late sync %.1f pages", __atomic_exchange_n(&late_pages, 0, __ATOMIC_RELAXED) / f);
+        snprintf(ver + used, sizeof ver - used, "; late sync %.1f pages, mirrors given up %lld (%.1f MiB)",
+                 __atomic_exchange_n(&late_pages, 0, __ATOMIC_RELAXED) / f, (long long)m_demoted_n, m_demoted_bytes / M);
     }
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
