@@ -71,9 +71,11 @@ static void frame_summary(uint64_t frame) {
     if (n < 600) return;
     double d = (double)n;
     rt_log("vk_exec: frames %llu-%llu, per frame: submits %.1f, passes %.1f, draws %.1f (of %.1f), clears %.1f, copies "
-           "%.1f, dispatches %.1f, full barriers %.1f; feedback draws %.1f, in-pass barriers %.1f, pass restarts %.1f",
+           "%.1f, dispatches %.1f, full barriers %.1f, attachment barriers %.1f, without full barrier %.1f, restarts for a "
+           "sampled write %.1f; feedback draws %.1f, in-pass barriers %.1f, pass restarts %.1f",
            (unsigned long long)since, (unsigned long long)frame, f->submits / d, f->passes / d, f->draws / d,
-           f->draws_seen / d, f->clears / d, f->copies / d, f->dispatches / d, f->barriers / d, f->fb_draws / d,
+           f->draws_seen / d, f->clears / d, f->copies / d, f->dispatches / d, f->barriers / d, f->light_barriers / d,
+           f->deferred / d, f->hz_restarts / d, f->fb_draws / d,
            f->fb_barriers / d, f->fb_restarts / d);
     memset(f, 0, sizeof *f);
     since = frame;
@@ -556,6 +558,57 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
                                    .subresourceRange = {aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
 }
 
+// ---- barrier tracking (VkExec.hz_*)
+int vk_exec_track_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("BARRIER_TRACK", "1");
+        rt_log("vk_exec: barriers %s", on ? "tracked: passes and clears that touch nothing written or sampled since the "
+                                            "last full barrier start without one (TOTK_BARRIER_TRACK=0: always full)"
+                                          : "full before every pass, clear, copy and dispatch (TOTK_BARRIER_TRACK=0)");
+    }
+    return on;
+}
+
+static int hz_has(const VkImage *l, int n, VkImage img) {
+    for (int i = 0; i < n; i++)
+        if (l[i] == img) return 1;
+    return 0;
+}
+
+static void hz_add_w(VkExec *ex, VkImage img) {
+    if (!img || hz_has(ex->hz_w, ex->nhz_w, img)) return;
+    if (ex->nhz_w == (int)(sizeof ex->hz_w / sizeof *ex->hz_w)) { ex->hz_other = 1; return; }
+    ex->hz_w[ex->nhz_w++] = img;
+}
+
+static void hz_reset(VkExec *ex) {
+    ex->nhz_w = ex->nhz_r = ex->hz_other = ex->hz_rall = ex->pass_deferred = 0;
+    ex->hz_gen++;
+}
+
+// Attachment-only barrier: earlier attachment writes and clears are done and visible to attachment access and to
+// transfer clears that follow. Fragment work waits; vertex and compute work of the next pass may start at once.
+static void attach_barrier(VkExec *ex) {
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                           .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT |
+                                            VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded++;
+    vk_exec_frame.light_barriers++;
+}
+
 // Full barrier. The images in the feedback layout become want[] (pass begin) or none (every other barrier): the others
 // go back to GENERAL and the new ones leave it, in the same command.
 static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
@@ -571,7 +624,7 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
             ib[n++] = layout_barrier(want[i], wasp[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
     for (int i = 0; i < nwant; i++) ex->fbl_img[i] = want[i], ex->fbl_aspect[i] = wasp[i];
     ex->nfbl = nwant;
-    if (ex->barrier_at == ex->recorded && !n) return;
+    if (ex->barrier_at == ex->recorded && !n) { hz_reset(ex); return; }   // nothing recorded since the last one
     vk_exec_frame.fb_layouts += n;
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -583,9 +636,64 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     vkCmdPipelineBarrier2(ex->cb, &di);
     vk_exec_frame.barriers++;
     ex->barrier_at = ++ex->recorded;
+    hz_reset(ex);
 }
 
-void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
+// The full barrier other ops (copies, dispatches, fills, queries, inline commands) take before they record: what they
+// write is not tracked, so the next pass or clear takes a full barrier too.
+void vk_exec_barrier(VkExec *ex) {
+    barrier_to(ex, NULL, NULL, 0);
+    ex->hz_other = 1;
+}
+
+// Feedback-layout transitions a pass begin with want[] needs (barrier_to records them).
+static int fbl_changes(const VkExec *ex, const VkImage *want, int nwant) {
+    int n = 0;
+    for (int i = 0; i < ex->nfbl; i++) n += !has_image(want, nwant, ex->fbl_img[i]);
+    for (int i = 0; i < nwant; i++) n += !has_image(ex->fbl_img, ex->nfbl, want[i]);
+    return n;
+}
+
+// Before a pass begins: the full barrier unless tracking shows the pass touches nothing earlier work wrote or sampled
+// (an attachment-only barrier when it renders into an image written since: attachment after attachment).
+static void pass_barrier(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
+    int full = !vk_exec_track_on() || ex->hz_other || ex->hz_rall || fbl_changes(ex, want, nwant) || ex->barrier_at < 0;
+    int waw = 0;
+    for (uint32_t i = 0; i < 9 && !full; i++) {
+        const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
+        if ((i < 8 && i >= ex->pass_ncolor) || !t->image) continue;
+        if (hz_has(ex->hz_r, ex->nhz_r, t->image)) full = 1;   // sampled since: its reads finish before the writes
+        else if (hz_has(ex->hz_w, ex->nhz_w, t->image)) waw = 1;
+    }
+    if (full) {
+        barrier_to(ex, want, wasp, nwant);
+        return;
+    }
+    if (waw) attach_barrier(ex);
+    vk_exec_frame.deferred++;
+    ex->pass_deferred = ex->nhz_w > 0;   // draws check their sampled images against hz_w (vk_exec_hazard_draw)
+}
+
+// Before a whole-image clear outside a pass: as pass_barrier, for the cleared image.
+static void clear_barrier(VkExec *ex, VkImage img) {
+    if (!vk_exec_track_on() || ex->hz_other || ex->hz_rall || ex->nfbl || ex->barrier_at < 0 ||
+        hz_has(ex->hz_r, ex->nhz_r, img))
+        barrier_to(ex, NULL, NULL, 0);
+    else {
+        if (hz_has(ex->hz_w, ex->nhz_w, img)) attach_barrier(ex);
+        vk_exec_frame.deferred++;
+    }
+    hz_add_w(ex, img);
+}
+
+// vk_exec_draw.c: images a draw samples, against the writes since the last full barrier (vk_exec_hazard_draw).
+int vk_exec_hz_written(const VkExec *ex, VkImage img) { return hz_has(ex->hz_w, ex->nhz_w, img); }
+
+void vk_exec_hz_read(VkExec *ex, VkImage img) {
+    if (!img || hz_has(ex->hz_r, ex->nhz_r, img)) return;
+    if (ex->nhz_r == (int)(sizeof ex->hz_r / sizeof *ex->hz_r)) { ex->hz_rall = 1; return; }
+    ex->hz_r[ex->nhz_r++] = img;
+}
 
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
@@ -602,7 +710,7 @@ void vk_exec_pass_begin(VkExec *ex) {
         if (has_image(want, nwant, t->image)) continue;
         want[nwant] = t->image, wasp[nwant++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
     }
-    barrier_to(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
+    pass_barrier(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
     ex->fbl_mask = fbl;
     ex->fb_dirty = 0;
     ex->pass_serial++;
@@ -641,10 +749,18 @@ void vk_exec_pass_end(VkExec *ex) {
     vkCmdEndRendering(ex->cb);
     ex->recorded++;
     ex->in_pass = 0;
+    ex->pass_deferred = 0;
+    for (uint32_t i = 0; i < 9; i++) {   // barrier tracking: the pass may have written each attachment
+        const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
+        if ((i < 8 && i >= ex->pass_ncolor) || !t->image) continue;
+        hz_add_w(ex, t->image);
+    }
+    int after_end = ex->recorded;
     for (int i = 0; i < ex->pass_ncolor && i < 8; i++)   // stand-ins of 3D BC targets go to their textures
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
     if (vk_dump_armed) vk_dump_pass_end(ex);
+    if (ex->recorded != after_end) ex->hz_other = 1;   // copies of stand-ins after the pass are not tracked
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     for (int i = 0; i < 8; i++)
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
@@ -737,7 +853,7 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
     VkClearColorValue cv;
     memcpy(cv.float32, c->rgba, sizeof cv.float32);   // integer targets: the payload's bits as the front end stored them
     if (whole_target(ex, t)) {
-        vk_exec_barrier(ex);
+        clear_barrier(ex, t->image);
         VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, t->level, 1, t->base_layer, t->layers};
         vkCmdClearColorImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &cv, 1, &r);
         ex->recorded++;
@@ -765,7 +881,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     float d = c->depth < 0.0f ? 0.0f : c->depth > 1.0f ? 1.0f : c->depth;
     VkClearDepthStencilValue v = {d, (uint32_t)c->stencil & 0xff};
     if (whole_target(ex, t)) {
-        vk_exec_barrier(ex);
+        clear_barrier(ex, t->image);
         VkImageSubresourceRange r = {asp, t->level, 1, t->base_layer, t->layers};
         vkCmdClearDepthStencilImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &r);
         ex->recorded++;
@@ -935,6 +1051,8 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     ex->nviews = 0;
     ex->barrier_at = -1;
     ex->nfbl = 0;   // the previous command buffer ended with a full barrier: every image is in GENERAL
+    hz_reset(ex);
+    ex->hz_other = 1;   // the first pass or clear takes the full barrier: copies at the start of the buffer
     vk_exec_frame.submits++;
     split_draws = part_start = 0;
     part_t0 = kern_now_ns();

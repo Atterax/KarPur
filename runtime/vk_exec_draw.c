@@ -1087,6 +1087,89 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
     return m;
 }
 
+// ---- barrier tracking (vk_exec.h VkExec.hz_*): what a draw samples and whether it writes untracked memory
+int vk_exec_hz_written(const VkExec *ex, VkImage img);   // vk_exec.c
+void vk_exec_hz_read(VkExec *ex, VkImage img);
+
+static int shader_writes(const GfxShader *s) {   // storage buffer writes or image stores
+    if (!s) return 0;
+    const GfxShaderRes *r;
+    int n = gfx_shader_resources(s, GFX_RES_SSBO, &r);
+    for (int i = 0; i < n; i++)
+        if (r[i].flags & 1) return 1;
+    n = gfx_shader_resources(s, GFX_RES_IMG, &r);
+    for (int i = 0; i < n; i++)
+        if (r[i].flags & 4) return 1;
+    return 0;
+}
+
+// The images the vertex and fragment shaders sample or load, kept while the shaders, the bindings and the texture
+// registrations stay the same.
+static struct {
+    const GfxShader *vs, *fs;
+    uint32_t serial, slots, gen;
+    int n, unknown, writes;
+    VkImage img[64];
+} HZ;
+
+static void hz_scan(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
+    uint32_t slots = vk_texture_slots_gen();   // before any lookup
+    if (HZ.vs == vs && HZ.fs == fs && HZ.serial == ex->tex_serial && HZ.slots == slots) return;
+    HZ.vs = vs, HZ.fs = fs, HZ.serial = ex->tex_serial, HZ.slots = slots, HZ.gen = ex->hz_gen - 1;
+    HZ.n = HZ.unknown = 0;
+    HZ.writes = shader_writes(vs) || shader_writes(fs);
+    const GfxShader *sh[2] = {vs, fs};
+    const int st[2] = {NVN_STAGE_VS, NVN_STAGE_FS};
+    vk_texture_lock();
+    for (int k = 0; k < 2; k++) {
+        if (!sh[k]) continue;
+        for (int kind = GFX_RES_TEX; kind <= GFX_RES_IMG; kind++) {
+            const GfxShaderRes *res;
+            int n = gfx_shader_resources(sh[k], kind, &res);
+            for (int r = 0; r < n; r++)
+                for (int c = 0; c < (res[r].count ? res[r].count : 1); c++) {
+                    int slot = res[r].slot + c, cap = kind == GFX_RES_TEX ? 128 : 32;
+                    if (res[r].slot < 0 || slot >= cap) { HZ.unknown = 1; continue; }   // not a bound slot
+                    uint64_t h = kind == GFX_RES_TEX ? ex->tex[st[k]][slot] : ex->img[st[k]][slot];
+                    if (!h) continue;
+                    VkImage img = sampled_sub(h).image;
+                    if (!img) continue;
+                    int seen = 0;
+                    for (int i = 0; i < HZ.n && !seen; i++) seen = HZ.img[i] == img;
+                    if (seen) continue;
+                    if (HZ.n == 64) HZ.unknown = 1;
+                    else HZ.img[HZ.n++] = img;
+                }
+        }
+    }
+    vk_texture_unlock();
+}
+
+// Before each draw (after its shaders are known): in a pass that began without a full barrier, a draw that samples an
+// image written since the last full barrier restarts the pass behind one. Then the images it samples join the read
+// list, and storage writes or transform feedback make the next pass take the full barrier.
+void vk_exec_hazard_draw(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
+    if (!vk_exec_track_on()) return;
+    hz_scan(ex, vs, fs);
+    if (ex->pass_deferred && ex->in_pass) {
+        int hit = HZ.unknown;
+        for (int i = 0; i < HZ.n && !hit; i++) hit = vk_exec_hz_written(ex, HZ.img[i]);
+        if (hit) {
+            ex->hz_other = 1;   // the pass begins again behind the full barrier
+            vk_exec_pass_end(ex);
+            vk_exec_pass_begin(ex);
+            ex->dirty |= VK_EXEC_DIRTY_ALL;
+            vk_exec_frame.hz_restarts++;
+        }
+    }
+    if (HZ.gen != ex->hz_gen) {
+        for (int i = 0; i < HZ.n; i++) vk_exec_hz_read(ex, HZ.img[i]);
+        if (HZ.unknown) ex->hz_rall = 1;
+        HZ.gen = ex->hz_gen;
+    }
+    if (HZ.writes || ex->xfb_active) ex->hz_other = 1;
+}
+
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
 // sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
@@ -1101,6 +1184,7 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
                 const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
                 if ((d >> i & 1) && t->img && t->img->fb_usage) ((VkTexImage *)t->img)->fb_learned = 1;
             }
+        ex->hz_other = 1;   // barrier tracking: the restart takes the full barrier
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);   // learned targets now in the feedback layout; the full barrier cleared fb_dirty
         vk_exec_frame.fb_restarts++;
@@ -2106,6 +2190,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
     }
     if (!vs || (has_fs && !fs)) return skip_note(SK_SHADER_FAIL);
+    vk_exec_hazard_draw(ex, vs, fs);   // barrier tracking: may restart the pass behind a full barrier
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;

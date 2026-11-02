@@ -108,6 +108,18 @@ typedef struct VkExec {
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+
+    // Barrier tracking (TOTK_BARRIER_TRACK, default 1; vk_exec.c pass_barrier, vk_exec_draw.c vk_exec_hazard_draw): the
+    // images written (attachments, whole-target clears) and sampled since the last full barrier, so a pass or clear that
+    // touches none of them starts without one. Anything else that writes GPU memory (storage writes, transform feedback,
+    // copies, dispatches, queries: every op that calls vk_exec_barrier) sets hz_other, which makes the next pass or clear
+    // take the full barrier as before.
+    VkImage hz_w[32], hz_r[64];
+    int nhz_w, nhz_r;
+    int hz_other;                        // untracked writes since the last full barrier, or the write list overflowed
+    int hz_rall;                         // the read list overflowed or a draw sampled an image it could not name
+    int pass_deferred;                   // the open pass began without a full barrier: draws check what they sample
+    uint32_t hz_gen;                     // bumped by every full barrier
 } VkExec;
 
 // Begins dynamic rendering with the current targets unless a pass is open (a full memory barrier precedes it). Call
@@ -144,11 +156,15 @@ void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
     uint64_t barriers;   // full barriers recorded (pass starts, clears, copies, dispatches: each waits for all before)
+    uint64_t light_barriers, deferred, hz_restarts;   // barrier tracking: attachment-only barriers, passes and clears
+                                                      // without a full barrier, passes restarted for a sampled write
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
 } VkExecFrame;
 extern VkExecFrame vk_exec_frame;
+int vk_exec_track_on(void);                                     // TOTK_BARRIER_TRACK (default 1)
+void vk_exec_hazard_draw(VkExec *ex, const GfxShader *vs, const GfxShader *fs);   // vk_exec_draw.c: before each draw
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
 uint64_t vk_exec_recording_fence(void);                        // fence of the submission this thread records, else 0
 void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
