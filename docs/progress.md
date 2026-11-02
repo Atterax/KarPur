@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: verify: Spiegel stimmen, aber CPU-Schreibzugriffe während der Aufzeichnung kommen ein Bild zu spät; späte Synchronisation
+- Test `SUBMIT_SYNC=0` (import): alles da, Einbrüche bleiben (1% low 14.7 fps). Das Warten ist also nicht die Ursache der Einbrüche; die GPU-Zeit über PCIe ist es.
+- Test `MEMORY=verify`: stabil, flackert, alle Objekte da. Abgleich: 1,7 Mio. Seiten verglichen, **0 Abweichungen**, 369 übersprungen (seit der Synchronisation von der CPU beschrieben).
+- Folgerung: Die Spiegel enthalten den Stand vom ersten Zugriff einer Submission (`mirror_sync`). Was die CPU danach während der Aufzeichnung schreibt, kommt erst eine Submission später an. Auf der Switch (und mit import) liest die GPU den Speicher erst beim Ausführen, also nach dem Submit.
+- Umgesetzt `vk_mem_mirror_late` (`vk_memory.c`, aufgerufen in `vk_sync.c prologue` direkt vor dem Submit): Für alle in dieser Submission benutzten gespiegelten Pools neuer Write-Watch-Snapshot (eigene Epoche ab 0x80000000) und Kopie aller seit der Pool-Synchronisation beschriebenen Seiten in den Prolog. Schalter `TOTK_MIRROR_LATE` (Standard 1); Mirror-Zusammenfassung zeigt „late sync N pages“ pro Frame. Standard bleibt vorerst import, bis der Test mit `MEMORY=mirror` bestätigt.
+
 ### 2026-11-02: import-Standard: störende Einbrüche
 - Maintainer: mit import kommen kurze FPS-Einbrüche regelmäßig, auf Dauer störend. Log: Minute 1 1% low 15.0 fps, 30 Frames über 50 ms; schlimmste Frames 15–24 ms fence/present wait. Storage-Verkehr ~480 MiB/Frame (gebundene Bereiche) aus CPU_UNCACHED-Pools über PCIe; mit SUBMIT_SYNC wartet der Spielthread jedes Bild auf die GPU, also schlägt die GPU-Zeit voll durch.
 - Nächste Tests: (A) `SUBMIT_SYNC=0` mit import (Überlappung CPU/GPU zurück; prüfen, ob das Baum-Flackern ohne Spiegel überhaupt noch auftritt). (B) `MEMORY=verify` (Mirror-Modus mit Abgleich: Mismatches nennen Pool, Flags und Offset), um die Mirror-Fehlerquelle einzugrenzen (CPU→Spiegel veraltet oder GPU→Gast zu spät).

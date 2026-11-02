@@ -1505,6 +1505,55 @@ void vk_mem_mirror_begin(void) {
     mrep.presnap_t += qpc() - t0;
 }
 
+// KarPur: late CPU -> mirror sync, right before the submission's command buffers go to the queue (vk_sync.c prologue).
+// mirror_sync copies what the CPU wrote up to a pool's first access in the submission; writes made after that, while
+// the rest of the replay was recorded, reached the mirror one submission late. On the Switch the GPU reads memory when
+// it runs, after the submit, so such writes count for this submission. Violet's objects flickered and went missing with
+// mirrors and drew right with imported memory; TOTK_MEMORY=verify found mirrors equal to guest memory except for pages
+// written since their sync (2026-11-02). This snaps the regions of the pools this submission accessed once more and
+// queues the pages stamped after each pool's sync. TOTK_MIRROR_LATE=0 turns it off.
+static int mirror_late = -1;
+static uint32_t late_ep = 0x80000000u;   // snapshot epochs of their own, above the texture epochs
+static uint64_t late_pages;               // replay: pages queued by late syncs since the last summary
+
+void vk_mem_mirror_late(void) {
+    if (!vk_mirror_on) return;
+    if (mirror_late < 0) {
+        mirror_late = rt_knob("MIRROR_LATE", "1");
+        rt_log("mem: late mirror sync before each submit: %s", mirror_late ? "on (TOTK_MIRROR_LATE=0 turns it off)" : "off");
+    }
+    if (!mirror_late) return;
+    uint64_t t0 = qpc();
+    if (++late_ep == 0) late_ep = 0x80000000u;
+    plat_mutex_lock_shared(&pool_lock);
+    plat_mutex_lock(&gen_lock);
+    for (int i = 0; i < nm; i++) {
+        PoolRec *r = mlist[i];
+        if (r->acc_sub != msub) continue;
+        uint64_t lo = r->import_lo, hi = r->import_hi;
+        uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
+        mrep.sync_queries += snap_regions(r0, r1, late_ep);
+        uint32_t since = r->mgen;
+        for (uint64_t k = r0; k <= r1; k++) {
+            if (reg_max[k] <= since) continue;
+            uint64_t a = k << SNAP_SHIFT, b = a + (1ull << SNAP_SHIFT);
+            if (a < lo) a = lo;
+            if (b > hi) b = hi;
+            const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];
+            if (!ch) continue;
+            for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
+                if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since) {
+                    range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT);
+                    late_pages++;
+                }
+        }
+        r->mgen = gen_now;
+    }
+    plat_mutex_unlock(&gen_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+    mrep.sync_t += qpc() - t0;
+}
+
 int vk_mem_mirror_pending(void) { return npend; }
 
 void vk_mem_mirror_prologue(VkCommandBuffer cb) {
@@ -1662,6 +1711,10 @@ static void mirror_log(uint64_t frame) {
         snprintf(ver, sizeof ver, "; verify: pages compared %lld, skipped %lld (written since), mismatches %lld",
                  (long long)plat_xchg64(&v_pages, 0), (long long)plat_xchg64(&v_skipped, 0),
                  (long long)plat_xchg64(&v_mismatch, 0));
+    if (mirror_late > 0) {   // KarPur: pages the late sync queued (read without a lock: a statistic)
+        size_t used = strlen(ver);
+        snprintf(ver + used, sizeof ver - used, "; late sync %.1f pages", __atomic_exchange_n(&late_pages, 0, __ATOMIC_RELAXED) / f);
+    }
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
            "first use %.2f pools %.3f MiB, write-back %.3f MiB in %.1f ranges, flush calls %.1f (%.3f MiB), queries "
