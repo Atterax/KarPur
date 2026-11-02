@@ -18,6 +18,11 @@ return address). For an indirect call or branch at or right before the address i
 set in the function (load base and offset, address computation, or copy), as offsets and register numbers only.
 
   .venv\\Scripts\\python tools\\calls.py --refs main+0x2a1fc24 main+0xfc3968
+
+--origin MOD+OFF:xN names where register xN was last set before that instruction (constant, load base and offset,
+address computation, copy), e.g. the argument of a call at its BL/BLR.
+
+  .venv\\Scripts\\python tools\\calls.py main+0xbcc044 --origin main+0xbcc040:x1
 """
 
 import argparse
@@ -111,6 +116,18 @@ def reg_origin(mod, lo, p, r, depth=0):
         if (w & 0x9F000000) == 0x10000000 and (w & 31) == r:
             imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
             return f'{rel}: ADR {mod.name}+{q + imm - mod.base:#x}'
+        if (w & 0x7F800000) == 0x52800000 and (w & 31) == r:          # MOVZ Wd/Xd, #imm16, LSL #hw
+            return f'{rel}: constant {((w >> 5) & 0xFFFF) << (16 * ((w >> 21) & 3)):#x}'
+        if (w & 0x7F800000) == 0x12800000 and (w & 31) == r:          # MOVN
+            v = ~(((w >> 5) & 0xFFFF) << (16 * ((w >> 21) & 3))) & (0xFFFFFFFFFFFFFFFF if w >> 31 else 0xFFFFFFFF)
+            return f'{rel}: constant {v:#x}'
+        if (w & 0x7F8003E0) == 0x320003E0 and (w & 31) == r:          # ORR Wd/Xd, WZR, #bitmask (MOV alias)
+            return f'{rel}: constant (bitmask immediate)'
+        if (w & 0xFFC00000) == 0xB9400000 and (w & 31) == r:          # LDR Wt, [Xn, #imm*4]
+            n, off = (w >> 5) & 31, ((w >> 10) & 0xFFF) * 4
+            base = 'sp' if n == 31 else f'x{n}'
+            more = '' if depth or n == 31 else f'; x{n} from {reg_origin(mod, lo, q, n, depth + 1)}'
+            return f'{rel}: load 4 bytes from [{base} + {off:#x}]{more}'
         if (w & 0xFFC00000) == 0xF9400000 and (w & 31) == r:          # LDR Xt, [Xn, #imm*8]
             n, off = (w >> 5) & 31, ((w >> 10) & 0xFFF) * 8
             base = 'sp' if n == 31 else f'x{n}'
@@ -419,10 +436,12 @@ def main():
     ap.add_argument('--before', type=int, default=40)
     ap.add_argument('--after', type=int, default=15)
     ap.add_argument('--refs', action='store_true', help='also list where each address is referenced')
+    ap.add_argument('--origin', action='append', default=[], metavar='MOD+OFF:xN',
+                    help='where register xN was last set before the instruction at MOD+OFF (repeatable)')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
-    want = {s.split('+', 1)[0] for s in a.addresses}
+    want = {s.split('+', 1)[0] for s in a.addresses} | {o.split('+', 1)[0] for o in a.origin}
     mods = {}
     for name, base, _ in layout(a.exefs):
         if name in want:
@@ -435,7 +454,14 @@ def main():
             refs(mod, addr)
             pieces(mod, addr)
         print()
-    print('=' * 72)
+    for o in a.origin:
+        at, _, reg = o.partition(':')
+        mod, addr = parse(at, mods)
+        f = mod.function(addr)
+        r = int(reg.lstrip('xXwW') or 0)
+        print(f'{at} {reg}: {reg_origin(mod, f[0], addr, r) if f else "not inside a function"}')
+    if a.origin:
+        print('=' * 72)
 
 
 if __name__ == '__main__':
