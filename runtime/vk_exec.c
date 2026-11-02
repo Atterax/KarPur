@@ -61,8 +61,26 @@ void vk_exec_frame_written(const tex_t *t) {
     fw[nfw++].n = 1;
 }
 
+// Without TOTK_TRACE=gfx: the means per frame over the last 600 presents, for finding what makes a frame slow on the
+// GPU (each full barrier lets the GPU run nothing else until all earlier work is done).
+static void frame_summary(uint64_t frame) {
+    static uint64_t since;
+    VkExecFrame *f = &vk_exec_frame;
+    if (!since) since = frame;
+    uint64_t n = frame - since;
+    if (n < 600) return;
+    double d = (double)n;
+    rt_log("vk_exec: frames %llu-%llu, per frame: submits %.1f, passes %.1f, draws %.1f (of %.1f), clears %.1f, copies "
+           "%.1f, dispatches %.1f, full barriers %.1f; feedback draws %.1f, in-pass barriers %.1f, pass restarts %.1f",
+           (unsigned long long)since, (unsigned long long)frame, f->submits / d, f->passes / d, f->draws / d,
+           f->draws_seen / d, f->clears / d, f->copies / d, f->dispatches / d, f->barriers / d, f->fb_draws / d,
+           f->fb_barriers / d, f->fb_restarts / d);
+    memset(f, 0, sizeof *f);
+    since = frame;
+}
+
 void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
-    if (!(rt_trace & RT_TRACE_GFX)) return;
+    if (!(rt_trace & RT_TRACE_GFX)) { frame_summary(frame); return; }
     VkExecFrame *f = &vk_exec_frame;
     int hit = 0;
     char list[512] = "";
@@ -563,6 +581,7 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb,
                            .imageMemoryBarrierCount = n, .pImageMemoryBarriers = ib};
     vkCmdPipelineBarrier2(ex->cb, &di);
+    vk_exec_frame.barriers++;
     ex->barrier_at = ++ex->recorded;
 }
 

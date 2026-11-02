@@ -139,9 +139,11 @@ int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
 
-// TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
+// Replay counters of the current frame: with TOTK_TRACE=gfx logged and reset at each present, else summed and logged
+// as means every 600 frames (vk_exec_frame_log).
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
+    uint64_t barriers;   // full barriers recorded (pass starts, clears, copies, dispatches: each waits for all before)
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
