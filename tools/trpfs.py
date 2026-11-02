@@ -13,7 +13,7 @@ from one big archive; files in it are known only by a 64-bit FNV-1a hash of thei
 It prints names, counts and sizes only, never file contents, and writes the full report to
 game/report/trpfs-report.txt.
 
---watch REGEX: for the packs whose name matches, writes the stored (not packed) files to game/dump and lists the Oodle
+--watch REGEX: for the packs whose name (or "index:name", so "^(12|34):" picks packs 12 and 34) matches, writes the stored (not packed) files to game/dump and lists the Oodle
 ones in game/data_watch.txt; a run with TOTK_DATA_WATCH=1 (runtime/data_watch.c) dumps those when the game unpacks
 them. Everything stays under game/ on the player's PC.
 --view: writes game/data_patch.txt, the romfs.bin offsets of the far fade distances (ModelDitherFadeDefaultParam) and
@@ -53,7 +53,8 @@ from nso import parse  # noqa: E402
 
 ROMFS = ROOT / 'game' / 'romfs'
 EXEFS = ROOT / 'game' / 'extracted' / 'update' / 'exefs'
-KEYWORDS = 'lod,dist,cull,draw,view,far,near,range,visib,level_of,detail,render,camera,fog,stream,quality,param,config'
+KEYWORDS = ('lod,dist,cull,draw,view,far,near,range,visib,level_of,detail,render,camera,fog,stream,quality,param,'
+            'config,fade,dither,spawn,generat')
 # Oodle codec ids from the second byte of a compressed block header (byte 0 is 0x8C or 0xCC)
 OODLE = {0x06: 'oodle-kraken', 0x0A: 'oodle-mermaid', 0x0B: 'oodle-selkie', 0x0C: 'oodle-hydra', 0x0D: 'oodle-leviathan'}
 
@@ -170,7 +171,24 @@ def code_strings(exefs):
             for v in (s, s.lstrip('/'), s.split(':', 1)[-1].lstrip('/')):
                 names.add(v)
                 names.add(v.lower())
+                if v.endswith('/'):
+                    names |= expand_dir(v)
     return names
+
+
+# A code string ending in '/' is a folder the code appends a file name to; Game Freak's data folders hold files named
+# after the folder (object_generation_range/object_generation_range_array.bin), so these guesses are hashed too.
+DIR_SUFFIXES = ('', '_array', '_param', '_default_param', '_table', '_data', '_list', '_setting', '_config', 'debug',
+                '_debug', '_default')
+
+
+def expand_dir(d):
+    stem = d.rstrip('/').rsplit('/', 1)[-1]
+    out = {d.rstrip('/') + ext for ext in ('.bin', '.bfbs')}
+    for suf in DIR_SUFFIXES:
+        for ext in ('.bin', '.bfbs'):
+            out.add(f'{d}{stem}{suf}{ext}')
+    return out
 
 
 DUMP = ROOT / 'game' / 'dump'
@@ -181,7 +199,7 @@ HEAD = 4096   # packed bytes the runtime's fingerprint covers (runtime/data_watc
 def watch(regex, pack_names, pack_info, toc, read, fs_off, offset_of):
     """Files of the matching packs: stored ones are written to game/dump now, Oodle ones are listed for the runtime."""
     pat = re.compile(regex, re.I)
-    packs = [i for i, n in enumerate(pack_names) if pat.search(n)]
+    packs = [i for i, n in enumerate(pack_names) if pat.search(f'{i}:{n}')]   # name or "index:" (e.g. "^1234:")
     print(f'packs matching {regex}: {len(packs)}')
     DUMP.mkdir(parents=True, exist_ok=True)
     lines, stored, listed = ['# packed unpacked fnv1a64-of-first-4KiB name (tools/trpfs.py --watch; runtime/data_watch.c)'], 0, 0
@@ -584,7 +602,7 @@ def main():
             continue
         kind, packed, size = codec(entry), entry.bytes_at(len(entry.slots) - 1, 0)[1], entry.scalar(3, 'Q')
         codecs[kind] += 1
-        say(f'  {s}  pack {pi}, {kind}, packed {packed} B, unpacked {size} B')
+        say(f'  {s}  pack {pi} ({pack_names[pi].removeprefix("arc/")}), {kind}, packed {packed} B, unpacked {size} B')
     if codecs:
         say('compression of these files: ' + ', '.join(f'{k} {c}' for k, c in codecs.most_common()))
     say('=' * 72)
