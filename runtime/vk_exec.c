@@ -85,6 +85,14 @@ static void size_end(void) {
     cur_psz = -1;
 }
 
+// The scene size the overlay shows (res_sizes without resolution patch sets): the largest pass with depth that holds
+// at least a quarter of the draws of the busiest size.
+static unsigned scene_wh[2];
+void vk_exec_scene_size(unsigned out[2]) {
+    out[0] = __atomic_load_n(&scene_wh[0], __ATOMIC_RELAXED);
+    out[1] = __atomic_load_n(&scene_wh[1], __ATOMIC_RELAXED);
+}
+
 static void size_summary(double frames) {
     int order[32];
     for (int i = 0; i < npsz; i++) order[i] = i;
@@ -101,6 +109,15 @@ static void size_summary(double frames) {
                               psz[i].h, psz[i].depth ? "+depth" : "", psz[i].passes / frames, psz[i].draws / frames);
     }
     rt_log("vk_exec: pass sizes per frame, most draws first: %s", line);
+    uint64_t top = 0, best = 0;
+    for (int i = 0; i < npsz; i++)
+        if (psz[i].depth && psz[i].draws > top) top = psz[i].draws;
+    for (int i = 0; i < npsz; i++)
+        if (psz[i].depth && psz[i].draws * 4 >= top && top && (uint64_t)psz[i].w * psz[i].h > best) {
+            best = (uint64_t)psz[i].w * psz[i].h;
+            __atomic_store_n(&scene_wh[0], psz[i].w, __ATOMIC_RELAXED);
+            __atomic_store_n(&scene_wh[1], psz[i].h, __ATOMIC_RELAXED);
+        }
     npsz = 0;
     cur_psz = -1;
 }

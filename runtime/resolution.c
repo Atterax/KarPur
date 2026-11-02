@@ -286,4 +286,9 @@ void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
     out[0] = R.on ? R.ow : BASE_W, out[1] = R.on ? R.oh : BASE_H;
     scene[0] = R.on ? R.sw : SCENE_W, scene[1] = R.on ? R.sh : SCENE_H;
+    if (!R.on) {   // KarPur: without the patch sets the game picks its own size; show the one measured (vk_exec.c)
+        unsigned m[2];
+        vk_exec_scene_size(m);
+        scene[0] = m[0] ? m[0] : out[0], scene[1] = m[1] ? m[1] : out[1];
+    }
 }
