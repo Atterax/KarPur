@@ -271,6 +271,8 @@ def main():
     ap.add_argument('mod', type=Path, nargs='+',
                     help='unpacked mod folders, or a folder of such folders (all are compared)')
     ap.add_argument('--romfs', type=Path, default=trpfs.ROMFS)
+    ap.add_argument('--only', metavar='REGEX', help='--apply: take only the fields whose path matches (e.g. '
+                    '"values\\[2\\]" or "maxGenerationNum"), to find which change does what')
     ap.add_argument('--apply', action='store_true', help='write the changed values to game/mod_patch.txt, which a '
                     'run with MOD_VALUES=1 sets in the game files as they load (files of the same layout only)')
     a = ap.parse_args()
@@ -314,7 +316,13 @@ def main():
         say()
         say(f'{len(set(watch_lines))} packed originals added to {trpfs.WATCH_LIST}: start the game once with '
             'DATA_WATCH=1, walk around, then run this tool again')
+    if sink is not None and a.only:
+        import re
+        pat = re.compile(a.only)
+        sink[:] = [ln for ln in sink if pat.search(ln.rsplit(' ', 1)[-1])]
     if sink is not None:
+        for ln in sink:
+            print('  ' + ln.rsplit(' ', 1)[-1] + ' = ' + ln.split(' mod=', 1)[1].split(' ', 1)[0])
         mp = ROOT / 'game' / 'mod_patch.txt'
         mp.parent.mkdir(parents=True, exist_ok=True)
         mp.write_text('# romfs/oodle location, type, mod=<value>, name (tools/mod_report.py --apply; '
