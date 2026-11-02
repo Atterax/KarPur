@@ -179,9 +179,9 @@ def main():
         calls, tails = direct_calls(m, base + OODLE_DECOMPRESS)
         print(f'main+{OODLE_DECOMPRESS:#x}: references "OodleLZ_Decompress": ok; {len(calls)} calls (bl), '
               f'{len(tails)} tail calls (b, left alone)')
-        for a in calls:
-            off = a - base
-            SITES.append(('data_watch', 'TOTK_DATA_WATCH', 0, off, m.word(a), [f'@pagebl:{PAGE_OODLE_HOST:x}']))
+        for site in calls:
+            off = site - base
+            SITES.append(('data_watch', 'TOTK_DATA_WATCH', 0, off, m.word(site), [f'@pagebl:{PAGE_OODLE_HOST:x}']))
             words_of[off] = SITES[-1][5]
         if not calls:
             dropped.add('data_watch')
