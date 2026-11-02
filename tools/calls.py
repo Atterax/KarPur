@@ -371,6 +371,51 @@ def sext_np(v, bits):
     return np.where(v & (1 << (bits - 1)), v - (1 << bits), v)
 
 
+def returns_report(mod, addr, depth, seen):
+    """--returns: where x0 comes from at each return of the function holding addr, its compares and tail calls; a
+    return of a game function's result is followed into that function, up to 4 levels."""
+    f = mod.function(addr)
+    ind = '  ' * depth
+    if not f:
+        print(f'{ind}{mod.name}+{addr - mod.base:#x}: not inside a function')
+        return
+    lo_, hi_ = f
+    if lo_ in seen:
+        return
+    seen.add(lo_)
+    print(f'{ind}{mod.name}+{lo_ - mod.base:#x} ({(hi_ - lo_) // 4} instructions):')
+    follow = []
+    for q in range(lo_, hi_, 4):
+        w = mod.m.word(q)
+        if (w & 0x7F20001F) == 0x6B00001F:   # CMP register (SUBS to zr)
+            print(f'{ind}  +{q - lo_:#x}: compare x{(w >> 5) & 31} ({reg_origin(mod, lo_, q, (w >> 5) & 31)}) with '
+                  f'x{(w >> 16) & 31} ({reg_origin(mod, lo_, q, (w >> 16) & 31)})')
+        elif (w & 0x7F80001F) == 0x7100001F:   # CMP immediate
+            imm = ((w >> 10) & 0xFFF) << (12 if (w >> 22) & 1 else 0)
+            print(f'{ind}  +{q - lo_:#x}: compare x{(w >> 5) & 31} ({reg_origin(mod, lo_, q, (w >> 5) & 31)}) with {imm:#x}')
+        elif w == 0xD65F03C0:   # RET
+            org = reg_origin(mod, lo_, q, 0)
+            print(f'{ind}  +{q - lo_:#x}: return x0 = {org}')
+            if 'result or clobber of a call' in org:
+                for p_ in range(q - 4, lo_ - 4, -4):   # the call that set x0
+                    wp = mod.m.word(p_)
+                    if (wp & 0xFC000000) == 0x94000000:
+                        follow.append(p_ + sext(wp & 0x3FFFFFF, 26) * 4)
+                        break
+                    if (wp & 0xFFFFFC1F) == 0xD63F0000:
+                        break
+        elif (w & 0xFC000000) == 0x14000000:
+            t = q + sext(w & 0x3FFFFFF, 26) * 4
+            if not lo_ <= t < hi_:
+                print(f'{ind}  +{q - lo_:#x}: tail call {mod.label(t)} with x0 = {reg_origin(mod, lo_, q, 0)}')
+                follow.append(t)
+    if depth < 4:
+        for t in follow:
+            if mod.m.in_text(t) and not mod.label(t).startswith('_'):
+                print(f'{ind}  follows the result of {mod.label(t)}:')
+                returns_report(mod, t, depth + 1, seen)
+
+
 def parse(addr, mods):
     if '+' not in addr:
         sys.exit(f'{addr}: expected module+offset, e.g. main+0x14fe804')
@@ -473,26 +518,7 @@ def main():
         print(f'{at} {reg}: {reg_origin(mod, f[0], addr, r) if f else "not inside a function"}')
     for o in a.returns:
         mod, addr = parse(o, mods)
-        f = mod.function(addr)
-        if not f:
-            print(f'{o}: not inside a function')
-            continue
-        lo_, hi_ = f
-        print(f'{o}: function {mod.name}+{lo_ - mod.base:#x} ({(hi_ - lo_) // 4} instructions)')
-        for q in range(lo_, hi_, 4):
-            w = mod.m.word(q)
-            if (w & 0x7F20001F) == 0x6B00001F:   # CMP Wn/Xn, Wm/Xm (SUBS to zr, shifted register)
-                print(f'  +{q - lo_:#x}: compare x{(w >> 5) & 31} ({reg_origin(mod, lo_, q, (w >> 5) & 31)}) with '
-                      f'x{(w >> 16) & 31} ({reg_origin(mod, lo_, q, (w >> 16) & 31)})')
-            elif (w & 0x7F80001F) == 0x7100001F:   # CMP Wn/Xn, #imm
-                imm = ((w >> 10) & 0xFFF) << (12 if (w >> 22) & 1 else 0)
-                print(f'  +{q - lo_:#x}: compare x{(w >> 5) & 31} ({reg_origin(mod, lo_, q, (w >> 5) & 31)}) with {imm:#x}')
-            elif w == 0xD65F03C0:   # RET
-                print(f'  +{q - lo_:#x}: return x0 = {reg_origin(mod, lo_, q, 0)}')
-            elif (w & 0xFC000000) == 0x14000000:
-                t = q + sext(w & 0x3FFFFFF, 26) * 4
-                if not lo_ <= t < hi_:
-                    print(f'  +{q - lo_:#x}: tail call {mod.label(t)} with x0 = {reg_origin(mod, lo_, q, 0)}')
+        returns_report(mod, addr, 0, set())
     if a.origin or a.returns:
         print('=' * 72)
 
