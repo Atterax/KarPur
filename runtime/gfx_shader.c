@@ -1652,13 +1652,6 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
            (unsigned long long)((uint64_t)n_failures - fail0), procs, k, (double)plat_now_ms() - t0);
     free(w.other);
 }
-// KarPur diagnostic: the translator's notes for this shader (the .res.json "notes" array as JSON text), or NULL.
-const char *gfx_shader_notes(const GfxShader *s) {
-    if (!s || !s->reflection) return NULL;
-    const char *n = strstr(s->reflection, "\"notes\"");
-    return n;
-}
-
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
     if (words) *words = s->words;
     return s->spirv;

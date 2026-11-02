@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Darstellung und Bildrate stimmen** (Mirror + späte Sync + Pool-Abgabe ≤64 MiB + heiße Stücke; `SUBMIT_SYNC` wieder aus). Heiße Stücke über längere Sitzungen beobachten (wächst die MiB-Zahl weiter?). Danach: Test-Schalter aufräumen, Sichtweite/LOD, 60 fps.
+0. **Darstellung und Bildrate stimmen** (Mirror + späte Sync + Pool-Abgabe ≤64 MiB + heiße Stücke; `SUBMIT_SYNC` aus). Test-Schalter aufgeräumt. Als Nächstes: **60 fps**, dann **Sichtweite/LOD**. Heiße Stücke über längere Sitzungen beobachten.
 0b. **Sichtweite/LOD erweitern** (Wunsch des Maintainers, wie Switch-2-Fassung): LOD-/Distanz-Parameter im Spielcode finden, per Patch-Schalter vergrößern. Nach fehlerfreier Darstellung.
 1. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
@@ -23,6 +23,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Test-Schalter der Sichtbarkeits-Fehlersuche entfernt
+- 26 Diagnose-Commits per `git revert` zurückgenommen (Konflikte nur dort, wo die Spiegel-Arbeit dieselben Zeilen berührt; von Hand gelöst, Doku behalten): `OCCLUSION`, `OQ_GPU/FILL/CLAMP`, `IND_CPU`, `IND_SHOW`, `ARGS_FORCE`, `CS_SHARED`, `SSBO_WHOLE`, `VB_WHOLE`, `DEPTH_EQUAL`, `NO_DISCARD`, `A2C`-Schalter (A2C-Verhalten wie vorher), `RECONVERGE` samt Aktivierung von maximal reconvergence, `ONE_CPU`, `READ_WATCH` (VEH in `platform/win32.c`), F8-Schnappschüsse, Compute-Dispatch-Bericht und Übersetzer-Notizen, Occlusion-/Counter-/Indirect-Statistiken, Tiefenziel-Diagnose, `symbolize.py --log/--grep`. Rund 1070 Zeilen weniger.
+- Behalten: `IND_BASE` (Basisinstanz-Korrektur, 06244c2), Zeichenparameter-Übersetzung (f52ac2a), `XLATE_DEBUG`, `SUBMIT_SYNC` (Standard 0), `TEX_RECLAIM`, `MIRROR_LATE/DEMOTE/DEMOTE_MAX/HOT`, `XLATE`-Patch 0010.
+- Geprüft: Lifter-Test grün; geänderte Runtime-Dateien kompilieren hier (Header-bedingte Fehler in anderen Dateien bestanden vorher); Erweiterungsliste in `vk_device.c` wieder 28 Plätze, belegt höchstens 22.
 
 ### 2026-11-02: SUBMIT_SYNC wieder aus
 - Test `SUBMIT_SYNC=0` mit Mirror + später Sync + heißen Stücken: keine Einbrüche, kein Flackern, nichts Auffälliges (Maintainer). Das Warten nach jedem Submit hatte nur die zu späten Spiegel-Daten verdeckt. Standard jetzt 0 (`nvn_api_core.c`).

@@ -915,120 +915,10 @@ static void pin_subgroup32(VkPipelineShaderStageCreateInfo *st, VkPipelineShader
     st->pNext = rq;
 }
 
-// TOTK_A2C=0 (KarPur test): alpha to coverage off in every pipeline. NVN can dither alpha to coverage across pixels
-// (NVNmultisampleState alphaToCoverageDither); Vulkan's single-sample alpha to coverage keeps a fragment only at
-// alpha >= 0.5, so an object faded by alpha vanishes where the Switch draws a dither pattern. Logs the first draw state
-// with it on.
-static int a2c_on(const VkPipeState *s) {
-    static int mode = -1, logged;
-    if (mode < 0) {
-        mode = rt_knob("A2C", "1");
-        if (!mode) rt_log("vk_pipeline: alpha to coverage is off (TOTK_A2C=0)");
-    }
-    if (s->ms.a2c && !logged) {
-        logged = 1;
-        rt_log("vk_pipeline: alpha to coverage requested (dither %u, samples %u, raster samples %u)%s", s->ms.a2c_dither,
-               s->samples, s->ms.raster_samples, mode ? "" : ": turned off");
-    }
-    return mode && s->ms.a2c;
-}
-
-// TOTK_NO_DISCARD=1 (KarPur test): fragment shaders never discard (OpKill becomes OpReturn in functions returning
-// void). Cut-out foliage turns into solid cards; objects a shader discards whole (distance or camera fades) show up.
-static uint32_t *no_discard(const uint32_t *w, uint64_t n) {
-    static int on = -1;
-    if (on < 0) {
-        on = rt_knob("NO_DISCARD", "0");
-        if (on) rt_log("vk_pipeline: fragment shaders do not discard (TOTK_NO_DISCARD=1)");
-    }
-    if (!on || n < 6) return NULL;
-    enum { OP_TYPE_VOID = 19, OP_ENTRY_POINT = 15, OP_FUNCTION = 54, OP_KILL = 252, OP_RETURN = 253 };
-    uint32_t void_t = 0;
-    int frag = 0, any = 0;
-    for (uint64_t i = 5; i < n;) {
-        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
-        if (!l || i + l > n) return NULL;
-        if (op == OP_TYPE_VOID && l >= 2) void_t = w[i + 1];
-        if (op == OP_ENTRY_POINT && l >= 2 && w[i + 1] == 4) frag = 1;   // ExecutionModel Fragment
-        any |= op == OP_KILL;
-        i += l;
-    }
-    if (!frag || !any) return NULL;
-    uint32_t *o = malloc(n * 4);
-    if (!o) return NULL;
-    memcpy(o, w, n * 4);
-    int in_void = 0;
-    for (uint64_t i = 5; i < n;) {
-        uint32_t op = o[i] & 0xffff, l = o[i] >> 16;
-        if (op == OP_FUNCTION && l >= 2) in_void = o[i + 1] == void_t;
-        if (op == OP_KILL && l == 1 && in_void) o[i] = 1u << 16 | OP_RETURN;
-        i += l;
-    }
-    return o;
-}
-
-// TOTK_RECONVERGE=1 (KarPur test): a shader with subgroup operations gets SPV_KHR_maximal_reconvergence and the
-// MaximallyReconvergesKHR execution mode on each entry point. Maxwell reconverges a warp explicitly (SSY/SYNC), so a
-// ballot, an atomic by the elected lane and the shuffle that hands its result out see the same lanes; Vulkan without
-// the mode leaves reconvergence after divergent code to the driver. Violet's GPU culling counts that way
-// (vk_exec_draw.c cs_note). NULL: unchanged.
-static uint32_t *reconverge(const uint32_t *w, uint64_t n, uint64_t *out_n) {
-    static int on = -1;
-    if (on < 0) {
-        on = rt_knob("RECONVERGE", "0");
-        if (on) rt_log("vk_pipeline: shaders with subgroup operations reconverge maximally (TOTK_RECONVERGE=1)%s",
-                       vk_ctx()->has_max_reconvergence ? "" : ", but the device does not offer it: off");
-    }
-    if (!on || !vk_ctx()->has_max_reconvergence || n < 6 || !uses_subgroup_ops(w, n)) return NULL;
-    enum { OP_CAPABILITY = 17, OP_EXTENSION = 10, OP_ENTRY_POINT = 15, OP_EXECUTION_MODE = 16, MODE_MAX_RECONV = 6023 };
-    static const char name[32] = "SPV_KHR_maximal_reconvergence";   // 29 characters, NUL padded to 8 words
-    uint32_t entries[8], ne = 0;
-    for (uint64_t i = 5; i < n;) {
-        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
-        if (!l || i + l > n) return NULL;
-        if (op == OP_ENTRY_POINT && l >= 3 && ne < 8) entries[ne++] = w[i + 2];
-        i += l;
-    }
-    if (!ne) return NULL;
-    uint32_t *o = malloc((n + 9 + 3 * ne) * 4);
-    if (!o) return NULL;
-    memcpy(o, w, 5 * 4);
-    uint64_t on_ = 5;
-    int ext_done = 0, mode_done = 0, seen_entry = 0;
-    for (uint64_t i = 5; i < n;) {
-        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
-        if (!ext_done && op != OP_CAPABILITY && op != OP_EXTENSION) {   // extensions follow the capabilities
-            o[on_++] = 9u << 16 | OP_EXTENSION;
-            memcpy(o + on_, name, 32), on_ += 8;
-            ext_done = 1;
-        }
-        if (seen_entry && !mode_done && op != OP_ENTRY_POINT) {   // execution modes follow the entry points
-            for (uint32_t e = 0; e < ne; e++) o[on_++] = 3u << 16 | OP_EXECUTION_MODE, o[on_++] = entries[e], o[on_++] = MODE_MAX_RECONV;
-            mode_done = 1;
-        }
-        seen_entry |= op == OP_ENTRY_POINT;
-        memcpy(o + on_, w + i, l * 4), on_ += l;
-        i += l;
-    }
-    *out_n = on_;
-    return o;
-}
-
 static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
     uint64_t fixed_n = 0;
     uint32_t *fixed = spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
-    uint64_t rc_n = 0;
-    uint32_t *rc = reconverge(w, words, &rc_n);
-    if (rc) {
-        free(fixed);
-        fixed = rc, w = rc, words = rc_n;
-    }
-    uint32_t *nd = no_discard(w, words);
-    if (nd) {
-        free(fixed);
-        fixed = nd, w = nd;
-    }
     VkShaderModuleCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = (size_t)words * 4, .pCode = w};
     VkShaderModule m = VK_NULL_HANDLE;
     VkResult r = vkCreateShaderModule(P.device, &ci, NULL, &m);
@@ -1422,7 +1312,7 @@ static void gkey_fill(const VkPipeState *s, GKey *k) {
     k->fbl = s->fs ? s->feedback : 0;
     if (!P.dyn_clamp) k->clamp = s->depth_clamp && P.f_depth_clamp;
     if (!P.dyn_poly) k->poly_mode = (uint8_t)polygon_mode(s->poly.mode);
-    if (!P.dyn_a2c) k->a2c = a2c_on(s) != 0;
+    if (!P.dyn_a2c) k->a2c = s->ms.a2c != 0;
     if (P.f_logic_op && s->color.logic_op != NVN_LOGIC_OP_COPY) k->logic_op = (uint8_t)(s->color.logic_op + 1);
     for (int i = 0; i < k->n_color; i++) {
         int on = (s->color.blend_en >> i & 1) && blendable(k->color[i]);
@@ -3165,16 +3055,7 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     vkCmdSetPrimitiveTopology(cb, vk_pipeline_topology(s->prim));
     vkCmdSetDepthTestEnable(cb, d->dt);
     vkCmdSetDepthWriteEnable(cb, d->dw);
-    // TOTK_DEPTH_EQUAL=0 (KarPur test): a depth test EQUAL becomes GREATER_OR_EQUAL (Violet draws reverse-Z). A colour
-    // pass that tests EQUAL against the depth an earlier pass wrote draws nothing when the two vertex shaders compute a
-    // minimally different depth on this GPU; the object then hides what is behind it but shows no colour itself.
-    static int eq_mode = -1, eq_logged;
-    if (eq_mode < 0) {
-        eq_mode = rt_knob("DEPTH_EQUAL", "1");
-        if (!eq_mode) rt_log("vk_pipeline: depth test EQUAL is replayed as GREATER_OR_EQUAL (TOTK_DEPTH_EQUAL=0)");
-    }
-    if (d->df == 3 && d->dt && !eq_logged) eq_logged = 1, rt_log("vk_pipeline: a draw tests depth EQUAL");
-    vkCmdSetDepthCompareOp(cb, d->df == 3 && !eq_mode ? VK_COMPARE_OP_GREATER_OR_EQUAL : compare_op(d->df));
+    vkCmdSetDepthCompareOp(cb, compare_op(d->df));
     vkCmdSetStencilTestEnable(cb, d->st);
     vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_BIT, stencil_op(d->fail_f), stencil_op(d->zpass_f), stencil_op(d->zfail_f),
                       compare_op(d->sf_f));
@@ -3192,7 +3073,7 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     }
     if (P.dyn_clamp) rec_bool(P.set_clamp, cb, s->depth_clamp != 0);
     if (P.dyn_poly) rec_polygon_mode(P.set_poly, cb, polygon_mode(pl->mode));
-    if (P.dyn_a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, a2c_on(s) != 0);   // the same signature
+    if (P.dyn_a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, s->ms.a2c != 0);   // the same signature
     int n = target_count(s);
     if (!n) return;
     VkBool32 en[8];

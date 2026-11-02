@@ -38,7 +38,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
@@ -195,67 +194,11 @@ void vk_exec_oq_draw(VkExec *ex) {
 
 void vk_exec_oq_pass_end(VkExec *ex) { oq_close(ex); }
 
-int vk_exec_oq_counting(void) { return oq_open >= 0; }
-
 void vk_exec_xfer_shutdown(void) {
     if (oq_state > 0) vkDestroyQueryPool(vk_ctx()->device, oq_pool, NULL);
     oq_pool = VK_NULL_HANDLE, oq_state = 0, oq_next = 0, oq_counting = oq_reported = oq_keep = 0, oq_open = -1;
     oq_nseg = 0, oq_lost = 0, oq_count = 0;
     memset((void *)oq_busy, 0, sizeof oq_busy);
-}
-
-// TOTK_OCCLUSION=0 (A/B test, KarPur): every samples-passed report the CPU can read gets a large count that grows with
-// each report, so whatever the game culls on a 0 count (or on a 0 difference of two reports) stays visible. Objects
-// that appear with it are culled because the replay's occlusion counts say "hidden".
-static int oq_fake(void) {
-    static int mode = -1;
-    if (mode < 0) {
-        mode = !rt_knob("OCCLUSION", "1");
-        if (mode) rt_log("vk: samples-passed reports always say visible (TOTK_OCCLUSION=0)");
-    }
-    return mode;
-}
-
-// TOTK_OQ_CLAMP=<n> (KarPur test): a samples-passed count above n is reported as n (0: off). The game may pick level of
-// detail or hide objects close to the camera by how many pixels its proxy covers, so too large a count would hide what
-// fills the middle of the screen; OQ_CLAMP=1 reports every visible proxy as one pixel.
-static uint64_t oq_clamp(uint64_t v) {
-    static int64_t max = -1;
-    if (max < 0) {
-        const char *e = cfg_get("TOTK_OQ_CLAMP");
-        max = e && *e ? strtoll(e, NULL, 10) : 0;
-        if (max < 0) max = 0;
-        if (max) rt_log("vk: samples-passed counts above %lld are reported as %lld (TOTK_OQ_CLAMP)", (long long)max, (long long)max);
-    }
-    return max && v > (uint64_t)max ? (uint64_t)max : v;
-}
-
-static uint64_t oq_fake_next(void) {
-    static uint64_t v;
-    return v += 0x10000;
-}
-
-// Report: how many samples-passed reports reached CPU-visible memory and how many of them said 0 (hidden), every
-// 4096 reports, plus the first one. Counts only, completion thread.
-static void oq_stat(int cpu, uint64_t count, uint32_t queries) {
-    static uint64_t reports, cpu_reports, zeros, no_query, total, largest, big;
-    reports++, total++;
-    if (cpu && count > largest) largest = count;
-    big += cpu && count >= 10000;
-    if (reports > 16 * 4096) reports = cpu_reports = zeros = no_query = 0;
-    cpu_reports += cpu;
-    zeros += cpu && !count;
-    no_query += cpu && !queries;
-    if (total == 1)
-        rt_log("vk: first samples-passed report: %s memory, count %llu from %u queries", cpu ? "CPU-visible" : "GPU-only",
-               (unsigned long long)count, queries);
-    if (reports < 4096 || (total > 3 * 4096 && total % (16 * 4096))) return;   // the first three, then every 16th
-    rt_log("vk: occlusion: %llu samples-passed reports (%llu total), %llu to CPU-visible memory, %llu of those 0 "
-           "(%llu without any query), %llu of 10000 samples or more, largest %llu%s", (unsigned long long)reports,
-           (unsigned long long)total, (unsigned long long)cpu_reports, (unsigned long long)zeros,
-           (unsigned long long)no_query, (unsigned long long)big, (unsigned long long)largest,
-           oq_fake() ? ", written as visible (TOTK_OCCLUSION=0)" : "");
-    reports = cpu_reports = zeros = no_query = largest = big = 0;
 }
 
 static void oq_cb(void *arg) {
@@ -288,116 +231,14 @@ static void oq_cb(void *arg) {
     else {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
-        if (s->addr) write_counter(s->addr, oq_fake() ? oq_fake_next() : oq_clamp(oq_count));
-        oq_stat(s->addr != 0, oq_count, s->n);
+        if (s->addr) write_counter(s->addr, oq_count);
     }
     free(s);
 }
 
-// Report ranges of the current 600-frame window, for the diagnostic in vk_exec_draw.c (a shader binding them reads
-// samples-passed results on the GPU).
-static uint64_t oq_lo = ~0ull, oq_hi;
-void vk_exec_oq_range(uint64_t *lo, uint64_t *hi, int reset) {
-    *lo = oq_lo, *hi = oq_hi;
-    if (reset) oq_lo = ~0ull, oq_hi = 0;
-}
-
-// TOTK_OQ_GPU=1 (KarPur test): a report of a segment with exactly one query (reset, proxy draws in one pass, report)
-// also writes the count into the counter word on the GPU (vkCmdCopyQueryPoolResults, waiting for the result), so a
-// shader later in the same submission reads it, as on the Switch where the GPU writes reports in order. The completion
-// thread still writes the same value for the CPU. Ends the open pass. Segments with several queries, or cumulative
-// counting, keep the CPU write only (counted in oq_gpu_miss).
-static uint64_t oq_gpu_done, oq_gpu_miss;
-static int oq_gpu(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = rt_knob("OQ_GPU", "0");
-        if (on) rt_log("vk: samples-passed reports with one query are also written by the GPU (TOTK_OQ_GPU=1)");
-    }
-    return on;
-}
-
 // Hands the segment to the completion thread with a report (addr; 0: no CPU-visible memory) or a reset.
-// Pages (4 KiB) holding samples-passed reports in the current window: an open-addressing set, for the precise binding
-// diagnostic (vk_exec_oq_page_hit). Replay thread only.
-#define OQ_PAGES 16384
-static uint64_t oq_page[OQ_PAGES];   // page number + 1, 0 empty
-static uint32_t oq_npage;
-
-static void oq_page_add(uint64_t addr) {
-    uint64_t pg = (addr >> 12) + 1;
-    if (oq_npage >= OQ_PAGES / 2) return;
-    for (uint32_t i = (uint32_t)(pg * 0x9e3779b97f4a7c15ull >> 50) % OQ_PAGES;; i = (i + 1) % OQ_PAGES) {
-        if (oq_page[i] == pg) return;
-        if (!oq_page[i]) { oq_page[i] = pg, oq_npage++; return; }
-    }
-}
-
-static int oq_page_has(uint64_t pg1) {
-    for (uint32_t i = (uint32_t)(pg1 * 0x9e3779b97f4a7c15ull >> 50) % OQ_PAGES;; i = (i + 1) % OQ_PAGES) {
-        if (oq_page[i] == pg1) return 1;
-        if (!oq_page[i]) return 0;
-    }
-}
-
-// 1 when [addr, addr+n) touches a page with a samples-passed report of this window (at most 4096 pages checked).
-int vk_exec_oq_page_hit(uint64_t addr, uint64_t n) {
-    if (!oq_npage || !n) return 0;
-    uint64_t a = addr >> 12, b = (addr + n - 1) >> 12;
-    if (b - a > 4096) b = a + 4096;
-    for (uint64_t pg = a; pg <= b; pg++)
-        if (oq_page_has(pg + 1)) return 1;
-    return 0;
-}
-
-uint32_t vk_exec_oq_pages(int reset) {
-    uint32_t n = oq_npage;
-    if (reset) memset(oq_page, 0, sizeof oq_page), oq_npage = 0;
-    return n;
-}
-
-// TOTK_OQ_FILL=1 (KarPur test): every samples-passed report into CPU-visible memory also fills the 16-byte report
-// on the GPU with a nonzero pattern (vkCmdFillBuffer, ends the open pass), so a shader later in the same submission
-// reads "visible". The GPU-side counterpart of TOTK_OCCLUSION=0, which only reaches the CPU after the fence.
-static int oq_fill(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = rt_knob("OQ_FILL", "0");
-        if (on) rt_log("vk: samples-passed reports are also filled with a nonzero value on the GPU (TOTK_OQ_FILL=1)");
-    }
-    return on;
-}
-
-static void oq_segment(VkExec *ex, uint64_t addr, int reset, VkMemSpan *m) {
+static void oq_segment(VkExec *ex, uint64_t addr, int reset) {
     oq_close(ex);
-    if (addr && !reset) {
-        if (addr < oq_lo) oq_lo = addr;
-        if (addr + 16 > oq_hi) oq_hi = addr + 16;
-        oq_page_add(addr);
-    }
-    if (m && oq_fill() && m->offset % 4 == 0) {
-        vk_exec_barrier(ex);
-        VK_MEM_PICK_N(*m, 16);
-        vkCmdFillBuffer(ex->cb, m->buffer, m->offset, 16, 0x00010001u);
-        ex->recorded++;
-        vk_mem_gpu_wrote(m, 16);
-        note_gpu_write(ex, addr, 16);
-    }
-    if (m && oq_gpu()) {
-        if (oq_nseg == 1 && !oq_keep && !oq_lost && m->offset % 8 == 0) {
-            vk_exec_barrier(ex);
-            VK_MEM_PICK_N(*m, 8);   // as the other copies: the mirror only when the pool already has one
-            vkCmdCopyQueryPoolResults(ex->cb, oq_pool, oq_seg[0], 1, m->buffer, m->offset, 8,
-                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-            ex->recorded++;
-            vk_mem_gpu_wrote(m, 8);
-            note_gpu_write(ex, addr, 8);
-            oq_gpu_done++;
-        } else oq_gpu_miss++;
-        if ((oq_gpu_done + oq_gpu_miss) % 65536 == 1)
-            rt_log("vk: GPU-written samples-passed reports: %llu, left to the CPU: %llu", (unsigned long long)oq_gpu_done,
-                   (unsigned long long)oq_gpu_miss);
-    }
     OqSegment *s = malloc(sizeof *s + sizeof *s->q * oq_nseg);
     if (!s) rt_fatal("vk: out of memory");
     s->addr = addr, s->reset = reset, s->lost = oq_lost, s->n = oq_nseg;
@@ -408,14 +249,14 @@ static void oq_segment(VkExec *ex, uint64_t addr, int reset, VkMemSpan *m) {
 
 static void reset_counter(VkExec *ex, const p_reset_counter *p) {
     if (p->type != NVN_COUNTER_TYPE_SAMPLES_PASSED || !oq_ready()) return;
-    oq_segment(ex, 0, 1, NULL);
+    oq_segment(ex, 0, 1);
     oq_counting = 1, oq_reported = 0;
 }
 
 // A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
 // reset, unless reports came without resets before.
-static void oq_report(VkExec *ex, uint64_t addr, VkMemSpan *m) {
-    oq_segment(ex, addr, 0, m);
+static void oq_report(VkExec *ex, uint64_t addr) {
+    oq_segment(ex, addr, 0);
     if (oq_reported && !oq_keep) {
         oq_keep = 1;
         rt_log("vk: samples passed reported twice without a reset: counting every draw from now on");
@@ -431,42 +272,17 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
     vk_completion_add(ex->fence, event_cb, e);
 }
 
-// KarPur diagnostic: counter reports by NVN counter type (0-16, 17 other) and GPU-only destination, conditional render
-// ops by outcome, and render-enable ops, logged every 1800 replayed frames (the first three windows). Counter types
-// other than samples passed get 0 (timestamps their time) from this replay: a game that reads one of them would see 0.
-static uint64_t cnt_type[18], cnt_gpu_only, cond_ops[3], enable_ops[2];   // cond: rendered, skipped, unknown
-static int cnt_logs;
-static uint64_t cnt_frame0;
-static void cnt_tick(void) {
-    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-    if (!cnt_frame0) cnt_frame0 = f ? f : 1;
-    if (f < cnt_frame0 + 1800 || cnt_logs >= 3) return;
-    cnt_logs++;
-    char buf[512], *o = buf;
-    for (int t = 0; t < 18; t++)
-        if (cnt_type[t]) o += snprintf(o, (size_t)(buf + sizeof buf - o), " type %d: %llu;", t, (unsigned long long)cnt_type[t]);
-    rt_log("vk: frames %llu-%llu: counter reports by type:%s GPU-only %llu; conditional render: rendered %llu, skipped %llu, "
-           "undecided %llu; render enable on %llu off %llu", (unsigned long long)cnt_frame0, (unsigned long long)f,
-           o == buf ? " none;" : buf, (unsigned long long)cnt_gpu_only, (unsigned long long)cond_ops[0],
-           (unsigned long long)cond_ops[1], (unsigned long long)cond_ops[2], (unsigned long long)enable_ops[1],
-           (unsigned long long)enable_ops[0]);
-    memset(cnt_type, 0, sizeof cnt_type), memset(cond_ops, 0, sizeof cond_ops), memset(enable_ops, 0, sizeof enable_ops);
-    cnt_gpu_only = 0, cnt_frame0 = f;
-}
-
 static void report_counter(VkExec *ex, const p_report_counter *p) {
-    cnt_type[p->type <= 16 ? p->type : 17]++, cnt_gpu_only += nvn_gpu_only(p->addr) != 0;
-    cnt_tick();
     int samples = p->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && oq_ready();
     if (nvn_gpu_only(p->addr)) {   // CPU-invisible pool: no host memory behind it
-        if (samples) oq_report(ex, 0, NULL);
+        if (samples) oq_report(ex, 0);
         return;
     }
     VkMemSpan m;
     if (!vk_mem_resolve(p->addr, sizeof(NVNcounterData), &m))
         rt_fatal("vk: counter report at %#llx is in no memory pool", (unsigned long long)p->addr);
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
-    if (samples) oq_report(ex, p->addr, &m);
+    if (samples) oq_report(ex, p->addr);
     else {
         uint64_t *a = malloc(sizeof *a);
         if (!a) rt_fatal("vk: out of memory");
@@ -634,12 +450,6 @@ static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
         return;
     }
     VkImageSubresourceLayers sl = sub_layers(&s), dl = sub_layers(&d);
-    if (vk_oq_depth.img && d.img->image == vk_oq_depth.img) {
-        if (s.img->samples > 1 && d.img->samples == 1) vk_oq_depth.resolves++;
-        else if (same_size && same_format) vk_oq_depth.copies++;
-        else vk_oq_depth.blits++;
-        vk_oq_depth.src_w = s.w, vk_oq_depth.src_h = s.h, vk_oq_depth.src_fmt = (uint32_t)p->src->d.format;
-    }
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);
     if (s.img->samples > 1 && d.img->samples == 1) {
@@ -796,19 +606,11 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload) {
     case OP_REPORT_COUNTER: report_counter(ex, payload); break;
     case OP_RESET_COUNTER: reset_counter(ex, payload); break;
     case OP_CLEAR_BUF: clear_buf(ex, payload); break;
-    case OP_RENDER_ENABLE:
-        ex->render_disabled = !((const p_flag *)payload)->value;
-        enable_ops[((const p_flag *)payload)->value != 0]++;
-        break;
+    case OP_RENDER_ENABLE: ex->render_disabled = !((const p_flag *)payload)->value; break;
     case OP_RENDER_COND:
         ex->render_cond = *(const p_render_cond *)payload;
         ex->has_render_cond = 1;
         ex->render_disabled = !cond_enabled(payload);
-        {   // diagnostic: undecided = a counter of the condition not readable or not done yet (rendered then)
-            uint64_t x, y;
-            int rx = counter_word(ex->render_cond.addr, &x), ry = counter_word(ex->render_cond.addr + 16, &y);
-            cond_ops[!rx || !ry || rx == 2 || ry == 2 ? 2 : ex->render_disabled ? 1 : 0]++;
-        }
         break;
     default: rt_fatal("vk: op %s is not a transfer", nvn_op_name(op));
     }

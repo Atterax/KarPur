@@ -23,7 +23,6 @@
 
 #include "cfg.h"
 #include "host.h"
-#include "input.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "vk.h"
@@ -246,14 +245,6 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
     uint8_t *p = c->map + c->used;
     c->used += size;
     return p;
-}
-
-// 1 when a shader of this command buffer stored into memory overlapping [addr, addr+size) (note_written ranges).
-static int shader_wrote(VkExec *ex, uint64_t addr, uint64_t size) {
-    CbRes *r = cb_res(ex);
-    for (int i = 0; i < r->nwritten; i++)
-        if (addr < r->written[i].addr + r->written[i].size && r->written[i].addr < addr + size) return 1;
-    return 0;
 }
 
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
@@ -681,38 +672,6 @@ static uint8_t type_of_handle(uint64_t h) {   // texture lock held
     return img ? (uint8_t)gfx_type_of(img, &v, hv) : 0;
 }
 
-// KarPur: the shared memory size a compute shader is translated with. The NVN control section's field for it is not
-// known yet, so the answer is 0 and Ryujinx declares 4096 bytes; a shader that uses more reads and writes outside the
-// array. TOTK_CS_SHARED=<bytes> (test, e.g. 49152, the device limit) declares that much in every compute shader that
-// uses shared memory. cs_control_note logs the control words around the local size of the first 24 compute
-// programs, to find the real field.
-static uint32_t cs_shared_bytes(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char *e = cfg_get("TOTK_CS_SHARED");
-        v = e && *e ? atoi(e) : 0;
-        if (v < 0) v = 0;
-        if (v) rt_log("vk_exec: compute shaders are translated with %d bytes of shared memory (TOTK_CS_SHARED)", v);
-    }
-    return (uint32_t)v;
-}
-
-static void cs_control_note(const uint8_t *ctl) {
-    static uint32_t seen[24];
-    static int n;
-    if (n >= 24 || !ctl) return;
-    uint32_t w[24];
-    memcpy(w, ctl + 0x720, sizeof w);
-    uint32_t h = 2166136261u;
-    for (int i = 0; i < 24; i++) h = (h ^ w[i]) * 16777619u;
-    for (int i = 0; i < n; i++)
-        if (seen[i] == h) return;
-    seen[n++] = h;
-    char line[24 * 12], *o = line;
-    for (int i = 0; i < 24; i++) o += sprintf(o, " %x", w[i]);
-    rt_log("vk_exec: compute control %d, words from +0x720:%s", n, line);
-}
-
 // The answers of stage st for the slots in mask; the types of other slots stay zero.
 static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, GfxShaderAnswers *a) {
     memset(a, 0, sizeof *a);
@@ -724,7 +683,6 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
             memcpy(&l, ctl + 0x748 + 4 * k, 4);
             a->local[k] = (uint16_t)(l ? l : 1);
         }
-    if (st == NVN_STAGE_CS) a->shared_bytes = cs_shared_bytes(), cs_control_note(ctl);
     typeof(AC[0]) *c = &AC[st];
     // The generation and tokens are read before the lookups (one that creates an entry changes them) and unlocked: a
     // registration racing with them is ordered after this draw, and a slot stored under older ones is only looked up
@@ -813,13 +771,6 @@ static void count_use(int cls, int use, uint64_t n) {
     else RS.cnt_over = 1;
 }
 
-static int twin_dispatch;                // op_dispatch*: the resources being bound are a dispatch's
-// KarPur diagnostic: buffer bindings that overlap the window's samples-passed report addresses, by compute dispatches
-// and by draws. Nonzero: shaders read occlusion results on the GPU (the replay writes them from the CPU after the
-// fence, too late for a shader in the same submission).
-static uint64_t oq_bind[4];   // compute storage, compute uniform, draw storage, draw uniform
-VkOqDepthDiag vk_oq_depth;
-
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
 // aligned, a copy in transient memory when the backing is host memory with an unaligned offset. 0 when neither works.
 // written: the shader stores into it (a mirror's range goes back to guest memory at the end of the submission).
@@ -830,7 +781,6 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     uint64_t n = size && size < sp.avail ? size : sp.avail;
     if (n > max) n = max;
     if (!n) return 0;
-    if (use != VK_MUSE_UBO && vk_exec_oq_page_hit(addr, n)) oq_bind[twin_dispatch ? 0 : 2]++;   // UBOs: ubo_info
     if (sp.offset % align == 0) {
         VK_MEM_USE_N(sp, n);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
@@ -937,7 +887,6 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         }
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
-        if (b->size && vk_exec_oq_page_hit(b->addr, b->size)) oq_bind[(st == NVN_STAGE_CS ? 0 : 2) + 1]++;   // diagnostic
         if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {   // as of the submit call
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;
@@ -1024,24 +973,7 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
-        {   // diagnostic: storage bindings whose address is not a multiple of the device alignment, by stage, once each
-            static int logged[6];
-            if (lead && st < 6 && logged[st] < 3) {
-                logged[st]++;
-                rt_log("vk_exec: storage binding of stage %d at an address %llu bytes past a %u-byte boundary (%s, %llu bytes)",
-                       st, (unsigned long long)lead, vk_caps.sbuf_align, ubo ? "uniform block as storage" : "storage",
-                       (unsigned long long)b->size);
-            }
-        }
-        // TOTK_SSBO_WHOLE=1 (KarPur A/B test): a storage buffer the shader only reads is bound up to the end of its memory,
-        // not at the size the game gave (written ones keep it: their range is written back to guest memory). Maxwell does not bound-check storage accesses; Vulkan with robustBufferAccess returns zeros past the
-        // binding and drops writes there, so a shader that reaches past the size it was given behaves differently.
-        static int whole = -1;
-        if (whole < 0) {
-            whole = rt_knob("SSBO_WHOLE", "0");
-            if (whole) rt_log("vk_exec: storage buffers are bound up to the end of their memory (TOTK_SSBO_WHOLE=1)");
-        }
-        if (bind_range(ex, b->addr - lead, b->size && !(whole && !written) ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
+        if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
                        written, &bi)) {
             if (written && bi.buffer != VK_NULL_HANDLE) note_written(ex, b->addr - lead, bi.range);
             return bi;
@@ -1322,6 +1254,7 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
 typedef struct { VkImage src, img; VmaAllocation mem; VkImageView view[2]; uint32_t w, h, layers; VkFormat fmt; } Twin;
 static Twin twins[TWINS];
 static unsigned twin_next;
+static int twin_dispatch;                // op_dispatch*: the resources being bound are a dispatch's
 static VkBuffer twin_buf;
 static VmaAllocation twin_buf_mem;
 static VkDeviceSize twin_buf_cap;
@@ -1996,14 +1929,7 @@ static void bind_vertex_buffers(VkExec *ex) {
         VkMemSpan sp;
         if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
         VK_MEM_USE_N(sp, r->size && r->size < sp.avail ? r->size : sp.avail);
-        // TOTK_VB_WHOLE=1 (KarPur A/B test): vertex buffers bound up to the end of their memory instead of the size the
-        // game gave; robust vertex fetch reads zeros past the binding where Maxwell reads on.
-        static int vb_whole = -1;
-        if (vb_whole < 0) {
-            vb_whole = rt_knob("VB_WHOLE", "0");
-            if (vb_whole) rt_log("vk_exec: vertex buffers are bound up to the end of their memory (TOTK_VB_WHOLE=1)");
-        }
-        uint64_t n = r->size && r->size < sp.avail && !vb_whole ? r->size : sp.avail;
+        uint64_t n = r->size && r->size < sp.avail ? r->size : sp.avail;
         vb[b] = sp.buffer, vo[b] = sp.offset, vsz[b] = n, vcls[b] = sp.cls, vpool[b] = sp.pool;
     }
     memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
@@ -2096,242 +2022,11 @@ static int pipe_memo_on(void) {
     return PM.on;
 }
 
-static void rww_poll(void);   // read watch, below
-
-// TOTK_ARGS_FORCE=1 (KarPur test): once a submission is done, every indirect draw argument record seen so far that
-// holds instance count 0 gets 1 in guest memory. Violet's CPU reads these records (written by its GPU culling) back in
-// the next frame (read watch: f_7000b89f1c) and decides from them what it draws. Objects that then appear are ones the
-// culling shader counted as not visible. Draws themselves stay as the GPU wrote them.
-#define AF_N 65536
-static uint64_t af_addr[AF_N];   // open addressing, 0 empty
-static uint32_t af_n;
-static int af_on(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = rt_knob("ARGS_FORCE", "0");
-        if (on) rt_log("vk_exec: indirect draw arguments with instance count 0 are set to 1 after each submission (TOTK_ARGS_FORCE=1)");
-    }
-    return on;
-}
-static void af_add(uint64_t a) {
-    if (af_n >= AF_N / 2) return;
-    for (uint32_t i = (uint32_t)(a * 0x9e3779b97f4a7c15ull >> 48) % AF_N;; i = (i + 1) % AF_N) {
-        if (af_addr[i] == a) return;
-        if (!af_addr[i]) { af_addr[i] = a, af_n++; return; }
-    }
-}
-static void af_cb(void *arg) {
-    (void)arg;
-    uint64_t fixed = 0;
-    for (uint32_t i = 0; i < AF_N; i++) {
-        uint64_t a = af_addr[i];
-        if (!a) continue;
-        volatile uint32_t *ic = (volatile uint32_t *)(uintptr_t)(a + 4);
-        if (!*ic) *ic = 1, fixed++;
-    }
-    static int logs;
-    if (logs < 3 && fixed) logs++, rt_log("vk_exec: ARGS_FORCE set %llu instance counts to 1", (unsigned long long)fixed);
-}
-
-// ---- F8 draw snapshots (KarPur diagnostic)
-// F8 in the game window marks the next frame: its draws are collected as (mesh key, instances), where the key is the
-// index buffer, first index, index count and vertex offset (indirect: as the CPU sees the arguments, which a shader
-// wrote one or two frames earlier) or the index buffer, count and base vertex (direct). The second F8 compares the new
-// frame with the one before: meshes drawn then that now have no instances (culled) or no draw at all (not issued), and
-// the largest of them. Press it once where a missing object is visible and once where it is not. Counts only.
-enum { SNAP_IND, SNAP_IDX, SNAP_ARR };
-typedef struct { uint64_t key; uint32_t inst, count, draws; uint8_t kind; uint32_t chmask, misc, blend0, prog, vb0, vb1, itype; int lay; } SnapEnt;
-#define SNAP_N 32768
-static SnapEnt *snap_cur, *snap_prev;
-static uint32_t snap_ncur, snap_nprev;
-static int snap_state, snap_key_was, snap_no;
-static uint64_t snap_frame;
-static uint32_t snap_itype;   // index type of the draw being added (op_draw_idx*), 9 for arrays
-static const GfxShader *snap_vs;   // vertex shader of the draw being added (prepare_draw)
-// Vertex layouts of snapshot entries: attributes (va_st words), streams (stride, divisor) and the vertex shader's input
-// mask, kept once each so the comparison can print the layouts of the meshes it lists.
-#define SNAP_LAYOUTS 128
-static struct { uint64_t hash; uint32_t vattr[16]; vs_st vstream[16]; uint32_t inputs; int printed; } snap_lay[SNAP_LAYOUTS];
-static int snap_nlay;
-
-static uint64_t snap_mix(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    uint64_t v[4] = {a, b, c, d};
-    for (int i = 0; i < 4; i++) h = (h ^ v[i]) * 0x100000001b3ull, h ^= h >> 29;
-    return h;
-}
-
-// misc: bit 0 depth test, 1 depth write, 2-5 depth func, 6 stencil test, 7 alpha to coverage, 8 a2c dither,
-// 9 fragment shader, 10-11 cull, 12-19 blend enable mask, 20-23 colour targets, 24 raster discard, 25 depth target.
-static void snap_add_ex(const VkExec *ex, int kind, uint64_t key, uint32_t inst, uint32_t count) {
-    if (snap_state != 2 || snap_ncur >= SNAP_N) return;
-    const VkPipeState *p = &ex->pipe;
-    uint32_t ncol = 0;
-    for (int i = 0; i < 8; i++) ncol += p->color_fmt[i] != 0;
-    uint32_t misc = (uint32_t)p->ds.dt | (uint32_t)p->ds.dw << 1 | (uint32_t)p->ds.df << 2 | (uint32_t)p->ds.st << 6 |
-                    (uint32_t)(p->ms.a2c != 0) << 7 | (uint32_t)(p->ms.a2c_dither != 0) << 8 | (uint32_t)(p->fs != NULL) << 9 |
-                    (uint32_t)p->poly.cull << 10 | (uint32_t)(p->color.blend_en & 0xff) << 12 | (ncol & 15) << 20 |
-                    (uint32_t)(p->raster_discard != 0) << 24 | (uint32_t)(p->depth_fmt != 0) << 25;
-    uint32_t b0;
-    memcpy(&b0, &p->blend[0], sizeof b0);
-    uint64_t pr = (uint64_t)(uintptr_t)p->vs * 31 + (uint64_t)(uintptr_t)p->fs;
-    GfxShaderIo io[32];
-    uint32_t inputs = snap_vs ? gfx_shader_inputs(snap_vs, io) : 0;
-    uint64_t lh = snap_mix(inputs, 0, 0, 0);
-    for (int i = 0; i < 16; i++) lh = snap_mix(lh, p->vattr[i], p->vstream[i].stride, p->vstream[i].divisor);
-    int lay = -1;
-    for (int i = 0; i < snap_nlay; i++)
-        if (snap_lay[i].hash == lh) { lay = i; break; }
-    if (lay < 0 && snap_nlay < SNAP_LAYOUTS) {
-        lay = snap_nlay++;
-        snap_lay[lay].hash = lh, snap_lay[lay].inputs = inputs, snap_lay[lay].printed = 0;
-        memcpy(snap_lay[lay].vattr, p->vattr, sizeof p->vattr), memcpy(snap_lay[lay].vstream, p->vstream, sizeof p->vstream);
-    }
-    snap_cur[snap_ncur++] = (SnapEnt){key, inst, count, 1, (uint8_t)kind, p->chmask.mask, misc, b0,
-                                      (uint32_t)(pr ^ pr >> 32), (uint32_t)ex->vbuf[0].size, (uint32_t)ex->vbuf[1].size,
-                                      snap_itype, lay};
-}
-#define snap_add(kind, key, inst, count) snap_add_ex(ex, kind, key, inst, count)
-
-static int snap_cmp(const void *a, const void *b) {
-    uint64_t x = ((const SnapEnt *)a)->key, y = ((const SnapEnt *)b)->key;
-    return x < y ? -1 : x > y;
-}
-
-static uint32_t snap_merge(SnapEnt *e, uint32_t n) {   // sorted by key; one entry per mesh with summed instances
-    qsort(e, n, sizeof *e, snap_cmp);
-    uint32_t o = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        if (o && e[o - 1].key == e[i].key) e[o - 1].inst += e[i].inst, e[o - 1].draws++;
-        else e[o++] = e[i];
-    }
-    return o;
-}
-
-static const SnapEnt *snap_find(const SnapEnt *e, uint32_t n, uint64_t key) {
-    uint32_t lo = 0, hi = n;
-    while (lo < hi) {
-        uint32_t m = (lo + hi) / 2;
-        if (e[m].key < key) lo = m + 1;
-        else hi = m;
-    }
-    return lo < n && e[lo].key == key ? &e[lo] : NULL;
-}
-
-static void snap_finish(void) {
-    snap_ncur = snap_merge(snap_cur, snap_ncur);
-    uint32_t drawn = 0, ind = 0, ind0 = 0;
-    for (uint32_t i = 0; i < snap_ncur; i++) {
-        drawn += snap_cur[i].inst > 0;
-        ind += snap_cur[i].kind == SNAP_IND, ind0 += snap_cur[i].kind == SNAP_IND && !snap_cur[i].inst;
-    }
-    snap_no++;
-    rt_log("vk_exec: snapshot %d (frame %llu): %u meshes, %u with instances; indirect %u, of them %u without instances",
-           snap_no, (unsigned long long)snap_frame, snap_ncur, drawn, ind, ind0);
-    if (snap_nprev) {
-        static const char *kn[] = {"indirect", "indexed", "arrays"};
-        uint32_t kept = 0, culled = 0, gone = 0, fresh = 0;
-        SnapEnt big_c[8] = {0}, big_g[8] = {0};
-        for (uint32_t i = 0; i < snap_nprev; i++) {
-            const SnapEnt *p = &snap_prev[i];
-            if (!p->inst) continue;
-            const SnapEnt *c = snap_find(snap_cur, snap_ncur, p->key);
-            SnapEnt *big = c ? big_c : big_g;
-            if (c && c->inst) { kept++; continue; }
-            if (c) culled++;
-            else gone++;
-            for (int k = 0; k < 8; k++)
-                if (p->count > big[k].count) {
-                    memmove(big + k + 1, big + k, sizeof *big * (size_t)(7 - k));
-                    big[k] = *p;
-                    break;
-                }
-        }
-        for (uint32_t i = 0; i < snap_ncur; i++) {
-            if (!snap_cur[i].inst) continue;
-            const SnapEnt *p = snap_find(snap_prev, snap_nprev, snap_cur[i].key);
-            fresh += !p || !p->inst;
-        }
-        rt_log("vk_exec: snapshot %d vs %d: drawn in both %u; drawn before, now without instances %u, now not issued %u; "
-               "newly drawn %u", snap_no, snap_no - 1, kept, culled, gone, fresh);
-        for (int k = 0; k < 8 && big_c[k].count; k++)
-            rt_log("vk_exec:   now without instances: %s, %u indices, %u instances before, %u draws", kn[big_c[k].kind],
-                   big_c[k].count, big_c[k].inst, big_c[k].draws);
-        for (int k = 0; k < 8 && big_g[k].count; k++)
-            rt_log("vk_exec:   now not issued: %s, %u indices (type %u), %u instances before, %u draws; state %#x, "
-                   "vertex buffers %u/%u bytes, layout %d", kn[big_g[k].kind], big_g[k].count, big_g[k].itype, big_g[k].inst,
-                   big_g[k].draws, big_g[k].misc, big_g[k].vb0, big_g[k].vb1, big_g[k].lay);
-        SnapEnt big_n[10] = {0};
-        for (uint32_t i = 0; i < snap_ncur; i++) {
-            const SnapEnt *c = &snap_cur[i];
-            if (!c->inst) continue;
-            const SnapEnt *p = snap_find(snap_prev, snap_nprev, c->key);
-            if (p && p->inst) continue;
-            for (int k = 0; k < 10; k++)
-                if (c->count > big_n[k].count) {
-                    memmove(big_n + k + 1, big_n + k, sizeof *big_n * (size_t)(9 - k));
-                    big_n[k] = *c;
-                    break;
-                }
-        }
-        for (int k = 0; k < 10 && big_n[k].count; k++)
-            rt_log("vk_exec:   newly drawn: %s, %u indices (type %u), %u instances, %u draws; state %#x, vertex buffers "
-                   "%u/%u bytes, layout %d", kn[big_n[k].kind], big_n[k].count, big_n[k].itype, big_n[k].inst, big_n[k].draws,
-                   big_n[k].misc, big_n[k].vb0, big_n[k].vb1, big_n[k].lay);
-        // the layouts of the listed meshes, each once per run: attribute i = Location i of the vertex shader
-        const SnapEnt *lists[2] = {big_g, big_n};
-        int lens[2] = {8, 10};
-        for (int l = 0; l < 2; l++)
-            for (int k = 0; k < lens[l] && lists[l][k].count; k++) {
-                int li = lists[l][k].lay;
-                if (li < 0 || snap_lay[li].printed) continue;
-                snap_lay[li].printed = 1;
-                char buf[1200], *o = buf, *end = buf + sizeof buf;
-                o += snprintf(o, (size_t)(end - o), "vk_exec: layout %d: shader inputs %#x;", li, snap_lay[li].inputs);
-                uint32_t used_streams = 0;
-                for (int a = 0; a < 16 && end - o > 60; a++) {
-                    va_st v;
-                    memcpy(&v, &snap_lay[li].vattr[a], sizeof v);
-                    if (!(snap_lay[li].inputs >> a & 1) && !v.fmt) continue;
-                    o += snprintf(o, (size_t)(end - o), " a%d fmt %#x s%u +%u%s;", a, (unsigned)v.fmt, (unsigned)v.stream,
-                                  (unsigned)v.offset, snap_lay[li].inputs >> a & 1 ? "" : " (unread)");
-                    used_streams |= 1u << v.stream;
-                }
-                for (int b = 0; b < 16 && end - o > 40; b++)
-                    if (used_streams >> b & 1)
-                        o += snprintf(o, (size_t)(end - o), " stream %d stride %u divisor %u;", b,
-                                      snap_lay[li].vstream[b].stride, snap_lay[li].vstream[b].divisor);
-                rt_log("%s", buf);
-            }
-    }
-    SnapEnt *t = snap_prev;
-    snap_prev = snap_cur, snap_nprev = snap_ncur;
-    snap_cur = t, snap_ncur = 0;
-}
-
-static void snap_frame_edge(uint64_t f) {
-    if (!snap_cur) {
-        snap_cur = calloc(SNAP_N, sizeof *snap_cur), snap_prev = calloc(SNAP_N, sizeof *snap_prev);
-        if (!snap_cur || !snap_prev) rt_fatal("vk_exec: out of memory (snapshots)");
-    }
-    if (snap_state == 2 && f > snap_frame) snap_finish(), snap_state = 0;
-    int key = input_flight_key();
-    if (key && !snap_key_was && !snap_state) snap_state = 1;
-    snap_key_was = key;
-    if (snap_state == 1) snap_state = 2, snap_frame = f, snap_ncur = 0;
-}
-
 // KarPur diagnostic: draws skipped, by reason, summed over 600 presented frames and logged when any were (at most 30
 // times a run). Objects missing on screen without a warning (Violet: some vases, a flower bed) show up here.
 enum { SK_RENDER_OFF, SK_SCISSOR, SK_SHADER_WAIT, SK_SHADER_FAIL, SK_PIPE_WAIT, SK_PIPE_FAIL, SK_N };
 static uint64_t skips[SK_N], skip_draws, skip_frame0;
 static int skip_logs;
-// KarPur diagnostic: indirect indexed draws over the same window: all, arguments readable by the CPU (they may be
-// stale when a shader writes them), instance count 0, index count 0, first instance not 0, instance count above 1.
-static uint64_t ind_lo = ~0ull, ind_hi;   // addresses of the indirect draw arguments seen so far (cs_note)
-static uint64_t ind_stat[7];   // [6]: arguments a shader of the same command buffer stored into
-
-static int ind_logs;
 static int skip_note(int why) {
     skips[why]++;
     return 0;
@@ -2339,8 +2034,6 @@ static int skip_note(int why) {
 static void skip_tick(void) {
     skip_draws++;
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-    static uint64_t edge_f;
-    if (f != edge_f) edge_f = f, snap_frame_edge(f), rww_poll();
     if (!skip_frame0) skip_frame0 = f ? f : 1;
     if (f < skip_frame0 + 600) return;
     uint64_t any = 0;
@@ -2354,65 +2047,8 @@ static void skip_tick(void) {
                (unsigned long long)skips[SK_SHADER_WAIT], (unsigned long long)skips[SK_SHADER_FAIL],
                (unsigned long long)skips[SK_PIPE_WAIT], (unsigned long long)skips[SK_PIPE_FAIL]);
     }
-    uint64_t olo, ohi;
-    vk_exec_oq_range(&olo, &ohi, 1);
-    uint32_t opages = vk_exec_oq_pages(1);
-    if (ohi && ind_logs < 30)
-        rt_log("vk_exec: frames %llu-%llu: samples-passed reports in %u pages; bindings touching those pages: compute storage "
-               "%llu uniform %llu, draws storage %llu uniform %llu", (unsigned long long)skip_frame0, (unsigned long long)f,
-               opages, (unsigned long long)oq_bind[0], (unsigned long long)oq_bind[1], (unsigned long long)oq_bind[2],
-               (unsigned long long)oq_bind[3]);
-    memset(oq_bind, 0, sizeof oq_bind);
-    if (vk_oq_depth.img && ind_logs < 30) {
-        VkOqDepthDiag *o = &vk_oq_depth;
-        rt_log("vk_exec: frames %llu-%llu: occlusion depth target: clears %llu (last value %.3f), draws writing depth %llu "
-               "(of them up to 6 vertices %llu), draws only testing %llu, copies in %llu, scaled copies in %llu, resolves in "
-               "%llu (last source %ux%u format %#x)", (unsigned long long)skip_frame0, (unsigned long long)f,
-               (unsigned long long)o->clears, o->clear_val, (unsigned long long)o->dwrite_draws,
-               (unsigned long long)o->dwrite_small, (unsigned long long)o->test_draws, (unsigned long long)o->copies,
-               (unsigned long long)o->blits, (unsigned long long)o->resolves, o->src_w, o->src_h, o->src_fmt);
-        VkImage keep = o->img;
-        memset(o, 0, sizeof *o);
-        o->img = keep;
-    }
-    if (ind_stat[0] && ind_logs < 30) {
-        ind_logs++;
-        rt_log("vk_exec: indirect indexed draws in frames %llu-%llu: %llu, arguments CPU-readable %llu: instance count 0 "
-               "%llu, index count 0 %llu, first instance not 0 %llu, instance count above 1 %llu, written by a shader %llu",
-               (unsigned long long)skip_frame0, (unsigned long long)f, (unsigned long long)ind_stat[0],
-               (unsigned long long)ind_stat[1], (unsigned long long)ind_stat[2], (unsigned long long)ind_stat[3],
-               (unsigned long long)ind_stat[4], (unsigned long long)ind_stat[5], (unsigned long long)ind_stat[6]);
-    }
     memset(skips, 0, sizeof skips);
-    memset(ind_stat, 0, sizeof ind_stat);
     skip_draws = 0, skip_frame0 = f;
-}
-
-// KarPur diagnostic: the state of draws counted by samples-passed queries (the game's occlusion test proxies), each
-// distinct state logged once, at most 12. Violet's objects pop in and out with distance and camera angle, and ~95 % of
-// its reports say 0: this shows how the proxies are drawn (depth test and target, clipping, culling).
-static void oq_draw_note(VkExec *ex, const VkPipeState *s, int32_t count) {
-    static struct { uint64_t ds; uint32_t poly, chmask; int32_t depth_fmt; uint8_t fs, prim, discard, clamp, minus_w; } seen[12];
-    static int n;
-    if (n >= 12) return;
-    typeof(seen[0]) k;
-    memset(&k, 0, sizeof k);
-    memcpy(&k.ds, &s->ds, sizeof s->ds < 8 ? sizeof s->ds : 8);
-    memcpy(&k.poly, &s->poly, sizeof k.poly);
-    k.chmask = s->chmask.mask, k.depth_fmt = s->depth_fmt, k.fs = s->fs != NULL, k.prim = s->prim;
-    k.discard = s->raster_discard, k.clamp = s->depth_clamp, k.minus_w = s->depth_minus_w;
-    for (int i = 0; i < n; i++)
-        if (!memcmp(&seen[i], &k, sizeof k)) return;
-    seen[n++] = k;
-    if (!vk_oq_depth.img) vk_oq_depth.img = ex->depth.image;
-    char tg[512];
-    vk_exec_targets_describe(ex, tg, sizeof tg);
-    rt_log("vk_exec: occlusion-counted draw %d: prim %u, %d indices/vertices, fragment shader %s, depth test %u write %u "
-           "func %u, stencil test %u, cull %u front %u, channel mask %#x, raster discard %u, depth clamp %u, clip -w..w %u, "
-           "depth range %.3f-%.3f, pass %ux%u, %s",
-           n, s->prim, count, k.fs ? "yes" : "no", (unsigned)s->ds.dt, (unsigned)s->ds.dw, (unsigned)s->ds.df,
-           (unsigned)s->ds.st, (unsigned)s->poly.cull, (unsigned)s->poly.front, k.chmask, k.discard, k.clamp, k.minus_w,
-           ex->depth_range[0], ex->depth_range[1], ex->pass_w, ex->pass_h, tg);
 }
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
@@ -2569,12 +2205,6 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
-    snap_vs = s.vs;
-    if (vk_exec_oq_counting()) oq_draw_note(ex, &s, count);
-    if (vk_oq_depth.img && ex->depth.image == vk_oq_depth.img && s.ds.dt) {
-        if (s.ds.dw) vk_oq_depth.dwrite_draws++, vk_oq_depth.dwrite_small += count <= 6;
-        else vk_oq_depth.test_draws++;
-    }
     return 1;
 }
 
@@ -2591,8 +2221,6 @@ static void op_draw(VkExec *ex, const p_draw *d) {
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, 0)) return;
     vk_exec_frame.draws++;
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
-    snap_itype = 9;
-    snap_add(SNAP_ARR, snap_mix((uint64_t)(uintptr_t)ex->prog, first, n, 2), inst, n);
     if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
@@ -2646,9 +2274,6 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     int restart = restart_for(ex, d->prim, d->itype);
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
     vk_exec_frame.draws++;
-    snap_itype = (uint32_t)d->itype;
-    snap_add(SNAP_IDX, snap_mix(d->ibuf, (uint64_t)d->count, (uint64_t)(uint32_t)d->base_vertex, 1),
-             d->instances > 0 ? (uint32_t)d->instances : 1, (uint32_t)d->count);
     uint64_t bytes = (uint64_t)d->count * isize[d->itype];
     VkMemSpan sp;
     if (!vk_mem_resolve(d->ibuf, bytes, &sp)) return warn_once(W_INDEX, "index buffer %#llx is not backed: draws with it are skipped", (unsigned long long)d->ibuf);
@@ -2716,40 +2341,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     VK_MEM_USE(ip);
     VK_MEM_USE(ib);
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
-    ind_stat[0]++;
-    int cpu = !nvn_gpu_only(d->ind);
-    VkDrawIndexedIndirectCommand a = {0};
-    if (cpu) {
-        memcpy(&a, (const void *)(uintptr_t)d->ind, sizeof a);
-        ind_stat[1]++, ind_stat[2] += !a.instanceCount, ind_stat[3] += !a.indexCount;
-        ind_stat[4] += a.firstInstance != 0, ind_stat[5] += a.instanceCount > 1;
-    }
-    ind_stat[6] += shader_wrote(ex, d->ind, sizeof(VkDrawIndexedIndirectCommand));
-    if (cpu && af_on()) {
-        af_add(d->ind);
-        static uint64_t af_fence;
-        if (ex->fence != af_fence) af_fence = ex->fence, vk_completion_add(ex->fence, af_cb, NULL);
-    }
-    snap_itype = (uint32_t)d->itype;
-    if (cpu) snap_add(SNAP_IND, snap_mix(d->ibuf, a.firstIndex, a.indexCount, (uint64_t)(uint32_t)a.vertexOffset), a.instanceCount, a.indexCount);
-    if (d->ind < ind_lo) ind_lo = d->ind;
-    if (d->ind + 20 > ind_hi) ind_hi = d->ind + 20;
-    // A/B tests for objects that stay invisible (KarPur): TOTK_IND_CPU=1 draws with the arguments as the CPU sees them
-    // (vkCmdDrawIndexed) instead of letting the GPU read them from the pool buffer, which tells a stale GPU copy of
-    // the arguments apart; TOTK_IND_SHOW=1 also draws arguments with instance count 0 as one instance, which shows
-    // whether the missing objects are draws the game (or one of its compute shaders) culled.
-    static int ind_cpu = -1, ind_show = -1;
-    if (ind_cpu < 0) {
-        ind_cpu = rt_knob("IND_CPU", "0"), ind_show = rt_knob("IND_SHOW", "0");
-        if (ind_cpu) rt_log("vk_exec: indirect draws use the arguments the CPU sees (TOTK_IND_CPU=1)");
-        if (ind_show) rt_log("vk_exec: indirect draws with instance count 0 draw one instance (TOTK_IND_SHOW=1)");
-    }
-    if (cpu && (ind_cpu || ind_show)) {
-        uint32_t inst = a.instanceCount ? a.instanceCount : ind_show ? 1 : 0;
-        if (inst && a.indexCount) vkCmdDrawIndexed(ex->cb, a.indexCount, inst, a.firstIndex, a.vertexOffset, a.firstInstance);
-    } else {
-        vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
-    }
+    vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDrawIndexedIndirectCommand));
     VK_MEM_BOUND(ip);
@@ -2757,166 +2349,6 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 }
 
 // ---- dispatch and uniform buffer updates
-
-// KarPur diagnostic: what the first dispatches of each compute shader (up to 4 shaders, 3 dispatches each) read and
-// write: group counts, local size, sampled textures and storage images (size, format, layers; "occlusion depth" marks
-// the target the proxies test against, "depth" any depth image), storage buffers (size, written) and whether a written
-// one covers the arguments of the indirect draws seen so far (ind_lo/ind_hi). A GPU culling pass that reads a depth
-// texture or writes the draw arguments shows up here.
-// ---- read watch (KarPur diagnostic, TOTK_READ_WATCH=1)
-// Does game code on the CPU read what the compute shaders write? The storage buffers of at least 64 KiB a dispatch
-// writes (Violet's GPU culling: 256 KiB, 1 MiB, the draw arguments) are made inaccessible once the submission is done
-// (plat_read_watch), at most every 30 frames; the first access to each page is logged with the instruction and the
-// return addresses in karpur.exe, which tools/symbolize.py turns into function names (f_<guest address> for game
-// code). Addresses only.
-#define RWW_N 16
-static struct { uint64_t addr, size; } rww[RWW_N];
-static int rww_n;
-static int rww_on(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = rt_knob("READ_WATCH", "0");
-        if (on) rt_log("vk_exec: read watch on the storage buffers compute shaders write (TOTK_READ_WATCH=1)");
-    }
-    return on;
-}
-
-static void rww_arm_cb(void *arg) {
-    (void)arg;
-    for (int i = 0; i < rww_n; i++) plat_read_watch(rww[i].addr, rww[i].size);
-}
-
-static void rww_note(VkExec *ex, const GfxShader *cs) {
-    if (!rww_on()) return;
-    const GfxShaderRes *res;
-    int nr = gfx_shader_resources(cs, GFX_RES_SSBO, &res);
-    for (int r = 0; r < nr; r++) {
-        if (!(res[r].flags & 1)) continue;
-        int ubo, slot = ssbo_slot(&res[r], NVN_STAGE_CS, &ubo);
-        if (slot < 0 || slot >= 16 || ubo) continue;
-        const p_bind_buf *b = &ex->ssbo[NVN_STAGE_CS][slot];
-        if (b->size < 65536 || nvn_gpu_only(b->addr)) continue;
-        int k = 0;
-        while (k < rww_n && rww[k].addr != b->addr) k++;
-        if (k == rww_n && rww_n < RWW_N) rww[rww_n++] = (typeof(rww[0])){b->addr, b->size};
-    }
-    static uint64_t last_f;
-    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-    if (rww_n && f >= last_f + 30) last_f = f, vk_completion_add(ex->fence, rww_arm_cb, NULL);
-}
-
-// Logs the recorded accesses: each distinct faulting instruction once (at most 60), with its buffer.
-static void rww_poll(void) {
-    if (!rww_on()) return;
-    static uint64_t seen[64];
-    static int nseen;
-    PlatWatchHit h[64];
-    int n = plat_read_watch_take(h, 64);
-    uintptr_t base = plat_exe_base();
-    for (int i = 0; i < n; i++) {
-        int dup = 0;
-        for (int k = 0; k < nseen && !dup; k++) dup = seen[k] == h[i].rip;
-        if (dup || nseen >= 64) continue;
-        seen[nseen++] = h[i].rip;
-        int buf = -1;
-        for (int k = 0; k < rww_n; k++)
-            if (h[i].addr - rww[k].addr < rww[k].size) buf = k;
-        char fr[200] = "", *o = fr;
-        for (int k = 0; k < h[i].nframes && o - fr < 170; k++)
-            o += snprintf(o, (size_t)(fr + sizeof fr - o), " karpur+%#llx", (unsigned long long)(h[i].frames[k] - base));
-        if (h[i].rip - base < 0x40000000u)
-            rt_log("vk_exec: read watch: buffer %d (%llu bytes) +%#llx accessed at karpur+%#llx; called from%s", buf,
-                   buf >= 0 ? (unsigned long long)rww[buf].size : 0ull,
-                   buf >= 0 ? (unsigned long long)(h[i].addr - rww[buf].addr) : 0ull,
-                   (unsigned long long)(h[i].rip - base), fr[0] ? fr : " ?");
-        else
-            rt_log("vk_exec: read watch: buffer %d accessed outside karpur.exe (rip %#llx); called from%s", buf,
-                   (unsigned long long)h[i].rip, fr[0] ? fr : " ?");
-    }
-}
-
-static void cs_note(VkExec *ex, const GfxShader *cs, const p_dispatch *d) {
-    static const GfxShader *seen[4];
-    static int nseen[4], n;
-    if (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) < 900) return;   // in the field, indirect draws seen
-    int k = 0;
-    while (k < n && seen[k] != cs) k++;
-    if (k == n) {
-        if (n == 4) return;
-        seen[n++] = cs;
-    }
-    if (nseen[k] >= 3) return;
-    nseen[k]++;
-    if (nseen[k] == 1) {   // instruction census of the translation: counts only, no shader content
-        uint64_t nw = 0;
-        const uint32_t *w = gfx_shader_spirv(cs, &nw);
-        unsigned atom = 0, aadd = 0, acas = 0, aminmax = 0, aload = 0, astore = 0, grp = 0, ballot = 0, func = 0,
-                 call = 0, cbar = 0, mbar = 0, u2p = 0, loads = 0, stores = 0;
-        for (uint64_t i = 5; w && i < nw;) {
-            uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
-            if (!len) break;
-            if (op >= 227 && op <= 242) atom++;
-            aadd += op == 234 || op == 232, acas += op == 230, aminmax += op >= 236 && op <= 239;
-            aload += op == 227, astore += op == 228;
-            grp += op >= 333 && op <= 366, ballot += op == 339;
-            func += op == 54, call += op == 57, cbar += op == 224, mbar += op == 225, u2p += op == 120;
-            loads += op == 61, stores += op == 62;
-            i += len;
-        }
-        const char *notes = gfx_shader_notes(cs);
-        if (notes) {   // the translator's notes up to the end of the array: c1 reads out of range, unknown handles
-            const char *e = strchr(notes, ']');
-            int len = e ? (int)(e - notes + 1) : 200;
-            if (len > 600) len = 600;
-            char nb[640];
-            int j = 0;
-            for (int i = 0; i < len && j < 638; i++) nb[j++] = notes[i] == '\n' || notes[i] == '\r' ? ' ' : notes[i];
-            nb[j] = 0;
-            rt_log("vk_exec: compute shader %d translator %s", k + 1, nb);
-        }
-        rt_log("vk_exec: compute shader %d SPIR-V: %llu words, functions %u, calls %u, loads %u, stores %u, atomics %u "
-               "(add/inc %u, compare-exchange %u, min/max %u, atomic load %u, atomic store %u), group ops %u (ballot %u), "
-               "control barriers %u, memory barriers %u, pointer conversions %u", k + 1, (unsigned long long)nw, func,
-               call, loads, stores, atom, aadd, acas, aminmax, aload, astore, grp, ballot, cbar, mbar, u2p);
-    }
-    uint32_t l[3];
-    gfx_shader_local_size(cs, l);
-    char buf[1400], *o = buf, *end = buf + sizeof buf;
-    o += snprintf(o, (size_t)(end - o), "vk_exec: compute shader %d dispatch %d: groups %dx%dx%d, local %ux%ux%u", k + 1,
-                  nseen[k], d->x, d->y, d->z, l[0], l[1], l[2]);
-    const GfxShaderRes *res;
-    vk_texture_lock();
-    for (int kind = GFX_RES_TEX; kind <= GFX_RES_IMG; kind++) {
-        int nr = gfx_shader_resources(cs, kind, &res);
-        for (int r = 0; r < nr && end - o > 120; r++) {
-            int slot = res[r].slot;
-            uint64_t h = slot < 0 ? 0 : kind == GFX_RES_TEX ? (slot < 128 ? ex->tex[NVN_STAGE_CS][slot] : 0)
-                                                           : (slot < 32 ? ex->img[NVN_STAGE_CS][slot] : 0);
-            view_t v;
-            int hv;
-            const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv) : NULL;
-            if (!img) {
-                o += snprintf(o, (size_t)(end - o), "; %s %d unbound", kind == GFX_RES_TEX ? "texture" : "image", slot);
-                continue;
-            }
-            o += snprintf(o, (size_t)(end - o), "; %s %d %ux%u layers %u fmt %d type %#x%s%s",
-                          kind == GFX_RES_TEX ? "texture" : "image", slot, img->width, img->height, img->layers,
-                          (int)img->format, res[r].type, img->image == vk_oq_depth.img ? " (occlusion depth)" : "",
-                          img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? " depth" : "");
-        }
-    }
-    vk_texture_unlock();
-    int nr = gfx_shader_resources(cs, GFX_RES_SSBO, &res);
-    for (int r = 0; r < nr && end - o > 100; r++) {
-        int ubo, slot = ssbo_slot(&res[r], NVN_STAGE_CS, &ubo);
-        const p_bind_buf *b = slot >= 0 && slot < 16 ? (ubo ? &ex->ubo[NVN_STAGE_CS][slot] : &ex->ssbo[NVN_STAGE_CS][slot]) : NULL;
-        int args = b && (res[r].flags & 1) && ind_hi && b->addr < ind_hi && ind_lo < b->addr + b->size;
-        o += snprintf(o, (size_t)(end - o), "; storage %d %s %llu bytes at +%llu mod 256%s%s", r, b ? "bound" : "via pointer",
-                      b ? (unsigned long long)b->size : 0ull, b ? (unsigned long long)(b->addr & 0xff) : 0ull,
-                      res[r].flags & 1 ? " written" : "", args ? " (covers indirect draw arguments)" : "");
-    }
-    rt_log("%s", buf);
-}
 
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
@@ -2935,8 +2367,6 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
-    cs_note(ex, cs, d);
-    rww_note(ex, cs);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
