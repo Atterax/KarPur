@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Baum-Flackern im normalen Lauf zurück
+- Maintainer: ohne Schalter flackern die Bäume wieder stark (karpur.ini sauber, Log ohne `data patch`/`data watch`, `lod_bias off`).
+- Code-Prüfung seit `f2a1b11` (letzter flackerfreier Standard): ohne Schalter ändert sich nichts am Bild (nur Pass-Größen-Zählung, Overlay-Anzeige, Menü; `data_patch_read` kehrt ohne Felder sofort zurück; Sätze `lod_bias`/`data_watch` aus). Der Lauf „Test 1: Läuft wie gehabt“ nach dem Menü-Aufräumen hatte dieselben Sätze schon drin.
+- Verdacht: Der Spielstand wurde während der Mod-Tests in der offenen Welt gespeichert. Schon dort gemeldet: nach dem Laden eines Stands in der offenen Welt flackern die Bäume, bis ein Ladebildschirm kommt. Das wurde der Oodle-Umleitung zugeschrieben, gilt aber vermutlich unabhängig davon. Test: Gebäude betreten und wieder verlassen. Wenn es danach noch flackert: Bisektion mit einem älteren Build.
+
 ### 2026-11-02: LOD-Regler wirkt, Wert noch zu finden
 - Satz `lod_bias` (`TOTK_LOD=1`) ist eingebaut und aktiv (Log `patches: … lod_bias on`, `lod: … bias N`).
 - `LOD_BIAS=15`: alle Objekte nehmen die gröbste Stufe, als stünde man sehr weit weg (Bäume als grüne Klötze). Positive Werte = gröber, der Regler wirkt also.
