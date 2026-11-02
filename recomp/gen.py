@@ -14,7 +14,8 @@ Output, under --out:
 Function discovery runs in this process, vectorised over the module's .text words. Function starts are the module
 seeds (.eh_frame_hdr, exported FUNC symbols, RELATIVE relocation targets), every BL target, and code addresses
 materialised by ADR or ADRP+ADD (except an ADR that anchors a jump table: one with a `br` in the next 16
-instructions, or one an ADD register form uses as its base right after). A function is [start, next start). A direct branch whose target lies outside its
+instructions, or one an ADD register form uses as its base right after; and except an address strictly inside an
+.eh_frame FDE range, named from inside the same range). A function is [start, next start). A direct branch whose target lies outside its
 function makes the target a new start, until no new start appears.
 
 Emission runs in worker processes, one chunk per task. Each worker loads the modules itself, lifts one function at a
@@ -140,13 +141,35 @@ def discover(mod):
     page = ((pc0 + p * 4) & ~np.int64(0xFFF)) + (imm21(p) << 12)
     add_bytes = page + ((w[add[hit]] >> 10) & 0xFFF).astype(np.int64)
     mat = np.concatenate([adr_bytes, add_bytes])
-    mat = mat[(mat >= mod.lo) & (mat < mod.hi) & (mat % 4 == 0)]
-    mat = (mat - pc0) >> 2
+    mat_src = np.concatenate([adr, add[hit]])
+    ok = (mat >= mod.lo) & (mat < mod.hi) & (mat % 4 == 0)
+    mat, mat_src = (mat[ok] - pc0) >> 2, mat_src[ok]
 
     bl_tgt = bl_tgt[(bl_tgt >= 0) & (bl_tgt < n)]
-    starts = np.unique(np.concatenate([seeds, bl_tgt, mat]))
+
+    # An .eh_frame FDE covers exactly one function, so no other function starts strictly inside it. An address
+    # materialised there from inside the same FDE is code of that function, most often the first case block of a jump
+    # table whose anchor ADR the rule above missed (Violet: main+0x2a1fbfc split main+0x2a1f54c, and a case after the
+    # split, reached by BR from the first part, was "not a function start"). Seeds and BL targets stay starts; the
+    # branch fixpoint below still adds a start wherever a branch crosses one of those.
+    fde = sorted(mod.eh_frame_ranges())
+    fde_lo = (np.array([b for b, _ in fde], dtype=np.int64) - pc0) >> 2
+    fde_hi = (np.array([e for _, e in fde], dtype=np.int64) - pc0 + 3) >> 2
+
+    def inside_fde(x, src):
+        """x lies strictly inside an FDE range and src (the instruction that names x) lies in the same range."""
+        if not len(fde_lo) or not len(x):
+            return np.zeros(len(x), dtype=bool)
+        k = np.searchsorted(fde_lo, x, side='right') - 1
+        ok = k >= 0
+        k = np.where(ok, k, 0)
+        return ok & (fde_lo[k] < x) & (x < fde_hi[k]) & (fde_lo[k] <= src) & (src < fde_hi[k])
+
+    mat_in = inside_fde(mat, mat_src)
+    starts = np.unique(np.concatenate([seeds, bl_tgt, mat[~mat_in]]))
     stats = {'seeds': int(len(seeds)), 'bl_targets': int(len(np.unique(bl_tgt))),
-             'materialised_targets': int(len(np.unique(mat))), 'initial_starts': int(len(starts))}
+             'materialised_targets': int(len(np.unique(mat))), 'initial_starts': int(len(starts)),
+             'fde_ranges': len(fde), 'inside_fde_dropped': int(len(np.unique(mat[mat_in])))}
 
     rounds = 0
     while True:
@@ -714,7 +737,8 @@ def main():
         info[name] = {'base': base, 'lo': mod.lo, 'hi': mod.hi, 'emitted': abs_starts[:n].tolist(),
                       'chunks': len(chunks), 'discover': dstats, 'discover_seconds': time.perf_counter() - t,
                       'moddir': moddir}
-        print(f'{name}: {dstats["functions"]} functions ({dstats["seeds"]} seeds, {dstats["rounds"]} rounds), '
+        print(f'{name}: {dstats["functions"]} functions ({dstats["seeds"]} seeds, {dstats["rounds"]} rounds, '
+              f'{dstats["inside_fde_dropped"]} addresses inside .eh_frame functions not taken as starts), '
               f'{len(chunks)} chunks, {len(setjmp[name])} setjmp targets, discovery {time.perf_counter() - t:.1f}s',
               file=sys.stderr, flush=True)
         del mod

@@ -100,6 +100,32 @@ class Module:
             starts.append(self.base + loc)
         return starts
 
+    def eh_frame_ranges(self):
+        """(begin, end) absolute address ranges of the FDEs listed in .eh_frame_hdr. Only FDEs whose pc_begin is pcrel
+        sdata4 and agrees with the table are returned (the usual encoding); others are left out."""
+        img, hdr = self.image, self.nso.eh_start
+        if not hdr or hdr >= len(img):
+            return []
+        _, ptr_enc, cnt_enc, tbl_enc = img[hdr:hdr + 4]
+        off = hdr + 4
+        _, sz = _read_encoded(img, off, ptr_enc, hdr)
+        off += sz
+        count, sz = _read_encoded(img, off, cnt_enc, hdr)
+        off += sz
+        out = []
+        for _ in range(count):
+            loc, sz = _read_encoded(img, off, tbl_enc, hdr)
+            off += sz
+            fde, sz = _read_encoded(img, off, tbl_enc, hdr)
+            off += sz
+            if not 0 <= fde <= len(img) - 16:
+                continue
+            begin = fde + 8 + struct.unpack_from('<i', img, fde + 8)[0]
+            if begin != loc:
+                continue
+            out.append((self.base + loc, self.base + loc + struct.unpack_from('<I', img, fde + 12)[0]))
+        return out
+
     def seeds(self):
         """Known function starts: .eh_frame_hdr, exported FUNC symbols, R_AARCH64_RELATIVE targets in .text."""
         starts = set(self.eh_frame_functions())

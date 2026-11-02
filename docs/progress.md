@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Absturz im Fang-Tutorial** (`rt_dispatch: no function at guest pc main+0x2a1fc24: not a function start`, lr `main+0xfc3968`): Bericht `calls.py --refs` abwarten, dann Funktionsfindung (`recomp/gen.py discover`) passend erweitern.
+0. **Absturz im Fang-Tutorial** (`rt_dispatch: … main+0x2a1fc24: not a function start`): Korrektur in der Funktionsfindung (FDE-Bereiche, siehe Protokoll). Bestätigung nach `lift.py` + `build_game.py` abwarten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
@@ -21,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Fang-Tutorial-Absturz: Ursache Sprungtabelle in zerschnittener Funktion, Korrektur
+- Zweiter Bericht: `main+0x2a1fc24` liegt **innerhalb** der FDE `main+0x2a1f54c..main+0x2a2016c`. Register beim Absturz: x10 = Ziel, x9 = `main+0x3c61c1e` (ungerade, also eine Byte-Tabelle in .rodata), x30 unverändert der Aufrufer der Funktion. Also kein virtueller Aufruf an dieser Stelle, sondern ein `BR x10` einer Clang-Sprungtabelle (Anker + Byte-Offset × 4) in der großen Funktion. Die Funktionsfindung hatte die Funktion bei `main+0x2a1fbfc` zerschnitten (vermutlich das ADR des Tabellen-Ankers, das die 16-Instruktionen/ADD-Basis-Regel nicht erkannte); der Fall hinter dem Schnitt war für den ersten Teil „außerhalb“ und wurde dynamisch angesprungen.
+- Korrektur `recomp/gen.py discover`: Eine FDE deckt genau eine Funktion ab. Mit ADR/ADRP+ADD erzeugte Adressen, die strikt innerhalb einer FDE liegen und von innerhalb derselben FDE genannt werden, sind keine Funktionsanfänge mehr. Seeds und BL-Ziele bleiben; die Sprung-Fixpunktschleife bleibt unverändert (sie fügt weiter Anfänge ein, wo ein Sprung einen echten Anfang kreuzt). `Module.eh_frame_ranges()` liest die FDE-Bereiche (pc_begin pcrel sdata4, mit Abgleich gegen die Tabelle). Neue Statistik `inside_fde_dropped` in der gen-Ausgabe und im Manifest.
+- Geprüft: Lifter-Differenztest grün (21 FDEs = 21 Funktionen, nichts verworfen); synthetischer Test: Anker-ADR innerhalb der Funktion verworfen, ADR von außen in dieselbe Funktion bleibt ein Anfang.
+- Beim Maintainer: `lift.py` (erzeugt alles neu) und `build_game.py`; in der lift-Ausgabe steht pro Modul, wie viele Adressen verworfen wurden.
 
 ### 2026-11-02: Fang-Tutorial-Absturz: erster Bericht
 - Aufrufer `main+0xfc38dc` (+0x88): `x8 = [x19]; x8 = [x8 + 0x68]; blr x8`, ein virtueller Aufruf (vtable-Eintrag 13).
