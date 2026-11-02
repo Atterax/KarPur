@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Einzelne Bäume flackern schnell** (bleiben aus der Nähe sichtbar, schalten aber Bild für Bild ein/aus). A/B-Tests: `OCCLUSION=0` (Occlusion-Zählungen immer groß), `SUBMIT_SYNC=1` (Zeitpunkt der Abfrage-Ergebnisse).
+0. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
@@ -21,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Baum-Flackern ist ein Zeit-Wettlauf; SUBMIT_SYNC Standard
+- `OCCLUSION=0` (alle Occlusion-Zählungen groß): einzelne Bäume flackern weiter stark → nicht die Abfrage-Ergebnisse.
+- `SUBMIT_SYNC=1` (Spiel-Thread wartet nach jedem Submit auf die GPU): nichts flackert mehr, nur sehr weit entfernt (vermutlich normaler LOD-Wechsel). Bildrate unverändert: Minute 2 mean 30.0 fps, 1% low 28.4 (ohne Warten gleich); kein spürbarer Unterschied für den Maintainer.
+- Folgerung: Die GPU liest Daten pro Objekt (vermutlich Storage-Puffer, die `vk_usnap` nicht kopiert) erst, nachdem das Spiel sie fürs nächste Bild überschreibt.
+- `runtime/nvn_api_core.c`: `SUBMIT_SYNC` Standard 1, Log-Zeile beim ersten Submit. `TOTK_SUBMIT_SYNC=0` schaltet ab.
 
 ### 2026-11-02: Fang-Tutorial läuft; Zahlen der ganzen FDE-Funktionen
 - Bestätigt: Tutorial-Kampf, weitere Story und Zwischensequenzen laufen ohne Absturz (über 30000 Frames, stabil 30 fps).

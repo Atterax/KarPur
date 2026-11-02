@@ -616,14 +616,17 @@ NVN_API(nvnQueueSubmitCommands) {
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
     __atomic_store_n(&lod_issued, no, __ATOMIC_SEQ_CST);
-    // TOTK_SUBMIT_SYNC=1 (KarPur A/B test): the game thread waits here until the GPU has finished this submission. On
-    // the Switch the GPU starts within microseconds and has read the per-object data long before the game rewrites
-    // it; here it runs after the replay. Objects that pop in and out without this and stay with it are such a race
-    // (TotK 1.2.1 had one, the LOD guard above; Violet's writer is not known yet). Costs frame rate.
+    // TOTK_SUBMIT_SYNC (KarPur, default 1 since 2026-11-02): the game thread waits here until the GPU has finished
+    // this submission. On the Switch the GPU starts within microseconds and has read the per-object data long before
+    // the game rewrites it; here it runs after the replay, and single trees flickered on and off frame by frame (an
+    // occlusion override did not help, this wait did). At 30 fps on the maintainer's PC it costs no frame rate
+    // (mean 30.0, 1% low 28.4 with and without). The proper fix copies the data the GPU reads at submit time; until
+    // the buffers are known this wait stands in. TOTK_SUBMIT_SYNC=0 turns it off.
     static int sync_mode = -1;
     if (sync_mode < 0) {
-        sync_mode = rt_knob("SUBMIT_SYNC", "0");
-        if (sync_mode) rt_log("nvn: every submit waits for the GPU (TOTK_SUBMIT_SYNC=1)");
+        sync_mode = rt_knob("SUBMIT_SYNC", "1");
+        rt_log("nvn: %s", sync_mode ? "every submit waits for the GPU (TOTK_SUBMIT_SYNC=0 turns it off)"
+                                    : "submits do not wait for the GPU (TOTK_SUBMIT_SYNC=0)");
     }
     if (sync_mode && f && gfx_backend()->fence_done() < f) gfx_backend()->fence_wait(f, 500000000ull);
 }
