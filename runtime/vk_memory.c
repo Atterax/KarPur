@@ -1756,7 +1756,9 @@ void vk_mem_mirror_late(uint64_t fence) {
                 if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since) {
                     range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT);
                     late_pages++;
-                    if (hot_on() && hi - lo > demote_max && hot_init(r)) {   // KarPur: hot chunks (big pools)
+                    // KarPur: hot chunks (big pools). With deferred submits the late sync runs after the game's
+                    // writes and covers them: no chunk turns hot from them.
+                    if (hot_on() && !vk_sync_defer_on() && hi - lo > demote_max && hot_init(r)) {
                         uint64_t c = (x - lo) >> HOT_SHIFT;
                         if (c < r->nchunks && r->late_seen[c] != msub) {
                             r->late_seen[c] = msub;
@@ -2199,6 +2201,7 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
 }
 
 uint64_t vk_upload_flush(int wait) {
+    vk_sync_flush_pending();   // KarPur: uploads follow a deferred submission in queue order (before cmd_lock)
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     VkCtx *c = vk_ctx();

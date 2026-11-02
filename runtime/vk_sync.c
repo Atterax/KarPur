@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "gfx.h"
+#include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
@@ -333,32 +334,24 @@ uint64_t vk_sync_reserve(void) {
     return v;
 }
 
-uint64_t vk_sync_submit(const uint64_t *handles, int n) {
-    vk_sync_start();
-    VkCtx *c = vk_ctx();
-    plat_mutex_lock(&sub_lock);
-    vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
-    uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
-    cur_fence = fence;
-    CmdSlot *s = take_slot(c, fence);
-    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    uint64_t t0 = perf_begin();
-    vkBeginCommandBuffer(s->cb, &bi);
-    vk_crumb(s->cb, VK_CRUMB_SUBMIT, fence);
-    ts_begin(s->cb);
-    rec_begin(s->cb);
-    int recorded = vk_exec_record(s->cb, handles, n, fence);
-    s = &slots[cur_slot];   // the last part (vk_sync_split)
-    if (recorded) ts_end(s->cb, fence);
-    else ts_drop();
-    // The recorder is done with the part: the end-of-submission crumb, then the end, by the recorder when it records.
-    if (!rec_end_cb(s->cb, VK_CRUMB_SUBMIT_END, fence)) vkEndCommandBuffer(s->cb);
-    perf_replay(t0);
+// ---- KarPur: deferred submit (TOTK_SUBMIT_DEFER=1, default off)
+// Violet writes parts of its pools while the GPU already runs the submission that reads them; on the Switch the GPU
+// reaches those reads late enough to see the writes, with VRAM mirrors here it reads the copy made before the submit
+// and far trees flicker (gone with TOTK_SUBMIT_SYNC=1, which makes the game wait for the GPU and costs frame rate).
+// Deferred, a recorded submission goes to the queue (with its late mirror sync) only when the next submission begins,
+// before a present, an upload or a wait for its value, or after TOTK_SUBMIT_DEFER_US (default 6000): writes the game
+// makes in between reach the mirror first, and the game itself does not wait.
+static int defer_mode = -1;
+static uint64_t defer_us;
+static struct { volatile int on; uint64_t fence, t; int slot, recorded; } pend;
+static __thread int in_sub;   // this thread holds sub_lock
+static uint64_t defer_n, defer_by_next, defer_by_other, defer_by_timer;
+
+static void submit_now_locked(VkCtx *c, uint64_t fence, int slot, int recorded) {
     // After the recording: the uploads it asked for (and every earlier one) precede it in queue order.
     vk_upload_flush(0);
     VkCommandBuffer pro = prologue(c, fence);
-    s = &slots[cur_slot];
+    CmdSlot *s = &slots[slot];
     VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
                                         {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb}};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->timeline,
@@ -380,8 +373,94 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     __atomic_store_n(&issued, fence, __ATOMIC_RELEASE);
     plat_cond_broadcast(&cv_work);
     plat_mutex_unlock(&st_lock);
+}
+
+static void flush_locked(int why) {   // sub_lock held
+    if (!pend.on) return;
+    pend.on = 0;
+    if (why == 0) defer_by_next++;
+    else if (why == 1) defer_by_other++;
+    else defer_by_timer++;
+    submit_now_locked(vk_ctx(), pend.fence, pend.slot, pend.recorded);
+}
+
+static void flush_pending(int why) {
+    if (!__atomic_load_n(&pend.on, __ATOMIC_ACQUIRE)) return;
+    if (in_sub) { flush_locked(why); return; }
+    plat_mutex_lock(&sub_lock);
+    in_sub = 1;
+    flush_locked(why);
+    in_sub = 0;
+    plat_mutex_unlock(&sub_lock);
+}
+
+void vk_sync_flush_pending(void) { flush_pending(1); }
+
+int vk_sync_defer_on(void) { return defer_mode > 0; }
+
+static void defer_timer(void *arg) {
+    (void)arg;
+    for (;;) {
+        plat_sleep_ms(1);
+        if (pend.on && plat_now_ns() - pend.t >= defer_us * 1000) flush_pending(2);
+        static uint64_t last;
+        uint64_t now = plat_now_ns();
+        if (now - last > 10000000000ull) {   // every 10 s
+            if (last && defer_n)
+                rt_log("vk: deferred submits %llu: sent at the next submit %llu, before a present, upload or wait %llu, "
+                       "after %llu us %llu", (unsigned long long)defer_n, (unsigned long long)defer_by_next,
+                       (unsigned long long)defer_by_other, (unsigned long long)defer_us,
+                       (unsigned long long)defer_by_timer);
+            last = now;
+        }
+    }
+}
+
+static void defer_init(void) {
+    defer_mode = rt_knob("SUBMIT_DEFER", "0");
+    const char *e = cfg_get("TOTK_SUBMIT_DEFER_US");
+    defer_us = e && *e ? strtoull(e, NULL, 10) : 6000;
+    if (defer_mode) {
+        rt_log("vk: submits are deferred until the next submit, a present, an upload or a wait, at most %llu us "
+               "(TOTK_SUBMIT_DEFER=1)", (unsigned long long)defer_us);
+        if (!plat_thread_spawn(defer_timer, NULL, "submit defer", 64 << 10)) rt_log("vk: defer timer thread failed");
+    }
+}
+
+uint64_t vk_sync_submit(const uint64_t *handles, int n) {
+    vk_sync_start();
+    VkCtx *c = vk_ctx();
+    plat_mutex_lock(&sub_lock);
+    in_sub = 1;
+    if (defer_mode < 0) defer_init();
+    flush_locked(0);   // the previous submission, deferred: the game's writes since it was recorded are in
+    vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
+    uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
+    cur_fence = fence;
+    CmdSlot *s = take_slot(c, fence);
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    uint64_t t0 = perf_begin();
+    vkBeginCommandBuffer(s->cb, &bi);
+    vk_crumb(s->cb, VK_CRUMB_SUBMIT, fence);
+    ts_begin(s->cb);
+    rec_begin(s->cb);
+    int recorded = vk_exec_record(s->cb, handles, n, fence);
+    s = &slots[cur_slot];   // the last part (vk_sync_split)
+    if (recorded) ts_end(s->cb, fence);
+    else ts_drop();
+    // The recorder is done with the part: the end-of-submission crumb, then the end, by the recorder when it records.
+    if (!rec_end_cb(s->cb, VK_CRUMB_SUBMIT_END, fence)) vkEndCommandBuffer(s->cb);
+    perf_replay(t0);
+    if (defer_mode > 0) {   // sent later (flush_locked); the slot keeps the value so nothing reuses it before then
+        slots[cur_slot].fence = fence;
+        pend.fence = fence, pend.slot = cur_slot, pend.recorded = recorded, pend.t = plat_now_ns();
+        __atomic_store_n(&pend.on, 1, __ATOMIC_RELEASE);
+        defer_n++;
+    } else submit_now_locked(c, fence, cur_slot, recorded);
     static unsigned subs;
     if (++subs % 4096 == 0) rec_stats_log();
+    in_sub = 0;
     plat_mutex_unlock(&sub_lock);
     return fence;
 }
@@ -418,6 +497,7 @@ int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns) {
 
 static int fence_wait_impl(uint64_t value, uint64_t timeout_ns) {
     vk_sync_start();
+    if (pend.on && value >= pend.fence) flush_pending(1);   // a deferred submission someone waits for goes now
     plat_mutex_lock(&st_lock);
     int ok;
     if (value > issued && value > reserved) {
@@ -445,6 +525,7 @@ uint64_t vk_sync_issued(void) { return __atomic_load_n(&issued, __ATOMIC_ACQUIRE
 
 void vk_sync_finish(void) {
     vk_sync_start();
+    flush_pending(1);
     vk_sync_fence_wait(__atomic_load_n(&issued, __ATOMIC_ACQUIRE), UINT64_MAX);
     vk_upload_flush(1);
 }
