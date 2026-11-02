@@ -273,6 +273,8 @@ def main():
     ap.add_argument('--romfs', type=Path, default=trpfs.ROMFS)
     ap.add_argument('--only', metavar='REGEX', help='--apply: take only the fields whose path matches (e.g. '
                     '"values\\[2\\]" or "maxGenerationNum"), to find which change does what')
+    ap.add_argument('--value', type=float, help='--apply: use this value for every taken field instead of the mod\'s '
+                    '(tests of a moderate change)')
     ap.add_argument('--apply', action='store_true', help='write the changed values to game/mod_patch.txt, which a '
                     'run with MOD_VALUES=1 sets in the game files as they load (files of the same layout only)')
     a = ap.parse_args()
@@ -320,6 +322,14 @@ def main():
         import re
         pat = re.compile(a.only)
         sink[:] = [ln for ln in sink if pat.search(ln.rsplit(' ', 1)[-1])]
+    if sink is not None and a.value is not None:
+        out_lines = []
+        for ln in sink:
+            head, rest = ln.split(' mod=', 1)
+            typ = head.rsplit(' ', 1)[-1]
+            v = repr(float(a.value)) if typ == 'f32' else str(int(a.value))
+            out_lines.append(f'{head} mod={v} {rest.split(" ", 1)[1]}')
+        sink[:] = out_lines
     if sink is not None:
         for ln in sink:
             print('  ' + ln.rsplit(' ', 1)[-1] + ' = ' + ln.split(' mod=', 1)[1].split(' ', 1)[0])
