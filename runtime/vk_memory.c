@@ -67,6 +67,7 @@ typedef struct PoolRec {
     uint32_t *race_seen;               // per chunk: the last such submission
     uint32_t nchunks, nhot;
     uint8_t demote;                    // replay: queued to give up its mirror at the next submission (KarPur)
+    uint32_t refresh_sub;              // replay: the last submission that copied its hot chunks at first use (KarPur)
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
                                        // (or in a copy queued before its next use)
     uint64_t fl_lo, fl_hi;             // flush_lock: nvnMemoryPoolFlushMappedRange bytes not copied yet (fl_hi 0: none)
@@ -1502,10 +1503,48 @@ static int hot_refresh_on(void) {
     if (hot_refresh < 0) hot_refresh = rt_knob("HOT_REFRESH", "0");
     return hot_refresh;
 }
-static volatile int64_t m_refresh_bytes;
+static volatile int64_t m_refresh_bytes, m_refresh_points;
+
+// TOTK_HOT_REFRESH=2: the copy happens at the first draw of the submission that binds a hot chunk of the pool, right
+// before it in the command buffer (vk_exec_draw.c ends the pass for it), so the GPU copies when it reaches that draw:
+// writes the game made while the submission's earlier work ran are in.
+static PoolRec **hotq;
+static int nhotq, chotq, hot_due;
+static MRange *hrng;
+static int nhrng, chrng;
+
+int vk_mem_hot_refresh_due(void) { return hot_due; }
+
+int vk_mem_hot_refresh_record(VkCommandBuffer cb) {   // replay thread, outside a pass, after a full barrier
+    hot_due = 0;
+    nhrng = 0;
+    for (int i = 0; i < nhotq; i++) {
+        PoolRec *r = hotq[i];
+        uint64_t span = 1ull << HOT_SHIFT, size = r->import_hi - r->import_lo;
+        for (uint32_t c = 0; c < r->nchunks; c++) {
+            if (!r->hot[c]) continue;
+            uint64_t off = (uint64_t)c << HOT_SHIFT, len = off + span > size ? size - off : span;
+            range_add(&hrng, &nhrng, &chrng, r, off, len);
+            plat_add64(&m_refresh_bytes, (int64_t)len);
+        }
+    }
+    nhotq = 0;
+    if (!nhrng) return 0;
+    plat_inc64(&m_refresh_points);
+    int rec = copy_ranges(cb, hrng, nhrng, 1, &mrep.upload_bytes, &mrep.upload_copies);
+    mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+             VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    return rec + 1;
+}
 
 static void mirror_choose(PoolRec *r, VkMemSpan *sp, VkDeviceSize n) {
     if (!n) n = sp->avail < HOT_UNKNOWN_SIZE ? sp->avail : HOT_UNKNOWN_SIZE;
+    if (r->nhot && hot_refresh_on() == 2 && r->refresh_sub != msub && hot_touch(r, sp->offset, n)) {
+        r->refresh_sub = msub;
+        if (nhotq == chotq) grow((void **)&hotq, &chotq, sizeof *hotq);
+        hotq[nhotq++] = r;
+        hot_due = 1;
+    }
     if (r->nhot && !hot_refresh_on() && hot_touch(r, sp->offset, n) && !mirror_written_here(r, sp->offset, n)) {
         plat_inc64(&m_hot_binds);
         return;   // the imported buffer stays in sp
@@ -1792,7 +1831,7 @@ void vk_mem_mirror_late(uint64_t fence) {
                 }
         }
         r->mgen = gen_now;
-        if (r->nhot && hot_refresh_on()) {   // KarPur: hot chunks copied into the mirror at the submission's start
+        if (r->nhot && hot_refresh_on() == 1) {   // KarPur: hot chunks copied into the mirror at the submission's start
             uint64_t span = 1ull << HOT_SHIFT;
             for (uint32_t c = 0; c < r->nchunks; c++) {
                 if (!r->hot[c]) continue;
@@ -1988,11 +2027,11 @@ static void mirror_log(uint64_t frame) {
         size_t used = strlen(ver);
         snprintf(ver + used, sizeof ver - used, "; late sync %.1f pages, mirrors given up %lld (%.1f MiB), hot chunks "
                  "%lld (%.1f MiB), bindings to hot chunks %.1f, written while the GPU ran %.1f chunks, hot from that %lld, "
-                 "hot bytes copied %.3f MiB",
+                 "hot bytes copied %.3f MiB at %.1f draws",
                  __atomic_exchange_n(&late_pages, 0, __ATOMIC_RELAXED) / f, (long long)m_demoted_n, m_demoted_bytes / M,
                  (long long)m_hot_chunks, m_hot_chunks * (double)(1ull << HOT_SHIFT) / M,
                  plat_xchg64(&m_hot_binds, 0) / f, plat_xchg64(&m_race_hits, 0) / f, (long long)m_race_chunks,
-                 plat_xchg64(&m_refresh_bytes, 0) / f / M);
+                 plat_xchg64(&m_refresh_bytes, 0) / f / M, plat_xchg64(&m_refresh_points, 0) / f);
     }
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "

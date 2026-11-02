@@ -2286,9 +2286,14 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);
+    bind_vertex_buffers(ex);
+    if (vk_mem_hot_refresh_due()) {   // KarPur TOTK_HOT_REFRESH=2: hot mirror chunks copied right before this draw
+        vk_exec_barrier(ex);          // ends the pass; earlier reads of the old bytes are done
+        ex->recorded += vk_mem_hot_refresh_record(ex->cb);
+        vk_exec_pass_begin(ex);       // bindings and dynamic state stay: they belong to the command buffer; the full
+    }                                 // barrier left nothing dirty, so no feedback barrier follows
     if (fbl & ex->fb_dirty) feedback_barrier(ex);
     feedback_written(ex, &s);
-    bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
     return 1;
