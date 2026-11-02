@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: import-Standard: störende Einbrüche
+- Maintainer: mit import kommen kurze FPS-Einbrüche regelmäßig, auf Dauer störend. Log: Minute 1 1% low 15.0 fps, 30 Frames über 50 ms; schlimmste Frames 15–24 ms fence/present wait. Storage-Verkehr ~480 MiB/Frame (gebundene Bereiche) aus CPU_UNCACHED-Pools über PCIe; mit SUBMIT_SYNC wartet der Spielthread jedes Bild auf die GPU, also schlägt die GPU-Zeit voll durch.
+- Nächste Tests: (A) `SUBMIT_SYNC=0` mit import (Überlappung CPU/GPU zurück; prüfen, ob das Baum-Flackern ohne Spiegel überhaupt noch auftritt). (B) `MEMORY=verify` (Mirror-Modus mit Abgleich: Mismatches nennen Pool, Flags und Offset), um die Mirror-Fehlerquelle einzugrenzen (CPU→Spiegel veraltet oder GPU→Gast zu spät).
+
 ### 2026-11-02: Ursache für Flackern/fehlende Objekte: VRAM-Spiegel; import ist Standard
 - Mit TEX_RECLAIM: Log zeigt keine Rückholung (Fall trat nicht ein). Zweite Palme rechts vom Spieler fehlt (Vergleich mit Switch-2-Screenshot), Felsen/Palmen flackern gelegentlich. ~105 indirekte Draws pro Frame mit index count 0 in dieser Gegend.
 - `MEMORY=import`: **alles richtig** – kein Flackern von Objekten oder Schatten, alle Objekte da; index count 0 = 0. Ein- bis zweimal kurz niedrige FPS (unter 2 s). Minute 1 mean 29.0 / 1% low 20.3 (Laden), danach mean 30.0; schlimmste Frames mit 20–30 ms fence/present wait.
