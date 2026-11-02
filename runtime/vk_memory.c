@@ -1758,7 +1758,7 @@ void vk_mem_mirror_late(uint64_t fence) {
                     late_pages++;
                     // KarPur: hot chunks (big pools). With deferred submits the late sync runs after the game's
                     // writes and covers them: no chunk turns hot from them.
-                    if (hot_on() && !vk_sync_defer_on() && hi - lo > demote_max && hot_init(r)) {
+                    if (hot_on() && (!vk_sync_defer_on() || vk_sync_defer_hot()) && hi - lo > demote_max && hot_init(r)) {
                         uint64_t c = (x - lo) >> HOT_SHIFT;
                         if (c < r->nchunks && r->late_seen[c] != msub) {
                             r->late_seen[c] = msub;

@@ -396,7 +396,27 @@ static void flush_pending(int why) {
 
 void vk_sync_flush_pending(void) { flush_pending(1); }
 
+// TOTK_DEFER_PRESENT=1 (with TOTK_SUBMIT_DEFER): a present waits until the deferred submission has had its full
+// window (TOTK_SUBMIT_DEFER_US) before sending it, instead of sending it at once. The last submission of a frame is
+// followed by its present right away, so without this it gains almost no time for the game's writes.
+void vk_sync_flush_for_present(void) {
+    static int wait = -1;
+    if (wait < 0) wait = rt_knob("DEFER_PRESENT", "0");
+    if (wait && __atomic_load_n(&pend.on, __ATOMIC_ACQUIRE)) {
+        uint64_t due = pend.t + defer_us * 1000, now = plat_now_ns();
+        if (due > now && due - now < 50000000ull) plat_sleep_ns(due - now);
+    }
+    flush_pending(1);
+}
+
 int vk_sync_defer_on(void) { return defer_mode > 0; }
+
+// TOTK_DEFER_HOT=1 (with TOTK_SUBMIT_DEFER): chunks with late writes still turn hot (vk_memory.c), as without deferral.
+int vk_sync_defer_hot(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("DEFER_HOT", "0");
+    return on;
+}
 
 static void defer_timer(void *arg) {
     (void)arg;
