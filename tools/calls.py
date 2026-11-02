@@ -23,9 +23,16 @@ set in the function (load base and offset, address computation, or copy), as off
 address computation, copy), e.g. the argument of a call at its BL/BLR.
 
   .venv\\Scripts\\python tools\\calls.py main+0xbcc044 --origin main+0xbcc040:x1
+
+--insn MOD+OFF prints the class of each instruction around MOD+OFF (--around N, default 4): move-wide immediates,
+FMOV immediates with their value, loads and stores with base register and offset, integer/float conversions, FP
+arithmetic, calls and branches. Registers and immediates only, never instruction words.
+
+  .venv\\Scripts\\python tools\\calls.py --insn main+0xd058dc
 """
 
 import argparse
+import struct
 import sys
 from bisect import bisect_right
 from pathlib import Path
@@ -167,6 +174,77 @@ def reg_origin(mod, lo, p, r, depth=0):
             if r <= 18 or r == 30:
                 return f'{rel}: result or clobber of a call'
     return 'not set in the 64 instructions before it'
+
+
+FP2 = {0: 'fmul', 1: 'fdiv', 2: 'fadd', 3: 'fsub', 4: 'fmax', 5: 'fmin', 6: 'fmaxnm', 7: 'fminnm', 8: 'fnmul'}
+
+
+def insn_kind(mod, a):
+    """Coarse class of the instruction at a with its registers and immediates, for --insn: enough to tell which
+    register a value goes to and how it is used, without printing instruction words."""
+    w = mod.m.word(a)
+    rd, rn, rm = w & 31, (w >> 5) & 31, (w >> 16) & 31
+    x = 'x' if w >> 31 else 'w'
+    if (w & 0x1F800000) == 0x12800000:   # move wide
+        opc, hw, imm = (w >> 29) & 3, (w >> 21) & 3, (w >> 5) & 0xFFFF
+        name = {0: 'movn', 2: 'movz', 3: 'movk'}.get(opc, 'move-wide')
+        return f'{name} {x}{rd}, #{imm:#x} lsl {16 * hw}'
+    if (w & 0xFF201FE0) == 0x1E201000 and ((w >> 22) & 3) in (0, 1):
+        from consts import fmov_imm
+        dbl = (w >> 22) & 1
+        v = fmov_imm((w >> 13) & 0xFF, dbl)
+        val = struct.unpack('<d' if dbl else '<f', v.to_bytes(8 if dbl else 4, 'little'))[0]
+        return f'fmov {"d" if dbl else "s"}{rd}, #{val}'
+    if (w & 0x7F3FFC00) == 0x1E270000:
+        return f'fmov s/d{rd}, {x}{rn} (bits from a general register)'
+    if (w & 0x7F3FFC00) == 0x1E260000:
+        return f'fmov {x}{rd}, s/d{rn} (bits to a general register)'
+    if (w & 0xFF200C00) == 0x1E200800 and ((w >> 12) & 15) in FP2:
+        t = 'd' if (w >> 22) & 1 else 's'
+        return f'{FP2[(w >> 12) & 15]} {t}{rd}, {t}{rn}, {t}{rm}'
+    if (w & 0x7F3F0000) == 0x1E220000 or (w & 0x7F3F0000) == 0x1E230000:
+        return f'{"scvtf" if not (w >> 16) & 1 else "ucvtf"} s/d{rd}, {x}{rn} (integer to float)'
+    if (w & 0x7F3F0000) == 0x1E380000 or (w & 0x7F3F0000) == 0x1E390000:
+        return f'{"fcvtzs" if not (w >> 16) & 1 else "fcvtzu"} {x}{rd}, s/d{rn} (float to integer)'
+    if (w & 0x3B000000) == 0x39000000:   # load/store unsigned offset
+        size, v, opc = (w >> 30) & 3, (w >> 26) & 1, (w >> 22) & 3
+        scale = (4 if opc & 2 else size) if v else size
+        off = ((w >> 10) & 0xFFF) << scale
+        reg = (['b', 'h', 's', 'd'][size] if not (v and opc & 2) else 'q') if v else ('x' if size == 3 else 'w')
+        base = 'sp' if rn == 31 else f'x{rn}'
+        return f'{"ldr" if opc & 1 or (v and opc == 3) else "str"} {reg}{rd}, [{base}, #{off:#x}]'
+    if (w & 0x7F000000) == 0x11000000 or (w & 0x7F000000) == 0x51000000:
+        imm = ((w >> 10) & 0xFFF) << (12 if (w >> 22) & 1 else 0)
+        sp = lambda r: 'sp' if r == 31 else f'{x}{r}'
+        return f'{"sub" if (w >> 30) & 1 else "add"} {sp(rd)}, {sp(rn)}, #{imm:#x}'
+    k = word_kind(w)
+    if k == 'BL':
+        t = a + (sext(w & 0x3FFFFFF, 26) << 2)
+        return f'bl {mod.label(t)}'
+    if k == 'B':
+        t = a + (sext(w & 0x3FFFFFF, 26) << 2)
+        return f'b {mod.name}+{t - mod.base:#x}'
+    if k != 'other':
+        return k.lower()
+    if (w & 0xFF000010) == 0x54000000:
+        return 'b.cond (conditional branch)'
+    if (w & 0x7E000000) == 0x34000000:
+        return f'cbz/cbnz {x}{rd}'
+    if (w & 0x1F000000) == 0x1E000000:
+        return 'other floating-point instruction'
+    if (w & 0x0A000000) == 0x08000000:
+        return 'other load/store'
+    return 'other'
+
+
+def insn_report(mod, a, n):
+    f = mod.function(a)
+    print(f'{mod.name}+{a - mod.base:#x}' + (f' in {mod.name}+{f[0] - mod.base:#x}' if f else ''))
+    for q in range(a - 4 * n, a + 4 * (n + 1), 4):
+        if not mod.m.in_text(q):
+            continue
+        mark = '  <==' if q == a else ''
+        print(f'  {mod.name}+{q - mod.base:#x}: {insn_kind(mod, q)}{mark}')
 
 
 def fde_cover(mod, a):
@@ -493,11 +571,14 @@ def main():
                     help='for the function at MOD+OFF: where x0 comes from at each return, and its compares')
     ap.add_argument('--origin', action='append', default=[], metavar='MOD+OFF:xN',
                     help='where register xN was last set before the instruction at MOD+OFF (repeatable)')
+    ap.add_argument('--insn', action='append', default=[], metavar='MOD+OFF',
+                    help='the instruction classes (register, immediate, load offset, call target) around MOD+OFF')
+    ap.add_argument('--around', type=int, default=4, help='instructions before and after for --insn (default 4)')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
     want = ({s.split('+', 1)[0] for s in a.addresses} | {o.split('+', 1)[0] for o in a.origin} |
-            {o.split('+', 1)[0] for o in a.returns})
+            {o.split('+', 1)[0] for o in a.returns} | {o.split('+', 1)[0] for o in a.insn})
     mods = {}
     for name, base, _ in layout(a.exefs):
         if name in want:
@@ -519,7 +600,10 @@ def main():
     for o in a.returns:
         mod, addr = parse(o, mods)
         returns_report(mod, addr, 0, set())
-    if a.origin or a.returns:
+    for o in a.insn:
+        mod, addr = parse(o, mods)
+        insn_report(mod, addr, a.around)
+    if a.origin or a.returns or a.insn:
         print('=' * 72)
 
 
