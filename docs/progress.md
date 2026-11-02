@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-2. **Bildfehler.** Unsichtbare Objekte: Basis-Instanz behoben; Rest: die CPU des Spiels schickt Draws normaler Objekte nicht ab (siehe Protokoll „Kein Thread-Wettlauf“, Plan dort). Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
+2. **Bildfehler.** Unsichtbare Objekte **behoben** (Compute-Shader im DebugMode, siehe Protokoll 2026-11-02). Offen: sauberer Übersetzer-Patch für Ballots, Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
 
@@ -20,6 +20,13 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: UNSICHTBARE OBJEKTE BEHOBEN: Ryujinx-Optimierer verdreifacht Ballots im GPU-Culling
+- `XLATE_DEBUG=1` (Compute-Shader im DebugMode, ohne AST-Optimierer): **Alles ist da**, nichts ploppt, die Kamera-Ausblendung verhält sich wie auf der Switch (Bestätigung des Maintainers mit Screenshot).
+- Ursache: Compute-Shader 1 (GPU-Culling) hat im DebugMode 18 Ballots (19 Gruppen-Ops), optimiert 54 (55). Der AST-Optimizer propagiert Ballot-Ergebnisse in ihre Verwendungen; jede Kopie läuft an anderer Stelle mit anderen aktiven Lanes, das warp-aggregierte Zählen/Kompaktieren geht schief, das Culling meldet sichtbare Objekte als unsichtbar, und die CPU (liest Storage 1 und die Draw-Argumente zurück, `f_7000b88d48`) lässt deren Draws weg. „Instanzzahl über 1“ stieg von ~2800 auf ~80800 pro 600 Frames.
+- Lösung jetzt: DebugMode für Compute-Shader ist Standard (`TOTK_XLATE_DEBUG=0` schaltet ab). Eigene Cache-Schlüssel (`debug=cs`), erster Start übersetzt alle Shader neu (~3 s Prewarm).
+- Später sauberer: Patch für den Ryujinx-Übersetzer, der Ballot/Vote/Shuffle (konvergenzabhängig) nie propagiert oder dupliziert (wie HasSideEffects in Patch 0003); dann wieder mit Optimierer. Prüfen, ob Grafik-Shader mit Ballots betroffen sind.
+- Aufräumen bei Gelegenheit: Test-Schalter dieser Suche (OCCLUSION, OQ_*, IND_*, ARGS_FORCE, SSBO_WHOLE, VB_WHOLE, DEPTH_EQUAL, A2C, NO_DISCARD, RECONVERGE, CS_SHARED, SUBMIT_SYNC, ONE_CPU, READ_WATCH) und Diagnosen (F8-Snapshots, Dispatch-Bericht) sind harmlos (aus bzw. nur Log), können aber reduziert werden.
 
 ### 2026-11-02: Übersetzer-Hinweise leer; Test DebugMode für Compute-Shader
 - Alle vier Compute-Shader: `"notes": []` – keine c1-Zugriffe außerhalb des Bereichs, keine unbekannten Handles.

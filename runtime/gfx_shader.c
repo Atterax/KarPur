@@ -315,11 +315,15 @@ static void paths(void) { plat_once(&paths_once, init_paths, NULL); }
 // Host answers (vk_caps.c, at device creation, before any translation). Answers other than the defaults (Float64,
 // exact storage offsets, 32 lanes, no gather bias) are mixed into the translator identity, so they get their own cache
 // keys.
-// TOTK_XLATE_DEBUG=1 (KarPur A/B test): compute shaders are translated in Ryujinx's DebugMode, which skips the AST
-// optimizer (TotK once lost an atomic to it, tools/xlate/patches/0003). Mixed into the identity: own cache keys.
+// Compute shaders are translated in Ryujinx's DebugMode, which skips the AST optimizer (KarPur default since
+// 2026-11-02; TOTK_XLATE_DEBUG=0 turns it off). The optimizer propagates subgroup ballots into their uses: Violet's GPU
+// culling shader went from 18 ballots to 54, each copy evaluated in different control flow with other active lanes,
+// so its warp-aggregated counting dropped visible objects and the CPU, which reads the results back, skipped their
+// draws (fences, palms, bushes, trees missing or popping with the camera; docs/progress.md 2026-11-02). TotK once
+// lost an atomic to the same optimizer (tools/xlate/patches/0003). Mixed into the identity: own cache keys.
 static int xlate_debug_cs(void) {
     static int v = -1;
-    if (v < 0) v = rt_knob("XLATE_DEBUG", "0");
+    if (v < 0) v = rt_knob("XLATE_DEBUG", "1");
     return v;
 }
 
