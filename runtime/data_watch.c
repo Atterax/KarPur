@@ -88,6 +88,7 @@ static void host_oodle(Cpu *c) {
                "%llu bytes)", (unsigned long long)n, S.out / 1048576.0, (unsigned long long)S.matched,
                (unsigned long long)S.failed, (unsigned long long)a[1], (unsigned long long)r);
     if (!r || r > RT_ADDRESS_LIMIT || a[0] + a[1] > RT_ADDRESS_LIMIT || a[2] + r > RT_ADDRESS_LIMIT) return;
+    data_patch_decoded((const uint8_t *)(uintptr_t)a[0], a[1], (uint8_t *)(uintptr_t)a[2], r);
     const uint8_t *src = (const uint8_t *)(uintptr_t)a[0];
     uint64_t print;
     for (int i = 0; i < nwant; i++) {
@@ -108,7 +109,14 @@ void data_watch_init(void) {
     // The entry exists whenever the set does: with the set off the sites keep their original call and never come here.
     rt_register_host((uint64_t)(uintptr_t)rt_patch_page() + PAGE_HOST, host_oodle);
     guest_decoder = ldr_module(0)->base + OODLE_DECOMPRESS;
+    // Distance fields in Oodle-packed files are changed after the decode, so a list with such fields turns the set on.
+    data_patch_init();
+    if (!rt_patch_enabled(set) && data_patch_wants_decodes()) {
+        rt_patch_enable(set);
+        rt_log("data watch: set data_watch on for the distance fields in packed files (VIEW_DIST / SPAWN_DIST)");
+    }
     if (!rt_patch_enabled(set)) return;
     rt_log("data watch: every call of the Oodle decoder main+%#x goes through the host", OODLE_DECOMPRESS);
-    load_list();
+    const char *dw = cfg_get("TOTK_DATA_WATCH");
+    if (dw && *dw && strcmp(dw, "0")) load_list();
 }

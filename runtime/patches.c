@@ -78,6 +78,13 @@ const char *rt_patch_name(int set) {
     return NULL;
 }
 
+void rt_patch_enable(int set) {
+#if RT_PATCH_COUNT
+    if (set >= 0 && set < RT_PATCH_COUNT) rt_patch_on[set] = 1;
+#else
+    (void)set;
+#endif
+}
 int rt_patch_enabled(int set) { return set >= 0 && set < RT_PATCH_COUNT && rt_patch_on[set]; }
 
 void rt_patch_disable(int set) {

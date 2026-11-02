@@ -244,7 +244,8 @@ def walk_fields(sc, oi, buf, pos):
 def view(regex, pack_names, toc, fs_off, offset_of):
     """game/data_patch.txt: romfs.bin offset, type, group and name of every distance field of the matching packs."""
     pat = re.compile(regex, re.I)
-    lines = ['# romfs-offset type group name (tools/trpfs.py --view; runtime/data_patch.c)']
+    lines = ['# romfs <offset> <type> <group> <name> | oodle <packed> <unpacked> <fnv> <offset in file> <type> <group> '
+             '<name> (tools/trpfs.py --view; runtime/data_patch.c)']
     for i, name in enumerate(pack_names):
         if not pat.search(name):
             continue
@@ -252,19 +253,31 @@ def view(regex, pack_names, toc, fs_off, offset_of):
         if not t:
             continue
         base = fs_off + offset_of[fnv1a64(name)]
-        files, schemas = [], []
-        for e in t.values():
+        stem = name.removeprefix('arc/').removesuffix('.trpak')[:200]
+        # (where, data): where is ('romfs', offset of the file in romfs.bin) for a stored file, or ('oodle', packed
+        # size, unpacked size, fingerprint) for a packed one, read from the dump a DATA_WATCH=1 run wrote
+        files, schemas, missing = [], [], 0
+        for h, e in t.items():
             start, n = e._vec(len(e.slots) - 1)
-            if codec(e) != 'none':
-                print(f'  {name}: a file is Oodle-packed, left out (needs the runtime decode path)')
-                continue
-            data = e.buf[start:start + n]
+            if codec(e) == 'none':
+                data, where = e.buf[start:start + n], ('romfs', base + start)
+            else:
+                dump = DUMP / f'{stem}__{h:016x}'
+                if not dump.is_file():
+                    missing += 1
+                    continue
+                data = dump.read_bytes()
+                where = ('oodle', n, e.scalar(3, 'Q'), fnv1a64_bytes(e.buf[start:start + min(n, HEAD)]))
             if data[4:8] == b'BFBS':
                 schemas.append(Schema(data))
             else:
-                files.append((start, data))
-        print(f'pack {name.removeprefix("arc/")}: {len(t)} files, {len(schemas)} schemas, {len(files)} data files')
-        for start, data in files:
+                files.append((where, data))
+        print(f'pack {stem}: {len(t)} files, {len(schemas)} schemas, {len(files)} data files'
+              + (f', {missing} packed files without a dump' if missing else ''))
+        if missing:
+            print('    a packed file has no dump in game/dump: run trpfs.py --watch for this pack, then the game once '
+                  'with DATA_WATCH=1')
+        for where, data in files:
             for sc in schemas:
                 if sc.root is None:
                     print('    schema without a root table')
@@ -275,15 +288,17 @@ def view(regex, pack_names, toc, fs_off, offset_of):
                     print(f'    schema {sc.objects[sc.root]["name"]} does not fit a {len(data)}-byte file: '
                           f'{type(e).__name__} {e}')
                     continue
-                kinds = Counter(f'{o}.{f}:{b}' for o, f, b, _ in found)
-                print(f'    {len(data)} bytes, schema {sc.objects[sc.root]["name"]}: {len(found)} fields ('
-                      + ', '.join(f'{k}' for k in list(kinds)[:12]) + ')')
+                print(f'    {len(data)} bytes ({where[0]}), schema {sc.objects[sc.root]["name"]}: {len(found)} fields')
                 for obj, field, b, at in found:
                     for group, opat, fpat in VIEW_FIELDS:
                         if re.search(opat, obj) and re.search(fpat, field) and b in TYPE_NAMES:
                             value = struct.unpack_from('<' + SCALAR[b], data, at)[0]
-                            lines.append(f'{base + start + at:x} {TYPE_NAMES[b]} {group} {obj}.{field}')
-                            print(f'  {group:5} {obj}.{field} = {fmt(value)}  ({name.removeprefix("arc/")})')
+                            if where[0] == 'romfs':
+                                lines.append(f'romfs {where[1] + at:x} {TYPE_NAMES[b]} {group} {obj}.{field}')
+                            else:
+                                lines.append(f'oodle {where[1]} {where[2]} {where[3]:016x} {at:x} {TYPE_NAMES[b]} '
+                                             f'{group} {obj}.{field}')
+                            print(f'      {group:5} {obj}.{field} = {fmt(value)}')
                 break
     PATCH_LIST.parent.mkdir(parents=True, exist_ok=True)
     PATCH_LIST.write_text('\n'.join(lines) + '\n', encoding='utf-8')
