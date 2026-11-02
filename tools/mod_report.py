@@ -164,6 +164,11 @@ def analyse(game, folder, say, watch_lines):
             say(f'{path}: archive table of the mod, {len(data)} B (a loader such as Trinity Mod Loader uses it to '
                 'switch the listed files to loose files)')
             continue
+        # a mod without a romfs folder: the game path is the longest tail of the folder path the archive knows
+        if h_try := next((fnv1a64('/'.join(path.split('/')[k:])) for k in range(path.count('/') + 1)
+                          if fnv1a64('/'.join(path.split('/')[k:])) in game.where), None):
+            k = next(k for k in range(path.count('/') + 1) if fnv1a64('/'.join(path.split('/')[k:])) == h_try)
+            path = '/'.join(path.split('/')[k:])
         h = fnv1a64(path)
         if h not in game.where:
             unknown += 1
@@ -210,7 +215,11 @@ def analyse(game, folder, say, watch_lines):
 
 
 def is_mod(folder):
-    return any(x.name.lower() == 'romfs' for x in folder.rglob('*') if x.is_dir())
+    """A folder with a romfs folder, or with data files of the game's kinds (a mod packed without romfs/)."""
+    if any(x.name.lower() == 'romfs' for x in folder.rglob('*') if x.is_dir()):
+        return True
+    return any(x.is_file() and x.suffix.lower() not in ('.npdm', '', '.txt', '.md', '.toml', '.png', '.jpg')
+               for x in folder.rglob('*'))
 
 
 def cross(mods, say):
