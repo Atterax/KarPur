@@ -24,6 +24,17 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Zusammenfassung Effekt-Ruckeln (für später, über 60 fps)
+- **Befund:** Partikel-Effekte ruckelten bei 60 fps, der Rest lief flüssig. Bei 45 fps, mit fester Bildzeit (`FPS_DT_NS`) und mit `MEMORY=import` (niedrige fps) war alles flüssig.
+- **Irrwege:** 30-fps-Code-Konstanten (Halbierung über 26 Sätze, ohne Wirkung), VRAM-Spiegel/heiße Stücke (`HOT_REFRESH`, `MIRROR_HOT` ohne Wirkung; import war nur wegen der niedrigeren fps flüssig).
+- **Ursache:** Die gemessene Bildzeit (`frame_dt.c`, Mittel über 8 Presents) lag bei 60 fps oft knapp unter 16 666 667 ns. Das Effektsystem zählt offenbar ganze 60-Hz-Bilder und machte dann 0 statt 1 Schritt.
+- **Lösung:** `FPS_DT_SNAP` (Standard 1): Die Bildzeit für das Spiel ist nie kürzer als ein Bild am Frame-Limit.
+- **Über 60 fps (später):** Jedes Bild ist dann kürzer als ein 60-Hz-Bild, also macht das Effektsystem dort viele 0-Schritte (wohl auch die Pokéball-Fehler). Ideen: die Zeit des Effektsystems getrennt aufsummieren und nur in ganzen 1/60-s-Schritten weitergeben (eigene Stelle im Effektsystem finden) oder über 60 fps das Limit 60 empfehlen.
+
+### 2026-11-02: Neu: Ruckeln in Gebäuden bei 60 fps
+- Maintainer (Klassenzimmer der Akademie): Overlay 60 fps, keine Einbrüche (max 19,0 ms), aber Bewegung sieht nicht flüssig aus. Ähnlich wie bei den Effekten, nur in Gebäuden.
+- Tests: (1) `FPS_DT_NS=16666667` (feste Bildzeit), (2) `VK_PRESENT=fifo` (statt mailbox), (3) `FPS_LIMIT=45`.
+
 ### 2026-11-02: FPS_DT_SNAP behebt die ruckelnden Effekte; Standard an
 - Test `FPS_DT_SNAP=1`: flüssige 60 fps, normales Tempo, **Effekte flüssig**. Jetzt Standard (`FPS_DT_SNAP=0` schaltet es ab).
 - Offen: Spielfehler über 60 fps (Pokéball/Effekte) erneut prüfen. Über 60 fps ist die Bildzeit kürzer als ein 60-Hz-Bild; wenn das Effektsystem ganze 60-Hz-Bilder zählt, braucht es dort eine Lösung (z. B. Effekte nur jedes n-te Bild mit der aufsummierten Zeit, oder Limit 60 empfehlen).
