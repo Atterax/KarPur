@@ -62,6 +62,9 @@ typedef struct PoolRec {
     uint8_t *hot;                      // per chunk: 1 hot
     uint8_t *late_cnt;                 // per chunk: submissions whose late sync found CPU writes in it
     uint32_t *late_seen;               // per chunk: the last such submission (msub)
+    uint32_t *chunk_sub;               // per chunk: the last submission that bound it from the mirror (mirror_choose)
+    uint8_t *race_cnt;                 // per chunk: submissions during whose GPU run the CPU wrote it (race_apply)
+    uint32_t *race_seen;               // per chunk: the last such submission
     uint32_t nchunks, nhot;
     uint8_t demote;                    // replay: queued to give up its mirror at the next submission (KarPur)
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
@@ -244,6 +247,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
     free(r->hot), free(r->late_cnt), free(r->late_seen);
+    free(r->chunk_sub), free(r->race_cnt), free(r->race_seen);
     free(r);
 }
 
@@ -1440,7 +1444,9 @@ static int hot_init(PoolRec *r) {
     if (r->hot) return 1;
     uint32_t n = (uint32_t)((r->import_hi - r->import_lo + (1ull << HOT_SHIFT) - 1) >> HOT_SHIFT);
     r->hot = calloc(n, 1), r->late_cnt = calloc(n, 1), r->late_seen = calloc(n, sizeof *r->late_seen);
-    if (!r->hot || !r->late_cnt || !r->late_seen) rt_fatal("vk: out of memory for a pool's hot chunks");
+    r->chunk_sub = calloc(n, sizeof *r->chunk_sub), r->race_cnt = calloc(n, 1), r->race_seen = calloc(n, sizeof *r->race_seen);
+    if (!r->hot || !r->late_cnt || !r->late_seen || !r->chunk_sub || !r->race_cnt || !r->race_seen)
+        rt_fatal("vk: out of memory for a pool's hot chunks");
     r->nchunks = n;
     return 1;
 }
@@ -1472,6 +1478,9 @@ static int mirror_written_here(const PoolRec *r, uint64_t off, uint64_t n) {   /
     return 0;
 }
 
+static int race_on(void);
+static int race_pool(const PoolRec *r);
+
 static void mirror_choose(PoolRec *r, VkMemSpan *sp, VkDeviceSize n) {
     if (!n) n = sp->avail < HOT_UNKNOWN_SIZE ? sp->avail : HOT_UNKNOWN_SIZE;
     if (r->nhot && hot_touch(r, sp->offset, n) && !mirror_written_here(r, sp->offset, n)) {
@@ -1479,6 +1488,11 @@ static void mirror_choose(PoolRec *r, VkMemSpan *sp, VkDeviceSize n) {
         return;   // the imported buffer stays in sp
     }
     sp->buffer = r->mbuf;
+    if (race_on() && race_pool(r) && hot_init(r)) {   // KarPur: chunks this submission reads from the mirror
+        uint64_t a = sp->offset >> HOT_SHIFT, b = (sp->offset + n - 1) >> HOT_SHIFT;   // offsets from import_lo
+        if (b >= r->nchunks) b = r->nchunks - 1;
+        for (uint64_t c = a; c <= b; c++) r->chunk_sub[c] = msub;
+    }
 }
 
 void vk_mem_use_n(VkMemSpan *sp, VkDeviceSize n) {
@@ -1611,6 +1625,89 @@ void vk_mem_mirror_begin(void) {
     mrep.presnap_t += qpc() - t0;
 }
 
+// ---- KarPur: CPU writes while the GPU runs a submission (race chunks)
+// The late sync catches writes made while a submission is recorded. Writes made after it, while the GPU runs the
+// submission, reach imported memory in time (as on the Switch, where the GPU reads memory when it runs) but not the
+// mirror: Violet's far trees flickered with mirrors and drew right with imported memory. At each submission's
+// completion (a completion callback, before the game can see the fence) the write watch of the big mirrored pools it
+// used is read once more; chunks written since the late sync that this submission bound from the mirror are queued,
+// and the replay thread (race_apply, at the next late sync) makes a chunk hot after RACE_SUBS such submissions.
+// TOTK_MIRROR_RACE=0 turns this off.
+enum { RACE_SUBS = 2 };
+static uint32_t late_ep = 0x80000000u;   // snapshot epochs of their own, above the texture epochs
+static int mirror_race = -1;
+static int race_on(void) {
+    if (mirror_race < 0) mirror_race = hot_on() && rt_knob("MIRROR_RACE", "1");
+    return mirror_race;
+}
+static int race_pool(const PoolRec *r) {   // big pools keep their mirror (smaller ones are given up instead)
+    uint64_t max = demote_max ? demote_max : 64ull << 20;
+    return r->import_hi - r->import_lo > max;
+}
+typedef struct { PoolRec *r; uint64_t lo; uint32_t mgen; } RacePool;
+typedef struct { uint32_t sub; int n; RacePool p[]; } RaceCheck;
+typedef struct { PoolRec *r; uint64_t lo; uint32_t chunk, sub; } RaceHit;
+static PlatMutex race_lock = PLAT_MUTEX_INIT;
+static RaceHit *raceq;
+static int nraceq, craceq;
+static volatile int64_t m_race_chunks, m_race_hits;
+
+static void race_check_cb(void *arg) {   // completion thread
+    RaceCheck *rc = arg;
+    plat_mutex_lock_shared(&pool_lock);
+    plat_mutex_lock(&gen_lock);
+    if (++late_ep == 0) late_ep = 0x80000000u;
+    for (int i = 0; i < rc->n; i++) {
+        PoolRec *r = rc->p[i].r;
+        int live = 0;
+        for (int j = 0; j < nm && !live; j++) live = mlist[j] == r;
+        if (!live || r->import_lo != rc->p[i].lo || r->mstate != MS_ON || !r->chunk_sub) continue;
+        uint64_t lo = r->import_lo, hi = r->import_hi;
+        uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
+        snap_regions(r0, r1, late_ep);
+        uint32_t since = rc->p[i].mgen, last = UINT32_MAX;
+        for (uint64_t k = r0; k <= r1; k++) {
+            if (reg_max[k] <= since) continue;
+            uint64_t a = k << SNAP_SHIFT, b = a + (1ull << SNAP_SHIFT);
+            if (a < lo) a = lo;
+            if (b > hi) b = hi;
+            const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];
+            if (!ch) continue;
+            for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT) {
+                if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] <= since) continue;
+                uint32_t c = (uint32_t)((x - lo) >> HOT_SHIFT);
+                if (c == last || c >= r->nchunks || r->chunk_sub[c] != rc->sub) continue;
+                last = c;
+                plat_mutex_lock(&race_lock);
+                if (nraceq == craceq) grow((void **)&raceq, &craceq, sizeof *raceq);
+                raceq[nraceq++] = (RaceHit){r, lo, c, rc->sub};
+                plat_mutex_unlock(&race_lock);
+            }
+        }
+    }
+    plat_mutex_unlock(&gen_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+    free(rc);
+}
+
+static void race_apply(void) {   // replay thread, pool_lock held shared
+    plat_mutex_lock(&race_lock);
+    for (int i = 0; i < nraceq; i++) {
+        RaceHit *h = &raceq[i];
+        PoolRec *r = h->r;
+        int live = 0;
+        for (int j = 0; j < nm && !live; j++) live = mlist[j] == r;
+        if (!live || r->import_lo != h->lo || !r->race_cnt || h->chunk >= r->nchunks || r->hot[h->chunk]) continue;
+        plat_inc64(&m_race_hits);
+        if (r->race_seen[h->chunk] == h->sub) continue;
+        r->race_seen[h->chunk] = h->sub;
+        if (r->race_cnt[h->chunk] < 255) r->race_cnt[h->chunk]++;
+        if (r->race_cnt[h->chunk] >= RACE_SUBS) hot_mark(r, (uint64_t)h->chunk << HOT_SHIFT, 1), plat_inc64(&m_race_chunks);
+    }
+    nraceq = 0;
+    plat_mutex_unlock(&race_lock);
+}
+
 // KarPur: late CPU -> mirror sync, right before the submission's command buffers go to the queue (vk_sync.c prologue).
 // mirror_sync copies what the CPU wrote up to a pool's first access in the submission; writes made after that, while
 // the rest of the replay was recorded, reached the mirror one submission late. On the Switch the GPU reads memory when
@@ -1619,10 +1716,9 @@ void vk_mem_mirror_begin(void) {
 // written since their sync (2026-11-02). This snaps the regions of the pools this submission accessed once more and
 // queues the pages stamped after each pool's sync. TOTK_MIRROR_LATE=0 turns it off.
 static int mirror_late = -1;
-static uint32_t late_ep = 0x80000000u;   // snapshot epochs of their own, above the texture epochs
 static uint64_t late_pages;               // replay: pages queued by late syncs since the last summary
 
-void vk_mem_mirror_late(void) {
+void vk_mem_mirror_late(uint64_t fence) {
     if (!vk_mirror_on) return;
     if (mirror_late < 0) {
         mirror_late = rt_knob("MIRROR_LATE", "1");
@@ -1635,9 +1731,11 @@ void vk_mem_mirror_late(void) {
         demote_max = (m && *m ? (uint64_t)strtoull(m, NULL, 10) : 64) << 20;
     }
     uint64_t t0 = qpc();
-    if (++late_ep == 0) late_ep = 0x80000000u;
     plat_mutex_lock_shared(&pool_lock);
+    if (race_on()) race_apply();
     plat_mutex_lock(&gen_lock);
+    if (++late_ep == 0) late_ep = 0x80000000u;
+    RaceCheck *rc = NULL;
     for (int i = 0; i < nm; i++) {
         PoolRec *r = mlist[i];
         if (r->acc_sub != msub) continue;
@@ -1668,6 +1766,14 @@ void vk_mem_mirror_late(void) {
                 }
         }
         r->mgen = gen_now;
+        if (fence && race_on() && race_pool(r) && r->chunk_sub) {   // KarPur: checked again when the GPU is done
+            if (!rc) {
+                rc = malloc(sizeof *rc + sizeof *rc->p * (size_t)nm);
+                if (!rc) rt_fatal("vk: out of memory (race check)");
+                rc->sub = msub, rc->n = 0;
+            }
+            rc->p[rc->n++] = (RacePool){r, r->import_lo, r->mgen};
+        }
         // A pool the CPU keeps writing while submissions are recorded is likely written while the GPU runs them
         // too (TOTK_MEMORY=verify still found such pages after the late sync); only imported memory shows the GPU
         // those writes, as on the Switch. After DEMOTE_SUBS such submissions it gives up its mirror.
@@ -1682,6 +1788,7 @@ void vk_mem_mirror_late(void) {
     }
     plat_mutex_unlock(&gen_lock);
     plat_mutex_unlock_shared(&pool_lock);
+    if (rc) vk_completion_add(fence, race_check_cb, rc);
     mrep.sync_t += qpc() - t0;
 }
 
@@ -1845,10 +1952,10 @@ static void mirror_log(uint64_t frame) {
     if (mirror_late > 0) {   // KarPur: pages the late sync queued (read without a lock: a statistic)
         size_t used = strlen(ver);
         snprintf(ver + used, sizeof ver - used, "; late sync %.1f pages, mirrors given up %lld (%.1f MiB), hot chunks "
-                 "%lld (%.1f MiB), bindings to hot chunks %.1f",
+                 "%lld (%.1f MiB), bindings to hot chunks %.1f, written while the GPU ran %.1f chunks, hot from that %lld",
                  __atomic_exchange_n(&late_pages, 0, __ATOMIC_RELAXED) / f, (long long)m_demoted_n, m_demoted_bytes / M,
                  (long long)m_hot_chunks, m_hot_chunks * (double)(1ull << HOT_SHIFT) / M,
-                 plat_xchg64(&m_hot_binds, 0) / f);
+                 plat_xchg64(&m_hot_binds, 0) / f, plat_xchg64(&m_race_hits, 0) / f, (long long)m_race_chunks);
     }
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
