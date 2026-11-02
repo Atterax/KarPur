@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Heiße Stücke ändern nichts an den Partikeln
+- `HOT_REFRESH=0`, `HOT_REFRESH=1`, `MIRROR_HOT=0`: Effekte bleiben in allen drei Läufen ruckelig.
+- Zweifel am Schluss „Spiegel“: Mit `MEMORY=import` lief das Spiel nur mit 22–47 fps. Laufen die Effekte fest mit 30 Hz, fällt das bei 30–45 fps kaum auf. Außerdem fand `MEMORY=verify` früher 0 Abweichungen zwischen Spiegel und Gastspeicher.
+- Unterscheidungs-Tests: (A) Standard mit `FPS_LIMIT=30`: wirken die Effekte dann so flüssig wie der Rest? (B) `MEMORY=import` an einer Stelle mit ~60 fps (drinnen oder im Kampf): Effekte flüssig?
+
 ### 2026-11-02: Ruckelnde Partikel kommen vom VRAM-Spiegel
 - `MEMORY=import`: **Effekte flüssig**, aber 22–47 fps je nach Gebiet (wie früher). Damit ist der Effekt-Takt kein Spiellogik-Problem: Die GPU liest im Spiegel-Modus Partikel-Daten (zeitweise) veraltet.
 - Nächste Tests (ohne Neubau): `HOT_REFRESH=0` (heiße Stücke direkt aus dem Gastspeicher), `HOT_REFRESH=1` (Kopie am Submission-Anfang), `MIRROR_HOT=0` (keine heißen Stücke). Kriterium: Effekte flüssig und fps.
