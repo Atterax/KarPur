@@ -21,6 +21,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Übersetzer-Hinweise leer; Test DebugMode für Compute-Shader
+- Alle vier Compute-Shader: `"notes": []` – keine c1-Zugriffe außerhalb des Bereichs, keine unbekannten Handles.
+- Test-Schalter `TOTK_XLATE_DEBUG=1`: Compute-Shader werden im DebugMode von Ryujinx übersetzt (ohne AST-Optimierer, der bei TotK schon ein Atomic verloren hatte, Patch 0003). In die Übersetzer-Identität gemischt (`debug=cs`): eigene Cache-Schlüssel, erster Start übersetzt alle Shader neu.
+
 ### 2026-11-01: Ausrichtung ausgeschlossen; Übersetzer-Hinweise der Compute-Shader
 - Storage-Adressen von Compute-Shader 1 liegen auf 32-Byte-Grenzen (+224/+192/+128 mod 256); keine Meldung über nicht ausgerichtete Storage-Bindungen in irgendeiner Stufe. Ausrichtungs-Verdacht widerlegt.
 - Neu: Der Dispatch-Bericht gibt die Hinweise des Übersetzers für jeden Compute-Shader aus (`vk_exec: compute shader N translator "notes": [...]`), z. B. c1-Lesezugriffe außerhalb des Bereichs (die dann 0 liefern und als Konstanten in den Shader eingebaut werden) oder unbekannte Handles. `gfx_shader_notes()` neu in gfx_shader.c.

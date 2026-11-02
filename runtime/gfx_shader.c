@@ -315,16 +315,27 @@ static void paths(void) { plat_once(&paths_once, init_paths, NULL); }
 // Host answers (vk_caps.c, at device creation, before any translation). Answers other than the defaults (Float64,
 // exact storage offsets, 32 lanes, no gather bias) are mixed into the translator identity, so they get their own cache
 // keys.
+// TOTK_XLATE_DEBUG=1 (KarPur A/B test): compute shaders are translated in Ryujinx's DebugMode, which skips the AST
+// optimizer (TotK once lost an atomic to it, tools/xlate/patches/0003). Mixed into the identity: own cache keys.
+static int xlate_debug_cs(void) {
+    static int v = -1;
+    if (v < 0) v = rt_knob("XLATE_DEBUG", "0");
+    return v;
+}
+
 void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits) {
     paths();
     if (host_set++) return;
     host_f64 = float64, host_sbuf = sbuf_align, host_gather = gather_bits;
     memcpy(host_sg, subgroup, sizeof host_sg);
-    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits) return;
+    if (float64 && !sbuf_align && subgroup[0] == 32 && subgroup[1] == 32 && subgroup[2] == 32 && !gather_bits &&
+        !xlate_debug_cs())
+        return;
     uint8_t buf[32 + 96];
     int n = snprintf((char *)buf + 32, 96, "TKHO f64=%d sbuf=%u sg=%u,%u,%u", float64, sbuf_align, subgroup[0], subgroup[1],
                      subgroup[2]);
     if (gather_bits) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " gather=%u", gather_bits);
+    if (xlate_debug_cs()) n += snprintf((char *)buf + 32 + n, (size_t)(96 - n), " debug=cs");
     memcpy(buf, xlate_id, 32);
     rt_sha256(buf, 32 + (size_t)n, xlate_id);
     rt_log("gfx_shader: host options %s: own shader cache keys", (char *)buf + 37);
@@ -1047,7 +1058,8 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     char *o = o0;
     o += sprintf(o, "{\"job\":{\"key\":\"");
     json_esc(&o, hex);
-    o += sprintf(o, "\",\"stage\":\"%s\",\"debug\":false,\"code\":\"", stage);
+    o += sprintf(o, "\",\"stage\":\"%s\",\"debug\":%s,\"code\":\"", stage,
+                 !strcmp(stage, "cs") && xlate_debug_cs() ? "true" : "false");
     json_esc(&o, code_path);
     o += sprintf(o, "\",\"c1\":\"");
     for (uint32_t i = 0; i < c1_len; i++) o += sprintf(o, "%02x", c1[i]);
