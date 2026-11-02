@@ -12,9 +12,12 @@ fields a mod changes; this tool reads the mod's files only to compare them, on t
   - Oodle-packed originals that have no dump yet are added to game/data_watch.txt, so one game run with
     TOTK_DATA_WATCH=1 dumps them; run this tool again afterwards.
 
-Nothing of the mod or the game is written outside game/; the report goes to game/report/mod-<name>.txt.
+Nothing of the mod or the game is written outside game/; the report goes to game/report/mods-<folder>.txt.
 
     .venv\\Scripts\\python tools\\mod_report.py C:\\KarPur\\mods\\improved_lod
+    .venv\\Scripts\\python tools\\mod_report.py C:\\KarPur\\mods          (every mod folder in it, compared)
+
+Identical files are only counted; files that differ get their field or word changes.
 """
 import argparse
 import json
@@ -107,87 +110,91 @@ def compare(orig, mod, schemas, say):
         say(f'      +{4 * i:#x}: float {fa:.6g} -> {fb:.6g}   int {wa[i]} -> {wb[i]}')
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('mod', type=Path, help='the unpacked mod folder')
-    ap.add_argument('--romfs', type=Path, default=trpfs.ROMFS)
-    a = ap.parse_args()
-    if not a.mod.is_dir():
-        sys.exit(f'error: {a.mod} is not a folder (unpack the mod first)')
-    index = json.loads((a.romfs / 'index.json').read_text(encoding='utf-8'))
-    img = (a.romfs / 'romfs.bin').open('rb')
+class Game:
+    """The player's archive: file hashes, packs and their tables of contents."""
 
-    def read(off, n):
-        img.seek(off)
-        return img.read(n)
+    def __init__(self, romfs):
+        index = json.loads((romfs / 'index.json').read_text(encoding='utf-8'))
+        self.img = (romfs / 'romfs.bin').open('rb')
+        fd_off, fd_size = romfs_file(index, 'arc/data.trpfd')
+        fd = Table.root(self.read(fd_off, fd_size))
+        self.file_hashes, self.pack_names = fd.u64s(0), fd.strings(1)
+        self.file_pack = [t.scalar(0, 'Q') for t in fd.tables(2)]
+        self.pack_size = [t.scalar(0, 'Q') for t in fd.tables(3)]
+        self.fs_off, fs_size = romfs_file(index, 'arc/data.trpfs')
+        _, root_at = struct.unpack('<8sQ', self.read(self.fs_off, 16))
+        fs = Table.root(self.read(self.fs_off + root_at, fs_size - root_at))
+        self.offset_of = dict(zip(fs.u64s(0), fs.u64s(1)))
+        self.where = {h: i for i, h in enumerate(self.file_hashes)}
+        self.tocs = {}
 
-    fd_off, fd_size = romfs_file(index, 'arc/data.trpfd')
-    fd = Table.root(read(fd_off, fd_size))
-    file_hashes, pack_names = fd.u64s(0), fd.strings(1)
-    file_pack = [t.scalar(0, 'Q') for t in fd.tables(2)]
-    pack_size = [t.scalar(0, 'Q') for t in fd.tables(3)]
-    fs_off, fs_size = romfs_file(index, 'arc/data.trpfs')
-    _, root_at = struct.unpack('<8sQ', read(fs_off, 16))
-    fs = Table.root(read(fs_off + root_at, fs_size - root_at))
-    offset_of = dict(zip(fs.u64s(0), fs.u64s(1)))
-    where = {h: i for i, h in enumerate(file_hashes)}
-    tocs = {}
+    def read(self, off, n):
+        self.img.seek(off)
+        return self.img.read(n)
 
-    def toc(pi):
-        if pi not in tocs:
-            off = offset_of.get(fnv1a64(pack_names[pi]))
-            tocs[pi] = None if off is None or pack_size[pi] > 256 << 20 else dict(
-                zip(*(lambda t: (t.u64s(0), t.tables(1)))(Table.root(read(fs_off + off, pack_size[pi])))))
-        return tocs[pi]
+    def toc(self, pi):
+        if pi not in self.tocs:
+            off = self.offset_of.get(fnv1a64(self.pack_names[pi]))
+            if off is None or self.pack_size[pi] > 256 << 20:
+                self.tocs[pi] = None
+            else:
+                pk = Table.root(self.read(self.fs_off + off, self.pack_size[pi]))
+                self.tocs[pi] = dict(zip(pk.u64s(0), pk.tables(1)))
+        return self.tocs[pi]
 
-    out = []
 
-    def say(line=''):
-        print(line)
-        out.append(line)
-
-    files = mod_files(a.mod)
-    say('=' * 25 + ' KarPur mod report ' + '=' * 28)
-    say(f'mod {a.mod.name}: {len(files)} files')
+def analyse(game, folder, say, watch_lines):
+    """Report of one mod folder; returns its summary {path: sha256 of the content}."""
+    import hashlib
+    files = mod_files(folder)
+    say('=' * 72)
+    say(f'mod {folder.name}: {len(files)} files')
     types = Counter(Path(p).suffix or '(none)' for p, _ in files)
     say('file types: ' + ', '.join(f'{t} {c}' for t, c in types.most_common()))
-    watch_lines, unknown = [], 0
     mod_data = {p: f.read_bytes() for p, f in files}
+    digest = {p: hashlib.sha256(d).hexdigest() for p, d in mod_data.items()}
     mod_schemas_by_dir = {}
     for p, d in mod_data.items():
         if d[4:8] == b'BFBS':
             mod_schemas_by_dir.setdefault(p.rsplit('/', 1)[0], []).append(d)
+    unknown = same = 0
     for path, _ in files:
         data = mod_data[path]
         if path.endswith(('.trpfd', '.trpfs')):
-            say(f'{path}: archive table of the mod (skipped)')
+            say(f'{path}: archive table of the mod, {len(data)} B (a loader such as Trinity Mod Loader uses it to '
+                'switch the listed files to loose files)')
             continue
         h = fnv1a64(path)
-        if h not in where:
+        if h not in game.where:
             unknown += 1
-            say(f'{path}: {len(data)} B, not a file of the game archive (new file or another path)')
+            say(f'{path}: {len(data)} B, not a file of this game archive (new file, another path, or the other '
+                'game version)')
             continue
-        pi = file_pack[where[h]]
-        t = toc(pi)
+        pi = game.file_pack[game.where[h]]
+        t = game.toc(pi)
         e = t.get(h) if t else None
-        stem = pack_names[pi].removeprefix('arc/').removesuffix('.trpak')[:200]
+        stem = game.pack_names[pi].removeprefix('arc/').removesuffix('.trpak')[:200]
         if e is None:
             say(f'{path}: {len(data)} B, pack {pi} not readable')
             continue
         start, n = e._vec(len(e.slots) - 1)
         kind = codec(e)
-        say(f'{path}: mod {len(data)} B, game {e.scalar(3, "Q") if kind != "none" else n} B ({kind}), pack {pi}')
+        size = e.scalar(3, 'Q') if kind != 'none' else n
         if kind == 'none':
             orig = e.buf[start:start + n]
         else:
             dump = trpfs.DUMP / f'{stem}__{h:016x}'
             if not dump.is_file():
-                watch_lines.append(f'{n} {e.scalar(3, "Q")} {fnv1a64_bytes(e.buf[start:start + min(n, HEAD)]):016x} '
+                watch_lines.append(f'{n} {size} {fnv1a64_bytes(e.buf[start:start + min(n, HEAD)]):016x} '
                                    f'{stem}__{h:016x}')
-                say('    original is Oodle-packed and not dumped yet: listed for DATA_WATCH')
+                say(f'{path}: mod {len(data)} B, game {size} B ({kind}), pack {pi}; original not dumped yet: '
+                    'listed for DATA_WATCH')
                 continue
             orig = dump.read_bytes()
-        # schemas: the mod's own beside the file, then the pack's (unpacked or dumped)
+        if orig == data:
+            same += 1
+            continue
+        say(f'{path}: mod {len(data)} B, game {size} B ({kind}), pack {pi}')
         cands = list(mod_schemas_by_dir.get(path.rsplit('/', 1)[0], []))
         for hh, ee in t.items():
             s0, n0 = ee._vec(len(ee.slots) - 1)
@@ -198,6 +205,66 @@ def main():
                 if d.is_file():
                     cands.append(d.read_bytes())
         compare(orig, data, schemas_in(cands), say)
+    say(f'summary {folder.name}: {len(files)} files, {unknown} not in this game, {same} identical to the game')
+    return digest
+
+
+def is_mod(folder):
+    return any(x.name.lower() == 'romfs' for x in folder.rglob('*') if x.is_dir())
+
+
+def cross(mods, say):
+    """Pairwise: same path with the same or other content, and paths only one of the two has."""
+    say('=' * 72)
+    say('comparison of the mods (same file = same path; content compared by SHA-256)')
+    names = list(mods)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = mods[names[i]], mods[names[j]]
+            both = set(a) & set(b)
+            diff = sorted(p for p in both if a[p] != b[p])
+            only_a, only_b = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+            if not both:
+                say(f'{names[i]} / {names[j]}: no common files')
+                continue
+            say(f'{names[i]} / {names[j]}: {len(both)} common files, {len(both) - len(diff)} identical, '
+                f'{len(diff)} different; only in the first {len(only_a)}, only in the second {len(only_b)}')
+            for p in diff[:10]:
+                say(f'    differs: {p}')
+            for p in only_a[:5]:
+                say(f'    only in {names[i]}: {p}')
+            for p in only_b[:5]:
+                say(f'    only in {names[j]}: {p}')
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('mod', type=Path, help='an unpacked mod folder, or a folder of such folders (all are compared)')
+    ap.add_argument('--romfs', type=Path, default=trpfs.ROMFS)
+    a = ap.parse_args()
+    if not a.mod.is_dir():
+        sys.exit(f'error: {a.mod} is not a folder (unpack the mod first)')
+    folders = [a.mod] if is_mod(a.mod) and not any(is_mod(d) for d in a.mod.iterdir() if d.is_dir()) else \
+        [d for d in sorted(a.mod.iterdir()) if d.is_dir() and is_mod(d)]
+    skipped = [d for d in sorted(a.mod.iterdir()) if d.is_dir() and d not in folders] if a.mod not in folders else []
+    for d in skipped:   # e.g. a loader's own files: say what is in it, as file types and counts
+        kinds = Counter(x.suffix or '(none)' for x in d.rglob('*') if x.is_file())
+        print(f'{d.name}: no romfs folder, left out; files: ' + (', '.join(f'{k} {c}' for k, c in kinds.most_common(8))
+                                                                 or 'none'))
+    if not folders:
+        sys.exit(f'error: no folder with a romfs folder in {a.mod}')
+    game = Game(a.romfs)
+    out, watch_lines = [], []
+
+    def say(line=''):
+        out.append(line)
+
+    mods = {}
+    for f in folders:
+        mods[f.name] = analyse(game, f, say, watch_lines)
+        print(f'{f.name}: {len(mods[f.name])} files analysed')
+    if len(mods) > 1:
+        cross(mods, say)
     if watch_lines:
         trpfs.WATCH_LIST.parent.mkdir(parents=True, exist_ok=True)
         old = trpfs.WATCH_LIST.read_text(encoding='utf-8').splitlines() if trpfs.WATCH_LIST.is_file() else []
@@ -206,13 +273,16 @@ def main():
         lines += sorted(set(keep + watch_lines))
         trpfs.WATCH_LIST.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         say()
-        say(f'{len(watch_lines)} packed originals added to {trpfs.WATCH_LIST}: start the game once with DATA_WATCH=1, '
-            'walk around, then run this tool again')
-    say(f'{unknown} mod files are not in the game archive')
+        say(f'{len(set(watch_lines))} packed originals added to {trpfs.WATCH_LIST}: start the game once with '
+            'DATA_WATCH=1, walk around, then run this tool again')
     say('=' * 72)
-    rep = ROOT / 'game' / 'report' / f'mod-{a.mod.name}.txt'
+    rep = ROOT / 'game' / 'report' / f'mods-{a.mod.name}.txt'
     rep.parent.mkdir(parents=True, exist_ok=True)
     rep.write_text('\n'.join(out) + '\n', encoding='utf-8')
+    for ln in out:   # the summaries and the comparison on screen; every file line is in the report
+        if ln.startswith(('summary', '=', 'mod ', 'file types', 'comparison')) or ' / ' in ln[:80] or \
+                ln.startswith(('    differs', '    only in')) or 'packed originals added' in ln:
+            print(ln)
     print(f'full report: {rep}')
 
 
