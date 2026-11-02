@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: 60 fps, erster Schritt: Experiment mit festem Bildintervall
+- Ausgangslage: Violet setzt das Present-Intervall 2 (30 fps); die Runtime taktet danach (`nvn_api_obj.c present_period`). TotKs Weg (Patch-Sets `fps60`/`realtime`, `frame_rate.c`) braucht spielspezifische Adressen (Intervall-Regler, Zeitschritt pro Frame), die es für Violet noch nicht gibt.
+- Neu: `TOTK_PRESENT_INTERVAL=n` taktet unabhängig vom Spiel mit n Ticks à 60 Hz; die ersten 8 Intervall-Wechsel des Spiels werden geloggt („the game sets the present interval …“).
+- Frage des Experiments: Läuft Violet mit Intervall 1 bei 60 fps in normaler Geschwindigkeit (Spielzeit aus gemessener Zeit) oder doppelt so schnell (fester Schritt 1/30 s)? Davon hängt ab, ob ein Zeitschritt-Patch nötig ist.
+
 ### 2026-11-02: Test-Schalter der Sichtbarkeits-Fehlersuche entfernt
 - 26 Diagnose-Commits per `git revert` zurückgenommen (Konflikte nur dort, wo die Spiegel-Arbeit dieselben Zeilen berührt; von Hand gelöst, Doku behalten): `OCCLUSION`, `OQ_GPU/FILL/CLAMP`, `IND_CPU`, `IND_SHOW`, `ARGS_FORCE`, `CS_SHARED`, `SSBO_WHOLE`, `VB_WHOLE`, `DEPTH_EQUAL`, `NO_DISCARD`, `A2C`-Schalter (A2C-Verhalten wie vorher), `RECONVERGE` samt Aktivierung von maximal reconvergence, `ONE_CPU`, `READ_WATCH` (VEH in `platform/win32.c`), F8-Schnappschüsse, Compute-Dispatch-Bericht und Übersetzer-Notizen, Occlusion-/Counter-/Indirect-Statistiken, Tiefenziel-Diagnose, `symbolize.py --log/--grep`. Rund 1070 Zeilen weniger.
 - Behalten: `IND_BASE` (Basisinstanz-Korrektur, 06244c2), Zeichenparameter-Übersetzung (f52ac2a), `XLATE_DEBUG`, `SUBMIT_SYNC` (Standard 0), `TEX_RECLAIM`, `MIRROR_LATE/DEMOTE/DEMOTE_MAX/HOT`, `XLATE`-Patch 0010.

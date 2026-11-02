@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -619,7 +620,13 @@ NVN_API(nvnWindowFinalize) { (void)c; }
 NVN_API(nvnWindowSetPresentInterval) {
     win_t *o = WN(c);
     int v = (int)arg_x(c, 1);
-    if (o->interval != v) NVN_LOG("present interval %d -> %d", o->interval, v);
+    if (o->interval != v) {
+        // KarPur: how the game paces itself, for the 60 fps work (a few lines, then TOTK_TRACE=gfx only)
+        static int logged;
+        if (logged++ < 8) rt_log("nvn: the game sets the present interval %d -> %d (frame %llu)", o->interval, v,
+                                 (unsigned long long)o->presents);
+        else NVN_LOG("present interval %d -> %d", o->interval, v);
+    }
     o->interval = v;
 }
 // void nvnWindowSetCrop(NVNwindow *w, int x, int y, int w, int h)
@@ -636,9 +643,24 @@ NVN_API(nvnWindowSetCrop) {
 // ready, at most at the frame limit (TOTK_FPS_LIMIT: 30 to 360 per second or the monitor's rate): holding it to the
 // 2nd or 3rd tick would only add latency and 50 ms frames.
 #define VSYNC_HZ 60ull
+// TOTK_PRESENT_INTERVAL=n (KarPur test for 60 fps): frames are paced at n 60 Hz ticks whatever interval the game asks
+// for (Violet asks for 2, 30 fps). Whether the game then also runs at the right speed tells whether it steps its world
+// by the time between frames or by a fixed 1/30 s per frame. 0 or unset: the game's interval.
+static int forced_interval(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = cfg_get("TOTK_PRESENT_INTERVAL");
+        v = e && *e ? atoi(e) : 0;
+        if (v < 0 || v > 4) v = 0;
+        if (v) rt_log("nvn: frames are paced at %d ticks of 60 Hz whatever the game asks (TOTK_PRESENT_INTERVAL=%d)", v, v);
+    }
+    return v;
+}
+
 static uint64_t present_period(const win_t *o) {
     if (frame_step_realtime()) return frame_step_cap_ns();
-    return (o->interval > 0 ? (uint64_t)o->interval : 1ull) * 1000000000ull / VSYNC_HZ;
+    int iv = forced_interval() ? forced_interval() : o->interval;
+    return (iv > 0 ? (uint64_t)iv : 1ull) * 1000000000ull / VSYNC_HZ;
 }
 
 // MacNativeGames nvn_pace.h: the present slot is the previous slot plus one period. Early: wait for the slot. Late by
