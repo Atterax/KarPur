@@ -782,11 +782,40 @@ static void make_fresh(Tex *e) {
     if (ch) upload(e);   // 1 written, -1 not tracked: both upload again
 }
 
+// KarPur: a GPU-owned mirrored image (rendered or copied into by the GPU, or an alias of such an image) whose own
+// storage pages the CPU rewrote after that GPU write holds stale content: the storage is the newer texture. Violet
+// streams textures into reused storage; a descriptor with the same format and size as the old one keeps the same entry,
+// and a palm's leaves showed the bark texture that had been there (and single trees flickered). The image gives up
+// GPU ownership and is uploaded again, the same decision vk_texture_write_back makes for a rewritten storage. Only
+// pages wholly inside the storage count; a texture that fills no page counts only with its byte copy (storage_rewritten).
+// TOTK_TEX_RECLAIM=0 keeps GPU-owned images forever (the old behaviour).
+static int tex_reclaim = -1;
+static uint64_t n_reclaimed;
+
+static void reclaim_if_rewritten(Tex *e) {
+    if (tex_reclaim < 0) tex_reclaim = rt_knob("TEX_RECLAIM", "1");
+    if (!tex_reclaim || (fills_no_page(e) && !e->snap)) return;
+    uint64_t lo = (e->pub.addr + 0xfff) & ~0xfffull, hi = (e->pub.addr + e->t.L.size) & ~0xfffull;
+    if (hi <= lo) lo = e->pub.addr, hi = e->pub.addr + e->t.L.size;
+    uint32_t now;
+    if (vk_mem_changed_snap(lo, hi - lo, e->gpu_gen, submit_epoch, &now) != 1) return;
+    if (e->snap && !memcmp(e->snap, (const void *)(uintptr_t)e->pub.addr, e->t.L.size)) return;
+    if (!n_reclaimed++)
+        rt_log("vk: a GPU-written texture's storage was rewritten by the CPU: uploaded again (%#llx fmt %#x %ux%u; "
+               "TOTK_TEX_RECLAIM=0 turns this off)", (unsigned long long)e->pub.addr, e->t.d.format, e->t.d.width,
+               e->t.d.height);
+    e->pub.gpu_owned = 0;
+    e->gpu_dirty = 0;
+    e->uploaded = 0;
+}
+
 // make_fresh for draw bindings: the page check answers from this submission's write-watch snapshot (vk_memory.c
 // vk_mem_changed_snap) instead of a system call per texture. A write the snapshot of the texture's region missed (made
 // after it, during this replay) keeps its write-watch bit and is caught by the next submission's snapshot.
 static void make_fresh_snap(Tex *e) {
-    if (!e->pub.mirrored || e->pub.gpu_owned) return;
+    if (!e->pub.mirrored) return;
+    if (e->pub.gpu_owned) reclaim_if_rewritten(e);
+    if (e->pub.gpu_owned) return;
     uint32_t now;
     n_checks++;
     int ch = vk_mem_changed_snap(e->pub.addr, e->t.L.size, e->uploaded ? e->wgen : 0, submit_epoch, &now);
@@ -906,6 +935,7 @@ static Tex *entry_of(const tex_t *t) {
                     vk_mem_changed(e->pub.addr, e->t.L.size, 0, &e->wgen);
                     e->uploaded = 1;
                     e->pub.gpu_owned = 1;
+                    e->gpu_gen = src->gpu_gen;   // CPU writes after src's render make the storage newer again
                 }
             } else {
                 init_image(e, vk_upload_begin());
@@ -1411,6 +1441,7 @@ static void write_back(Tex *e) {
             free(buf);
         }
     e->gpu_dirty = 0;
+    storage_rewritten(e, 0, &e->gpu_gen);   // KarPur: this write-back is not a CPU rewrite (reclaim_if_rewritten)
 }
 
 // Mirrored textures overlapping [addr, addr+size) that the GPU wrote since their last write-back.

@@ -6,7 +6,8 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
+0. **Palme mit Rindentextur / Flackern**: Test `TEX_RECLAIM` (Standard an) abwarten; danach prüfen, ob `SUBMIT_SYNC=0` mit TEX_RECLAIM auch reicht.
+1. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
 3. Die übrigen NVN-Funktionen umsetzen, wenn sie aufgerufen werden.
 4. Offen aus der Importliste: `codec::HardwareOpusDecoder` (Klassen-API), DLC-Freischaltung (`aoc` meldet keine DLC).
@@ -21,6 +22,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Veraltete GPU-Texturen nach CPU-Neubeschreiben werden neu geladen (TEX_RECLAIM)
+- Tests: `TEX_ALIAS=0` → Palmen und andere Objekte fehlen (leere Blatt-Texturen, Alpha-Test wirft alles weg). `TEX_VRAM_PRESSURE=0` → Palme wieder richtig, aber viele Bäume und Palmen flackern stark. Folgerung: Inhalte unserer Texturkopien sind veraltet; Verwerfen und frisches Laden aus dem Speicher hilft.
+- Ursache im Code (`runtime/vk_texture.c`, aus TotK): Ein gespiegeltes Bild, das die GPU einmal beschrieben hat (`gpu_owned`, auch per Alias-Kopie), wurde nie wieder aus dem Speicher hochgeladen (`make_fresh*` brach sofort ab). Schreibt das Spiel danach eine neue Textur gleicher Form (Adresse, Format, Größe → gleicher Schlüssel, gleicher Eintrag) in diesen Speicher, bleibt das alte Bild (Rinde auf Palmblättern).
+- Korrektur `reclaim_if_rewritten` (in `make_fresh_snap`, also bei Draw-Bindungen): Wurden die eigenen Seiten des Speichers nach dem GPU-Schreiben (`gpu_gen`) von der CPU geändert, gibt das Bild die GPU-Eigenschaft ab und wird neu hochgeladen (gleiche Entscheidung wie `vk_texture_write_back`). Nur ganze eigene Seiten zählen; Texturen ohne eigene Seite nur mit Bytekopie. Alias-Kopien übernehmen `gpu_gen` der Quelle; nach einem Write-back wird `gpu_gen` erneuert (eigener Write-back zählt nicht). Schalter `TOTK_TEX_RECLAIM` (Standard 1), Log beim ersten Mal.
+- Nicht getestet (kein Spiel im Container); Syntax geprüft.
 
 ### 2026-11-02: Mit SUBMIT_SYNC: Palmen flackern vereinzelt; Palme mit Rindentextur auf den Blättern
 - Statt Bäumen flackern jetzt vereinzelt Palmen schnell. Eine Palme zeigt auf den Blättern die Rindentextur, ohne Alpha-Ausschnitt (grobe Blattflächen); dieselbe Palme war vorher richtig. Verdacht: Textur veraltet/verwechselt (Speicher einer gestreamten Textur wiederverwendet, Alias-Übernahme `TOTK_TEX_ALIAS` oder Freigabe unter VRAM-Druck `TOTK_TEX_VRAM_PRESSURE`).
