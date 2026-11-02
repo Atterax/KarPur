@@ -1632,12 +1632,13 @@ void vk_mem_mirror_begin(void) {
 // completion (a completion callback, before the game can see the fence) the write watch of the big mirrored pools it
 // used is read once more; chunks written since the late sync that this submission bound from the mirror are queued,
 // and the replay thread (race_apply, at the next late sync) makes a chunk hot after RACE_SUBS such submissions.
-// TOTK_MIRROR_RACE=0 turns this off.
+// Off by default (TOTK_MIRROR_RACE=1 turns it on): in Violet it made 323 chunks hot (42 MiB read over PCIe) and the
+// frame rate fell to 20-35 fps in places, while the far trees still flickered at times (2026-11-02).
 enum { RACE_SUBS = 2 };
 static uint32_t late_ep = 0x80000000u;   // snapshot epochs of their own, above the texture epochs
 static int mirror_race = -1;
 static int race_on(void) {
-    if (mirror_race < 0) mirror_race = hot_on() && rt_knob("MIRROR_RACE", "1");
+    if (mirror_race < 0) mirror_race = hot_on() && rt_knob("MIRROR_RACE", "0");
     return mirror_race;
 }
 static int race_pool(const PoolRec *r) {   // big pools keep their mirror (smaller ones are given up instead)
