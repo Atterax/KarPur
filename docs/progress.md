@@ -24,6 +24,17 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Partikel-Effekte ruckeln bei 60 fps: Spur im Frame-Rate-Mod
+- Maintainer: Mit dem neuen Spielstand flimmerten Bäume nur kurz am Anfang, mit dem alten (während der Mod-Tests gespeichert) dauerhaft. Vermutung: Der alte Stand hat Folgen der Mod-Werte mitgesichert. Der alte Stand bleibt im Backup (`C:\KarPur\backup-profile-mods`), weitergespielt wird mit dem neuen.
+- Nächstes Ziel: Partikel-Effekte (Attacken, Wasser, Blätter) laufen bei 60 fps sichtbar im alten Takt.
+- Die Init-Funktion des NX-Optimizer-Moduls (subsdk3, CC BY-NC, nur gelesen) für 3.0.1 genauer entschlüsselt:
+  - Inline-Hook `main+0x92dd2c`: x2 = s·30·33333334 (s = gemessene Bildzeit in Sekunden), also die Bildzeit in ns. Das ist unser Satz `fps_dt`.
+  - Inline-Hook `main+0xd058dc`: x23 = s·30·Bits(180.0f). Wirkungslos (Grad/Bogenmaß).
+  - Inline-Hook `main+0x2b7c540`: x0 = s·60·Bits(60.0f) (bei 30 fps 0x84e00000), dazu fester Patch `main+0x2b7c544` = `movz w0, #0x4270, lsl #16` (**w0 = 60.0f**): Das Spiel bekommt dort eine Bildrate als float. **Hauptkandidat für den Effekt-Takt.**
+  - Feste Patches `main+0xb92780/84` = `movz x1, #0xa056` / `movk x1, #0x1fc, lsl #16` (**x1 = 33333334**, fest auf die 30-fps-Bildzeit).
+  - Fester Patch `main+0x170c408` = `movz w10, #0x4120, lsl #16` (10.0f).
+- In 4.0.0 stehen an `0x2b7c540` und `0xb92780` andere Instruktionen. Gesucht: die Gegenstücke (float 30.0 bzw. 60.0 als MOVZ in w0 nahe `0x2b79f60`, 33333334 als MOVZ/MOVK in x1). Bericht dafür: `consts.py --only "float 30.0" --only "float 60.0" --only 33333334`.
+
 ### 2026-11-02: Neuer Spielstand: Durchlauf bis zur ersten Stadt
 - Maintainer hat den Stand mit den Mod-Tests gesichert und ein neues Spiel begonnen (normaler Lauf, keine Schalter).
 - Charaktererstellung läuft. **Fehlt:** das Bild der Spielfigur auf dem Ausweis direkt danach (Render-to-Texture/Foto-Aufnahme prüfen).
