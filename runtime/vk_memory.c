@@ -1431,12 +1431,24 @@ static void mirror_sync(PoolRec *r) {
 // uses the imported buffer, unless the GPU wrote an overlapping range into the mirror in this submission (that write
 // reaches guest memory only at the submission's end; the mirror is then the one copy that holds it). Hot changes made
 // while a submission is recorded count from the next one (mirror_gen). TOTK_MIRROR_HOT=0 turns hot chunks off.
-enum { HOT_SHIFT = 16, HOT_LATE_SUBS = 2 };
+enum { HOT_LATE_SUBS = 2 };
+// Chunk size as a shift: 64 KiB by default; TOTK_HOT_KB=4..1024 (a power of two) sets it. Smaller chunks make fewer
+// bytes hot when the CPU writes next to what the GPU reads (a ring buffer filled for the next frame) rather than it.
+static int HOT_SHIFT = 16;
 #define HOT_UNKNOWN_SIZE (1ull << 20)   // bytes a binding of unknown size is taken to cover
 static int mirror_hot = -1;
 static volatile int64_t m_hot_chunks, m_hot_binds;
 static int hot_on(void) {
-    if (mirror_hot < 0) mirror_hot = rt_knob("MIRROR_HOT", "1");
+    if (mirror_hot < 0) {
+        mirror_hot = rt_knob("MIRROR_HOT", "1");
+        const char *e = cfg_get("TOTK_HOT_KB");
+        long kb = e && *e ? strtol(e, NULL, 10) : 64;
+        int sh = 10;
+        while ((1L << (sh - 10)) < kb && sh < 20) sh++;
+        if (sh < 12) sh = 12;
+        HOT_SHIFT = sh;
+        if (sh != 16) rt_log("mem: hot chunks of %d KiB (TOTK_HOT_KB)", 1 << (sh - 10));
+    }
     return mirror_hot;
 }
 
