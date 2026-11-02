@@ -6,7 +6,7 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ### Nächste Schritte
 1. **Transform Feedback fertig** (stabil, Figuren/Pokémon/NPCs korrekt, mit GPL an). Aufräumen bei Gelegenheit: Schrittlogs der ersten 2 TF-Draws in `vk_xfb.c`; Pause/Resume und DrawTransformFeedback sind nicht umgesetzt (Purpur nutzt sie bisher nicht).
-0. **Spiegel-Speicher (mirror) reparieren**: Mit `MEMORY=import` (jetzt Standard) ist alles richtig. Im Mirror-Modus liest die CPU veraltete GPU-Ergebnisse (Culling, Draw-Argumente; Write-back erst am Ende der Submission) und Texturen veralten. Erst reparieren, wenn Leistung auf schwächeren PCs nötig wird. Danach prüfen, ob `SUBMIT_SYNC=0` mit import reicht (dann Warten wieder abschalten).
+0. **Restflackern mit Spiegeln**: Mirror + späte Synchronisation ist wieder Standard (flüssig). Vereinzelt flackern noch kleine Büsche/Gegenstände in der Entfernung, bis man nah ist (mit import nicht). Nächster Test: `MEMORY=verify` mit später Synchronisation – bleiben übersprungene Seiten, schreibt das Spiel noch nach dem Submit. Danach `SUBMIT_SYNC=0` mit Mirror prüfen.
 0b. **Sichtweite/LOD erweitern** (Wunsch des Maintainers, wie Switch-2-Fassung): LOD-/Distanz-Parameter im Spielcode finden, per Patch-Schalter vergrößern. Nach fehlerfreier Darstellung.
 1. **Baum-Flackern**: behoben durch `SUBMIT_SYNC=1` als Standard (Wettlauf GPU-Lesen vs. Spiel-Schreiben). Sauberer: herausfinden, welche Puffer die GPU zu spät liest, und sie beim Submit kopieren (wie `vk_usnap` für Uniforms), dann das Warten wieder abschalten.
 2. **Bildfehler.** Unsichtbare Objekte **behoben** (Übersetzer-Patch 0010, Optimierer wieder an, siehe Protokoll 2026-11-02). Offen: Schatten-Feinheiten, `SetScissors: differing scissor ignored`, konservative Rasterung. Baum-Flackern behoben durch `SPLIT_DRAWS=0` als Standard (Ursache dahinter offen, siehe Protokoll). Schatten prüfen. Außerdem: Flackern, fehlende/fehlerhafte Schatten, schwarze Flächen (Dunstabzug, Fensterscheiben), kurze „Stachel“-Artefakte bei Effekten, `SetScissors: differing scissor ignored`, `copy of format 0x35 texture ... skipped`, `conservative rasterisation requested: drawn normally`.
@@ -23,6 +23,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 - Werden `nn::movie`-Funktionen überhaupt aufgerufen? Die Videos sind Bink 2 (`.bk2`), das der Spielcode selbst dekodiert. TotKs `ov_movie.c` (VP9 über libvpx) wird dann wohl nicht gebraucht.
 
 ## Protokoll
+
+### 2026-11-02: Späte Spiegel-Synchronisation wirkt; Mirror wieder Standard
+- `MEMORY=mirror` mit `MIRROR_LATE`: keine Einbrüche mehr (Maintainer), fast alles richtig; nur vereinzelt kleine Büsche/Gegenstände flackern in der Entfernung, bis man nah herangeht. Späte Synchronisation: 135 Seiten/Frame (erste Minute), 510 Seiten/Frame (Minute 3), also bis ~2 MiB, die die CPU während der Aufzeichnung schreibt. Kosten der Verfolgung 0,41–0,45 ms/Frame.
+- `mirror_mode`: auto ist wieder mirror auf diskreten GPUs.
 
 ### 2026-11-02: verify: Spiegel stimmen, aber CPU-Schreibzugriffe während der Aufzeichnung kommen ein Bild zu spät; späte Synchronisation
 - Test `SUBMIT_SYNC=0` (import): alles da, Einbrüche bleiben (1% low 14.7 fps). Das Warten ist also nicht die Ursache der Einbrüche; die GPU-Zeit über PCIe ist es.
