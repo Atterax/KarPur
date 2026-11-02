@@ -334,7 +334,7 @@ uint64_t vk_sync_reserve(void) {
     return v;
 }
 
-// ---- KarPur: deferred submit (TOTK_SUBMIT_DEFER=1, default off)
+// ---- KarPur: deferred submit (TOTK_SUBMIT_DEFER, default on since 2026-11-02 test G; 0 turns it off)
 // Violet writes parts of its pools while the GPU already runs the submission that reads them; on the Switch the GPU
 // reaches those reads late enough to see the writes, with VRAM mirrors here it reads the copy made before the submit
 // and far trees flicker (gone with TOTK_SUBMIT_SYNC=1, which makes the game wait for the GPU and costs frame rate).
@@ -396,12 +396,12 @@ static void flush_pending(int why) {
 
 void vk_sync_flush_pending(void) { flush_pending(1); }
 
-// TOTK_DEFER_PRESENT=1 (with TOTK_SUBMIT_DEFER): a present waits until the deferred submission has had its full
+// TOTK_DEFER_PRESENT (default 1, with TOTK_SUBMIT_DEFER): a present waits until the deferred submission has had its full
 // window (TOTK_SUBMIT_DEFER_US) before sending it, instead of sending it at once. The last submission of a frame is
 // followed by its present right away, so without this it gains almost no time for the game's writes.
 void vk_sync_flush_for_present(void) {
     static int wait = -1;
-    if (wait < 0) wait = rt_knob("DEFER_PRESENT", "0");
+    if (wait < 0) wait = rt_knob("DEFER_PRESENT", "1");
     if (wait && __atomic_load_n(&pend.on, __ATOMIC_ACQUIRE)) {
         uint64_t due = pend.t + defer_us * 1000, now = plat_now_ns();
         if (due > now && due - now < 50000000ull) plat_sleep_ns(due - now);
@@ -437,7 +437,7 @@ static void defer_timer(void *arg) {
 }
 
 static void defer_init(void) {
-    defer_mode = rt_knob("SUBMIT_DEFER", "0");
+    defer_mode = rt_knob("SUBMIT_DEFER", "1");
     const char *e = cfg_get("TOTK_SUBMIT_DEFER_US");
     defer_us = e && *e ? strtoull(e, NULL, 10) : 6000;
     if (defer_mode) {

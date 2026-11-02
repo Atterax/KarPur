@@ -1433,7 +1433,7 @@ static void mirror_sync(PoolRec *r) {
 // reaches guest memory only at the submission's end; the mirror is then the one copy that holds it). Hot changes made
 // while a submission is recorded count from the next one (mirror_gen). TOTK_MIRROR_HOT=0 turns hot chunks off.
 enum { HOT_LATE_SUBS = 2 };
-// Chunk size as a shift: 64 KiB by default; TOTK_HOT_KB=4..1024 (a power of two) sets it. Smaller chunks make fewer
+// Chunk size as a shift: 4 KiB (a page) by default since test G; TOTK_HOT_KB=4..1024 (a power of two) sets it. Smaller chunks make fewer
 // bytes hot when the CPU writes next to what the GPU reads (a ring buffer filled for the next frame) rather than it.
 static int HOT_SHIFT = 16;
 #define HOT_UNKNOWN_SIZE (1ull << 20)   // bytes a binding of unknown size is taken to cover
@@ -1443,12 +1443,12 @@ static int hot_on(void) {
     if (mirror_hot < 0) {
         mirror_hot = rt_knob("MIRROR_HOT", "1");
         const char *e = cfg_get("TOTK_HOT_KB");
-        long kb = e && *e ? strtol(e, NULL, 10) : 64;
+        long kb = e && *e ? strtol(e, NULL, 10) : 4;
         int sh = 10;
         while ((1L << (sh - 10)) < kb && sh < 20) sh++;
         if (sh < 12) sh = 12;
         HOT_SHIFT = sh;
-        if (sh != 16) rt_log("mem: hot chunks of %d KiB (TOTK_HOT_KB)", 1 << (sh - 10));
+        rt_log("mem: hot chunks of %d KiB (TOTK_HOT_KB)", 1 << (sh - 10));
     }
     return mirror_hot;
 }
@@ -1494,13 +1494,19 @@ static int mirror_written_here(const PoolRec *r, uint64_t off, uint64_t n) {   /
 static int race_on(void);
 static int race_pool(const PoolRec *r);
 
-// TOTK_HOT_REFRESH=1 (KarPur, default off): hot chunks are not read from imported memory; instead every submission
+// TOTK_HOT_REFRESH=1 (KarPur, default since test G; 0: bound from imported memory as before): hot chunks are not read from imported memory; instead every submission
 // that uses the pool copies them from guest memory into the mirror at the start of its GPU work (the late sync's
 // prologue copies run on the GPU, when the submission starts). A binding that touches a hot chunk keeps the fast mirror,
 // and only the hot bytes cross PCIe, once per submission (with imported bindings a whole binding is read over PCIe).
 static int hot_refresh = -1;
 static int hot_refresh_on(void) {
-    if (hot_refresh < 0) hot_refresh = rt_knob("HOT_REFRESH", "0");
+    if (hot_refresh < 0) {
+        const char *e = cfg_get("TOTK_HOT_REFRESH");
+        hot_refresh = e && *e ? atoi(e) : 1;
+        rt_log("mem: hot chunks %s (TOTK_HOT_REFRESH=%d)", hot_refresh == 2 ? "copied into the mirror before the first draw "
+               "that binds them" : hot_refresh ? "copied into the mirror at each submission's start"
+               : "bound from imported memory", hot_refresh);
+    }
     return hot_refresh;
 }
 static volatile int64_t m_refresh_bytes, m_refresh_points;
@@ -1694,13 +1700,14 @@ void vk_mem_mirror_begin(void) {
 // completion (a completion callback, before the game can see the fence) the write watch of the big mirrored pools it
 // used is read once more; chunks written since the late sync that this submission bound from the mirror are queued,
 // and the replay thread (race_apply, at the next late sync) makes a chunk hot after RACE_SUBS such submissions.
-// Off by default (TOTK_MIRROR_RACE=1 turns it on): in Violet it made 323 chunks hot (42 MiB read over PCIe) and the
-// frame rate fell to 20-35 fps in places, while the far trees still flickered at times (2026-11-02).
+// On by default since test G (2026-11-02): with deferred submits, 4 KiB chunks and hot refresh it keeps every object
+// and holds 60 fps. Alone (64 KiB chunks bound from imported memory) it made 323 chunks hot and cost half the frame
+// rate. TOTK_MIRROR_RACE=0 turns it off.
 enum { RACE_SUBS = 2 };
 static uint32_t late_ep = 0x80000000u;   // snapshot epochs of their own, above the texture epochs
 static int mirror_race = -1;
 static int race_on(void) {
-    if (mirror_race < 0) mirror_race = hot_on() && rt_knob("MIRROR_RACE", "0");
+    if (mirror_race < 0) mirror_race = hot_on() && rt_knob("MIRROR_RACE", "1");
     return mirror_race;
 }
 static int race_pool(const PoolRec *r) {   // big pools keep their mirror (smaller ones are given up instead)
