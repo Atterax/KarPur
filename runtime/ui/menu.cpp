@@ -589,9 +589,7 @@ static void tab_screen(float scale) {
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     // Violet: the game renders its scene at the output's size (no resolution or field-of-view patch sets for it,
-    // docs/progress.md 2026-11-02); its own detail settings are the LOD bias and the texture filtering.
-    opt_toggle("TOTK_LOD", UI_MENU_LOD, UI_MENU_LOD_DESC);
-    opt_slider("TOTK_LOD_BIAS", UI_MENU_LOD_BIAS, -8, 0, UI_MENU_LOD_BIAS_DESC, 1, "%.0f");
+    // docs/progress.md 2026-11-02). The LOD bias (TOTK_LOD) stays out of the menu: trees flicker more and more with it.
     {
         static const char *const vals[] = {"0", "2", "4", "8", "16"};
         const char *names[] = {menu_text(UI_MENU_OFF), "2x", "4x", "8x", "16x"};
