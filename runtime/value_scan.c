@@ -286,8 +286,8 @@ static void bisect_log(const char *why) {
     char a[64], b[64];
     cand_name(&cands[lo], a, sizeof a);
     cand_name(&cands[mid - 1], b, sizeof b);
-    rt_log("value scan: bisect %s: %d candidates left, poking %d of them (%s .. %s); F6 = normal speed now, "
-           "F7 = still too fast", why, hi - lo, mid - lo, a, b);
+    rt_log("value scan: bisect %s: %d candidates left, poking %d of them (%s .. %s); F6 = the change shows now "
+           "(normal speed, smooth effects), F7 = it does not", why, hi - lo, mid - lo, a, b);
 }
 
 static void poke_scan_thread(void *arg) {

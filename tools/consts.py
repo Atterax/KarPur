@@ -224,7 +224,7 @@ PATCH_TO = {'float 1/30': (f32(1 / 60), 'fs'), 'float 30.0': (f32(60.0), 'fr'),
             'float 1/60': (f32(1 / 120), 'fh'), 'float 60.0': (f32(120.0), 'fx')}
 
 
-def patch_lines(mod, imm):
+def patch_lines(mod, imm, kinds=None):
     """Patch file lines (recomp/patches.py): one set per site, switch TOTK_<SET>, default off. Each site is the
     instruction that writes the value's top half-word (MOVZ/MOVK; the lower half of 1/30 and 1/60 is the same) or the
     FMOV, rewritten to give the 60 fps value. FMOV immediates stop at 31.0, so FMOV #30.0 sites get no set (60.0 would
@@ -232,6 +232,8 @@ def patch_lines(mod, imm):
     m = mod.m
     out, names = [], []
     for vname, (new, prefix) in PATCH_TO.items():
+        if kinds and prefix not in kinds:
+            continue
         for _, kind, s in imm[vname]:
             x = int(m.words[s])
             if kind == 'fmov imm':
@@ -264,6 +266,9 @@ def main():
     ap.add_argument('--patch-file', type=Path, help='write a patch table with one switchable set per immediate site of '
                     'float 1/30, float 30.0 and 33333 us (for gen.py --patches; keep it under build/, it holds '
                     'instruction words)')
+    ap.add_argument('--kinds', default='', metavar='LIST',
+                    help='with --patch-file: only these set kinds, comma-separated (fs,fr,us,fh,fx; default all), '
+                    'e.g. fs,fr,us for the 30 fps -> 60 fps rate constants only')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
@@ -277,7 +282,7 @@ def main():
         imm = immediates(mod)
         lit = literals(mod)
         if a.patch_file:
-            lines, names = patch_lines(mod, imm)
+            lines, names = patch_lines(mod, imm, set(filter(None, a.kinds.split(','))))
             patch += lines
             print(f'module {name}: {len(names)} patch sets for {a.patch_file}')
         print(f'module {name}: {len(mod.starts)} functions')

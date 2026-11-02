@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Effekt-Takt: Berichte und Halbierungs-Test
+- `main+0x13f39f8` ist eine 3-Instruktionen-Funktion `return 60.0f` (6 Aufrufer: `0x138b7b8`, `0x13f38dc`, `0x14ee500`, `0x1834d60`, `0x18e3f14`, `0x202fa5c`); `main+0x166781c` legt eine Struktur mit 60.0f an (1 Aufrufer).
+- `main+0x2b79f60` vergleicht eine Bildzeit mit 66666667 / 50000000 / 33333334 / 16666667 ns und wählt daraus das Intervall (33333334 → 2). Strings `FPS60`/`FPS30`/`FPS20`/`FPS15`/`FPS12` (Enum-Namen, ohne direkte Referenz) und `baseFrameRate`. Partikel-Dateien `.ptcl`, Effekt-Funktionen um `main+0x2936d94`.
+- Die 4.0.0-Gegenstücke der Mod-Stellen `0x2b7c540`/`0xb92780` sind so nicht zu finden (anderer Code).
+- Test: Halbierung über die 30-fps-Konstanten (float 1/30 → 1/60, float 30.0 → 60.0, 33333 µs → 16667) mit dem Kriterium „Effekte flüssig“. `consts.py --kinds fs,fr,us` schränkt die Patch-Tabelle darauf ein; zusammen mit `build/fps_patches.txt` in eine Tabelle, `PATCH_BISECT=1`, F6 = Effekte jetzt flüssig, F7 = weiter ruckelig.
+
 ### 2026-11-02: Partikel-Effekte ruckeln bei 60 fps: Spur im Frame-Rate-Mod
 - Maintainer: Mit dem neuen Spielstand flimmerten Bäume nur kurz am Anfang, mit dem alten (während der Mod-Tests gespeichert) dauerhaft. Vermutung: Der alte Stand hat Folgen der Mod-Werte mitgesichert. Der alte Stand bleibt im Backup (`C:\KarPur\backup-profile-mods`), weitergespielt wird mit dem neuen.
 - Nächstes Ziel: Partikel-Effekte (Attacken, Wasser, Blätter) laufen bei 60 fps sichtbar im alten Takt.
