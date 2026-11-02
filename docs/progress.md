@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Ruckelnde Partikel kommen vom VRAM-Spiegel
+- `MEMORY=import`: **Effekte flüssig**, aber 22–47 fps je nach Gebiet (wie früher). Damit ist der Effekt-Takt kein Spiellogik-Problem: Die GPU liest im Spiegel-Modus Partikel-Daten (zeitweise) veraltet.
+- Nächste Tests (ohne Neubau): `HOT_REFRESH=0` (heiße Stücke direkt aus dem Gastspeicher), `HOT_REFRESH=1` (Kopie am Submission-Anfang), `MIRROR_HOT=0` (keine heißen Stücke). Kriterium: Effekte flüssig und fps.
+
 ### 2026-11-02: Halbierung über die 30-fps-Konstanten: Effekte nie flüssig
 - `PATCH_BISECT=1` über 26 Sätze (fs/fr/us): in jeder Hälfte F7 (Effekte weiter ruckelig). **Keine 30-fps-Konstante im Code bestimmt den Effekt-Takt.**
 - Neue Vermutung: Es ist gar nicht die Spiellogik, sondern unsere Speicher-Synchronisation. Die CPU schreibt Partikel-Daten jedes Bild neu; kommen sie über den VRAM-Spiegel (Standard `MEMORY=auto` → mirror, späte Sync, heiße Stücke) nur jedes zweite Bild bei der GPU an, ruckeln genau die Partikel. Test: `MEMORY=import` (GPU liest den Gastspeicher direkt).
