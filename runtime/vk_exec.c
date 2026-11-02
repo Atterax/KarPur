@@ -61,6 +61,50 @@ void vk_exec_frame_written(const tex_t *t) {
     fw[nfw++].n = 1;
 }
 
+// Render target sizes: passes and the draws in them per size (with or without depth), to tell the 3D scene's size
+// (the size with depth and most draws) from the output and the smaller effect targets.
+static struct { uint32_t w, h, depth; uint64_t passes, draws; } psz[32];
+static int npsz, cur_psz = -1;
+static uint64_t psz_draws0;
+
+static void size_begin(const VkExec *ex) {
+    uint32_t dep = ex->pass_depth ? 1 : 0;
+    int i = 0;
+    while (i < npsz && !(psz[i].w == ex->pass_w && psz[i].h == ex->pass_h && psz[i].depth == dep)) i++;
+    if (i == npsz) {
+        if (npsz == 32) { cur_psz = -1; return; }
+        psz[npsz++] = (typeof(psz[0])){ex->pass_w, ex->pass_h, dep, 0, 0};
+    }
+    psz[i].passes++;
+    cur_psz = i;
+    psz_draws0 = vk_exec_frame.draws;
+}
+
+static void size_end(void) {
+    if (cur_psz >= 0) psz[cur_psz].draws += vk_exec_frame.draws - psz_draws0;
+    cur_psz = -1;
+}
+
+static void size_summary(double frames) {
+    int order[32];
+    for (int i = 0; i < npsz; i++) order[i] = i;
+    for (int i = 1; i < npsz; i++)   // most draws first
+        for (int j = i; j > 0 && psz[order[j]].draws > psz[order[j - 1]].draws; j--) {
+            int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
+        }
+    char line[700];
+    size_t o = 0;
+    line[0] = 0;
+    for (int k = 0; k < npsz && k < 10 && o < sizeof line - 80; k++) {
+        int i = order[k];
+        o += (size_t)snprintf(line + o, sizeof line - o, "%s%ux%u%s %.1f passes %.0f draws", k ? ", " : "", psz[i].w,
+                              psz[i].h, psz[i].depth ? "+depth" : "", psz[i].passes / frames, psz[i].draws / frames);
+    }
+    rt_log("vk_exec: pass sizes per frame, most draws first: %s", line);
+    npsz = 0;
+    cur_psz = -1;
+}
+
 // Without TOTK_TRACE=gfx: the means per frame over the last 600 presents, for finding what makes a frame slow on the
 // GPU (each full barrier lets the GPU run nothing else until all earlier work is done).
 static void frame_summary(uint64_t frame) {
@@ -86,6 +130,7 @@ static void frame_summary(uint64_t frame) {
            f->other_src[VK_HZ_CB_START] / d, f->other_src[VK_HZ_OVERFLOW] / d, f->other_src[VK_HZ_RESTART] / d,
            f->full_why[VK_HZ_WHY_UNKNOWN] / d, f->full_why[VK_HZ_WHY_FBL] / d, f->full_why[VK_HZ_WHY_FIRST] / d,
            f->full_why[VK_HZ_WHY_SAMPLED] / d, f->game_barriers_tracked / d);
+    size_summary(d);
     memset(f, 0, sizeof *f);
     since = frame;
 }
@@ -784,6 +829,7 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .pStencilAttachment = ex->pass_stencil ? &sa : NULL};
     vkCmdBeginRendering(ex->cb, &ri);
     vk_exec_frame.passes++;
+    size_begin(ex);
     ex->recorded++;
     ex->in_pass = 1;
 }
@@ -792,6 +838,7 @@ void vk_exec_pass_end(VkExec *ex) {
     if (!ex->in_pass) return;
     vk_exec_oq_pass_end(ex);
     vkCmdEndRendering(ex->cb);
+    size_end();
     ex->recorded++;
     ex->in_pass = 0;
     ex->pass_deferred = 0;
