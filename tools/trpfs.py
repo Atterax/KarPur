@@ -16,6 +16,9 @@ game/report/trpfs-report.txt.
 --watch REGEX: for the packs whose name matches, writes the stored (not packed) files to game/dump and lists the Oodle
 ones in game/data_watch.txt; a run with TOTK_DATA_WATCH=1 (runtime/data_watch.c) dumps those when the game unpacks
 them. Everything stays under game/ on the player's PC.
+--view: writes game/data_patch.txt, the romfs.bin offsets of the far fade distances (ModelDitherFadeDefaultParam) and
+the create/destroy distances (ObjectGenerationRange), which runtime/data_patch.c scales by TOTK_VIEW_DIST /
+TOTK_SPAWN_DIST as the game reads them.
 --report: field names and numbers of the dumped files, read with a schema (.bfbs) from the same pack, to
 game/report/data-dump-report.txt.
 
@@ -31,6 +34,7 @@ Formats (Game Freak "Trinity" engine, all FlatBuffers; field order as community 
     .venv\\Scripts\\python tools\\trpfs.py --keywords lod,dist,cull,far
     .venv\\Scripts\\python tools\\trpfs.py --watch "dither_fade|generation_range"
     .venv\\Scripts\\python tools\\trpfs.py --report
+    .venv\\Scripts\\python tools\\trpfs.py --view
 
 Standard library only.
 """
@@ -202,6 +206,83 @@ def watch(regex, pack_names, pack_info, toc, read, fs_off, offset_of):
     print(f'{stored} stored files written to {DUMP}; {listed} Oodle files listed in {WATCH_LIST} for the runtime')
 
 
+VIEW_PACKS = 'worlddata.*(model_dither_fade|object_generation_range)'
+PATCH_LIST = ROOT / 'game' / 'data_patch.txt'
+# (group, object name pattern, field name pattern): the fields runtime/data_patch.c scales
+VIEW_FIELDS = [('fade', r'DitherFade', r'^Far(Begin|End)Distance$'),
+               ('spawn', r'ObjectGenerationRange$', r'(Create|Destroy)Distance$')]
+TYPE_NAMES = {11: 'f32', 7: 'i32', 8: 'u32', 5: 'i16', 6: 'u16'}
+
+
+def walk_fields(sc, oi, buf, pos):
+    """(object name, field name, base type, byte position) of every scalar field present in a table or struct."""
+    o = sc.objects[oi]
+    t = None if o['struct'] else Table(buf, pos)
+    for f in o['fields']:
+        b = f['base']
+        if o['struct']:
+            at = pos + f['offset']
+        else:
+            slot = (f['offset'] - 4) // 2
+            if not t.has(slot):
+                continue
+            at = t.pos + t.slots[slot]
+        if b in SCALAR:
+            yield o['name'], f['name'], b, at
+        elif b == OBJ:
+            sub = sc.objects[f['index']]
+            yield from walk_fields(sc, f['index'], buf, at if sub['struct'] else at + struct.unpack_from('<I', buf, at)[0])
+        elif b == VECTOR and f['elem'] == OBJ:
+            sub = sc.objects[f['index']]
+            v = at + struct.unpack_from('<I', buf, at)[0]
+            for k in range(struct.unpack_from('<I', buf, v)[0]):
+                el = v + 4 + (k * sub['size'] if sub['struct'] else 4 * k)
+                yield from walk_fields(sc, f['index'], buf,
+                                       el if sub['struct'] else el + struct.unpack_from('<I', buf, el)[0])
+
+
+def view(regex, pack_names, toc, fs_off, offset_of):
+    """game/data_patch.txt: romfs.bin offset, type, group and name of every distance field of the matching packs."""
+    pat = re.compile(regex, re.I)
+    lines = ['# romfs-offset type group name (tools/trpfs.py --view; runtime/data_patch.c)']
+    for i, name in enumerate(pack_names):
+        if not pat.search(name):
+            continue
+        t = toc(i)
+        if not t:
+            continue
+        base = fs_off + offset_of[fnv1a64(name)]
+        files, schemas = [], []
+        for e in t.values():
+            start, n = e._vec(len(e.slots) - 1)
+            if codec(e) != 'none':
+                print(f'  {name}: a file is Oodle-packed, left out (needs the runtime decode path)')
+                continue
+            data = e.buf[start:start + n]
+            if data[4:8] == b'BFBS':
+                schemas.append(Schema(data))
+            else:
+                files.append((start, data))
+        for start, data in files:
+            for sc in schemas:
+                if sc.root is None:
+                    continue
+                try:
+                    found = list(walk_fields(sc, sc.root, data, struct.unpack_from('<I', data, 0)[0]))
+                except Exception:  # noqa: BLE001
+                    continue
+                for obj, field, b, at in found:
+                    for group, opat, fpat in VIEW_FIELDS:
+                        if re.search(opat, obj) and re.search(fpat, field) and b in TYPE_NAMES:
+                            value = struct.unpack_from('<' + SCALAR[b], data, at)[0]
+                            lines.append(f'{base + start + at:x} {TYPE_NAMES[b]} {group} {obj}.{field}')
+                            print(f'  {group:5} {obj}.{field} = {fmt(value)}  ({name.removeprefix("arc/")})')
+                break
+    PATCH_LIST.parent.mkdir(parents=True, exist_ok=True)
+    PATCH_LIST.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    print(f'{len(lines) - 1} fields written to {PATCH_LIST}')
+
+
 def fnv1a64_bytes(data):
     h = 0xCBF29CE484222645
     for b in data:
@@ -356,6 +437,8 @@ def main():
     ap.add_argument('--all-types', action='store_true', help='keyword list includes models, textures, animations, UI')
     ap.add_argument('--watch', metavar='REGEX', help='packs whose name matches: unpacked files to game/dump, Oodle '
                     'ones to the list game/data_watch.txt for the runtime (TOTK_DATA_WATCH=1)')
+    ap.add_argument('--view', nargs='?', const=VIEW_PACKS, metavar='REGEX',
+                    help='write game/data_patch.txt, the distance fields for TOTK_VIEW_DIST / TOTK_SPAWN_DIST')
     ap.add_argument('--report', action='store_true', help='field names and numbers of the files in game/dump')
     ap.add_argument('--rows', type=int, default=4, help='--report: elements shown per vector (default 4)')
     ap.add_argument('--max-pack-mb', type=int, default=256, help='largest pack whose table of contents is read')
@@ -429,6 +512,8 @@ def main():
                 toc_cache[pi] = dict(zip(pk.u64s(0), pk.tables(1)))
         return toc_cache[pi]
 
+    if a.view:
+        return view(a.view, pack_names, toc, fs_off, offset_of)
     if a.watch:
         return watch(a.watch, pack_names, pack_info, toc, read, fs_off, offset_of)
 

@@ -518,6 +518,7 @@ static void init_once(void *param) {
         }
     }
     overlay_init();
+    data_patch_init();   // data_patch.c: view/spawn distance fields (TOTK_VIEW_DIST, TOTK_SPAWN_DIST)
     rt_log("RomFS ready: %llu files, %zu overlays, %zu added, %.2f s", (unsigned long long)file_count, noverlay,
            nadded, now_s() - t0);
 #endif
@@ -650,6 +651,7 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
         if (r <= 0) rt_fatal("RomFS read failure at %#llx", (unsigned long long)(base + offset + done));
         done += (uint64_t)r;
     }
+    if (f == image) data_patch_read(base + (uint64_t)offset, buffer, done);
     *out = done;
     return 0;
 }

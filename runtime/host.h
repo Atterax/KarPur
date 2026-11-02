@@ -174,6 +174,8 @@ void ldr_load(const char *exefs_dir);                      // load, relocate (ov
 int ldr_count(void);
 const RtLoaded *ldr_module(int i);                         // order: main, subsdk0, sdk
 void lod_init(void);                                       // KarPur lod.c: from rt_patches_init
+void data_patch_init(void);                                // KarPur data_patch.c: from romfs.c init
+void data_patch_read(uint64_t off, void *buf, uint64_t n);  // KarPur data_patch.c: after each RomFS image read
 void data_watch_init(void);                                // KarPur data_watch.c: from rt_patches_init
 void frame_dt_init(void);                                  // KarPur frame_dt.c: from rt_patches_init
 void frame_dt_present(void);                               // KarPur frame_dt.c: before each present
