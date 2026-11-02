@@ -333,7 +333,7 @@ Den Übersetzer bauen. Beim ersten Mal lädt .NET noch Pakete nach, **rechne mit
 .venv\Scripts\python tools\build_xlate.py
 ```
 
-Erwartete Ausgabe: zuerst neun Zeilen `applied 0001-...` bis `applied 0009-...`, dann viele Zeilen von .NET, am Ende `translator identity ...` und `built ...\build\xlate\totk_xlate.exe (... MB) in ... s`. (Der Name `totk_xlate` stammt aus dem Projekt, aus dem wir den Übersetzer übernommen haben; umbenannt wird später.)
+Erwartete Ausgabe: zuerst zehn Zeilen `applied 0001-...` bis `applied 0010-...`, dann viele Zeilen von .NET, am Ende `translator identity ...` und `built ...\build\xlate\totk_xlate.exe (... MB) in ... s`. (Der Name `totk_xlate` stammt aus dem Projekt, aus dem wir den Übersetzer übernommen haben; umbenannt wird später.)
 
 Schnelltest mit einem selbstgebauten Mini-Shader, braucht keine Spieldaten:
 

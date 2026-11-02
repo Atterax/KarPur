@@ -5,7 +5,7 @@ KarPur changes: the MacNativeGames pin is a constant here (no tools/fetch_refs.s
 docs/setup-windows.md. The exe keeps its TotK name because runtime/gfx_shader.c looks for it.
 
 Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies tools/xlate/patches/*.patch there (tools/vendor stays
-byte-identical; 0001-0004 are MacNativeGames', 0005-0009 TotK Recomp's), then runs `dotnet publish`. Needs the .NET 10
+byte-identical; 0001-0004 are MacNativeGames', 0005-0009 TotK Recomp's, 0010 KarPur's), then runs `dotnet publish`. Needs the .NET 10
 SDK, the MSVC build tools and vswhere.exe (docs/setup-windows.md). Run with .venv. On Linux it builds build/xlate/totk_xlate for linux-x64, which
 NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
 
@@ -102,8 +102,8 @@ def prepare_sources() -> Path:
     for junk in list(src.glob("src/*/obj")) + list(src.glob("src/*/bin")):
         shutil.rmtree(junk)
     patches = sorted((XLATE / "patches").glob("*.patch"))
-    if len(patches) != 9:
-        sys.exit(f"expected 9 patches, found {len(patches)}")
+    if len(patches) != 10:
+        sys.exit(f"expected 10 patches, found {len(patches)}")
     for patch in patches:
         # git apply works outside a repository when given a directory; --check first so a failure names the patch.
         for extra in (["--check"], []):

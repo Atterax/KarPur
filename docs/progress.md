@@ -21,6 +21,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Übersetzer-Patch 0010 (Subgroup-Operationen bleiben an Ort und Stelle); Vergleich mit Switch 2
+- Ursache genau: `AstOptimizer.IsWorthPropagating` hält jede Operation mit einer Quelle für billig und kopiert sie in alle Verwendungen; `Ballot(pred)` hat eine Quelle → 18 → 54. DebugMode schaltet in Ryujinx nur diese Weitergabe ab (sonst nur Kommentare), der Patch deckt also genau den Fehler ab.
+- `tools/xlate/patches/0010-keep-subgroup-operations-in-place-in-the-ast-optimizer.patch`: Ballot, Vote*, Shuffle* werden nie weitergegeben (weder kopiert noch verschoben); unbenutzt dürfen sie entfallen. Gilt für alle Stufen, also auch Grafik-Shader. `build_xlate.py` erwartet 10 Patches. Hier geprüft: alle 10 Patches gelten sauber; gebaut wird beim Maintainer (kein .NET im Agent-Container).
+- Standard bleibt vorerst `XLATE_DEBUG=1`. Test: Übersetzer neu bauen, `run_with.py XLATE_DEBUG=0` → im Dispatch-Bericht muss Compute-Shader 1 „ballot 18“ zeigen und nichts darf ploppen. Wenn ja: Standard auf 0 (Optimierer überall an, eine Übersetzungsart für alle Stufen).
+- Vergleich mit Switch 2 (Switch-2-Edition-Update, 60 fps): Bild stimmt bis auf Schatten (bewegen sich, Switch 2 hat vermutlich bessere Schatten) und weicheres Bild (Auflösung/Kantenglättung der Switch-2-Fassung) überein. 60 fps braucht eine Frame-Rate-Patch-Tabelle für Violet (Log: `frame rate: no patch table`), später eigenes Thema.
+
 ### 2026-11-02: UNSICHTBARE OBJEKTE BEHOBEN: Ryujinx-Optimierer verdreifacht Ballots im GPU-Culling
 - `XLATE_DEBUG=1` (Compute-Shader im DebugMode, ohne AST-Optimierer): **Alles ist da**, nichts ploppt, die Kamera-Ausblendung verhält sich wie auf der Switch (Bestätigung des Maintainers mit Screenshot).
 - Ursache: Compute-Shader 1 (GPU-Culling) hat im DebugMode 18 Ballots (19 Gruppen-Ops), optimiert 54 (55). Der AST-Optimizer propagiert Ballot-Ergebnisse in ihre Verwendungen; jede Kopie läuft an anderer Stelle mit anderen aktiven Lanes, das warp-aggregierte Zählen/Kompaktieren geht schief, das Culling meldet sichtbare Objekte als unsichtbar, und die CPU (liest Storage 1 und die Draw-Argumente zurück, `f_7000b88d48`) lässt deren Draws weg. „Instanzzahl über 1“ stieg von ~2800 auf ~80800 pro 600 Frames.
