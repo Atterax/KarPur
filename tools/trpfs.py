@@ -263,14 +263,21 @@ def view(regex, pack_names, toc, fs_off, offset_of):
                 schemas.append(Schema(data))
             else:
                 files.append((start, data))
+        print(f'pack {name.removeprefix("arc/")}: {len(t)} files, {len(schemas)} schemas, {len(files)} data files')
         for start, data in files:
             for sc in schemas:
                 if sc.root is None:
+                    print('    schema without a root table')
                     continue
                 try:
                     found = list(walk_fields(sc, sc.root, data, struct.unpack_from('<I', data, 0)[0]))
-                except Exception:  # noqa: BLE001
+                except Exception as e:  # noqa: BLE001
+                    print(f'    schema {sc.objects[sc.root]["name"]} does not fit a {len(data)}-byte file: '
+                          f'{type(e).__name__} {e}')
                     continue
+                kinds = Counter(f'{o}.{f}:{b}' for o, f, b, _ in found)
+                print(f'    {len(data)} bytes, schema {sc.objects[sc.root]["name"]}: {len(found)} fields ('
+                      + ', '.join(f'{k}' for k in list(kinds)[:12]) + ')')
                 for obj, field, b, at in found:
                     for group, opat, fpat in VIEW_FIELDS:
                         if re.search(opat, obj) and re.search(fpat, field) and b in TYPE_NAMES:
