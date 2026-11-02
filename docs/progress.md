@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: Figur-Ruckeln: Konstanten-Halbierung ohne Treffer; Test step_ten
+- Halbierung über 26 Sätze (fs/fr/us), Kriterium „Figur läuft im Gebäude flüssig“: in jeder Hälfte F7. Keine 30-fps-Code-Konstante ist es.
+- Neu: optionaler Satz `step_ten` (`TOTK_STEP_TEN=1`, Standard aus) in `tools/fps_patches.py`: `main+0x170c408` `movz w10, #1.0f` (gespeichert nach `[x9, #0x90]`) → 10.0f, wie der feste Patch des Fremd-Mods an derselben Stelle (Bedeutung unbekannt; in 4.0.0 steht dort dieselbe Instruktion).
+
 ### 2026-11-02: Ruckeln in Gebäuden: nur die eigene Spielfigur
 - `FPS_DT_NS=16666667`: unverändert. `VK_PRESENT=fifo`: unverändert. `FPS_LIMIT=45`: weniger schlimm, aber da.
 - Es ruckelt **nur die eigene Figur beim Laufen**; stehen und Kamera drehen ist flüssig. Also weder Bildzeit-Schwankung noch Bildausgabe: Die Position der Figur wird vermutlich in einem festen 30-Hz-Takt weitergeschoben (Havok-Physik/Charakter-Controller mit festem Schritt, ohne Interpolation), während Kamera und Bild mit 60 Hz laufen.

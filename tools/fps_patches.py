@@ -25,6 +25,9 @@ Sets (switched with their TOTK_ variable):
            (arc/data.trpfs) are Oodle Kraken data. Checked: the function at that offset must reference the string
            "OodleLZ_Decompress"; tail calls (b) to it are counted and left alone.
 
+  step_ten (off by default; TOTK_STEP_TEN=1, test) main+0x170c408: movz w10, #1.0f (stored to [x9, #0x90]) becomes
+           10.0f, a fixed patch of the third-party mod at the same offset in 3.0.1 (meaning unknown).
+
 Tried and dropped: the 30 fps frame time and vsync count in main+0x2b79f60 (no effect on the interval or the speed).
 
 tools/lift.py uses build/fps_patches.txt by itself when the file exists.
@@ -69,6 +72,10 @@ PAGE_FRAME_NS = 64   # patch page byte offset of the frame time in ns (runtime/f
 PAGE_LOD_BIAS = 72   # patch page byte offset of the LOD bias float (runtime/lod.c)
 
 
+def movz_w(rd, imm16, shift):
+    return 0x52800000 | (shift // 16) << 21 | imm16 << 5 | rd
+
+
 def ldr_s(rt, rn, off):
     return 0xBD400000 | (off // 4) << 10 | rn << 5 | rt
 
@@ -101,8 +108,11 @@ SITES = [
     # 'scratch': adrp into a free register from SCRATCH, then ldr s0 from the patch page through it (main picks it)
     ('lod_bias', 'TOTK_LOD', 0, 0xc07dc4, ldr_s(0, 19, 0x1c), 'scratch'),
     ('lod_bias', 'TOTK_LOD', 0, 0x7f1a6c, ldr_s(0, 20, 0x10), 'scratch'),
+    # step_ten (test): float 1.0 that main+0x170c408 stores to [x9, #0x90] becomes 10.0, as in the third-party mod
+    # (meaning unknown; tried for the player character's stutter indoors at 60 fps, docs/progress.md 2026-11-02)
+    ('step_ten', 'TOTK_STEP_TEN', 0, 0x170c408, movz_w(10, 0x3F80, 16), [movz_w(10, 0x4120, 16)]),
 ]
-OPTIONAL = {'lod_bias', 'data_watch'}
+OPTIONAL = {'lod_bias', 'data_watch', 'step_ten'}
 OODLE_DECOMPRESS = 0xcc8750   # main offset of OodleLZ_Decompress in 4.0.0 (calls.py --string oodle, 2026-11-02)
 PAGE_OODLE_HOST = 0xfd0       # patch page offset of the host wrapper (runtime/data_watch.c)
 
