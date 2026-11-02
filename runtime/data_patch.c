@@ -185,7 +185,13 @@ void data_patch_read(uint64_t off, void *buf, uint64_t n) {
 }
 
 // The game's Oodle decoder unpacked n bytes to out from packed_n bytes at packed (data_watch.c host_oodle).
+// TOTK_MOD_DRY=1 finds the fields but leaves them (A/B test of the redirect alone).
 void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, uint64_t n) {
+    static int dry = -1;
+    if (dry < 0) {
+        const char *e = cfg_get("TOTK_MOD_DRY");
+        dry = e && *e && strcmp(e, "0");
+    }
     uint64_t print = 0, print_head = 0;
     for (int i = 0; i < ndecoded; i++) {
         Field *f = &decoded[i];
@@ -193,7 +199,7 @@ void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, 
         if (f->unpacked != n || packed_n < head || f->at + w > n) continue;
         if (print_head != head) print = fnv1a64(packed, head), print_head = head;
         if (print != f->print) continue;
-        scale(f, out + f->at);
+        if (!dry) scale(f, out + f->at);
         __atomic_store_n(&f->done, 1, __ATOMIC_RELAXED);
         uint64_t k = __atomic_add_fetch(&applied, 1, __ATOMIC_RELAXED);
         if (k <= 64) rt_log("data patch: %s in a packed file (+%#llx) %s%g", f->name, (unsigned long long)f->at,
