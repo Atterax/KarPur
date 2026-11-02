@@ -17,7 +17,7 @@
 //
 // TOTK_POKE=ADDR=VALUE[,ADDR=VALUE...]: before each present the 32-bit word at ADDR gets VALUE. ADDR is main+0x...,
 // subsdk0+0x... or a 0x... guest address; VALUE is f:<float>, d:<double> (64-bit) or i:<integer>. Writes only to pages
-// that are writable guest memory.
+// that are writable guest memory, or to a module's read-only constants (their host pages are made writable).
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,7 +133,7 @@ static void recheck(uint64_t frame) {
 }
 
 // ---- poke
-typedef struct { uint64_t addr; uint64_t value; int wide; } Poke;
+typedef struct { uint64_t addr; uint64_t value; int wide; int unlocked; } Poke;
 static Poke pokes[16];
 static int npokes = -1;
 
@@ -176,11 +176,32 @@ static void pokes_init(void) {
     }
 }
 
+// A poke into a module's read-only part (a constant in .rodata that the code loads, as tools/consts.py lists them)
+// makes the host pages writable once; the guest's view of the permissions stays as it was.
+static int in_module(uint64_t a) {
+    for (int i = 0; i < ldr_count(); i++) {
+        const RtLoaded *m = ldr_module(i);
+        if (a - m->base < m->size) return 1;
+    }
+    return 0;
+}
+
 static void poke_all(void) {
     for (int i = 0; i < npokes; i++) {
         RtMemoryInfo mi;
         mem_query(pokes[i].addr, &mi);
-        if ((mi.perm & 3) != 3 || !plat_mem_readable(pokes[i].addr, 8)) continue;
+        if ((mi.perm & 3) != 3) {
+            if (!in_module(pokes[i].addr) || pokes[i].unlocked < 0) continue;
+            if (!pokes[i].unlocked) {
+                uint64_t pg = pokes[i].addr & ~0xFFFull, end = (pokes[i].addr + 8 + 0xFFF) & ~0xFFFull;
+                pokes[i].unlocked = plat_mem_protect(pg, end - pg, PLAT_PROT_RW) ? 1 : -1;
+                char nm[64];
+                name_of(pokes[i].addr, nm, sizeof nm);
+                rt_log("value scan: poke %s: read-only module page %s", nm,
+                       pokes[i].unlocked > 0 ? "made writable" : "could not be made writable (poke skipped)");
+                if (pokes[i].unlocked < 0) continue;
+            }
+        } else if (!plat_mem_readable(pokes[i].addr, 8)) continue;
         if (pokes[i].wide) memcpy((void *)(uintptr_t)pokes[i].addr, &pokes[i].value, 8);
         else {
             uint32_t v = (uint32_t)pokes[i].value;
