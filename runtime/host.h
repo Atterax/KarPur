@@ -178,6 +178,7 @@ void data_patch_init(void);                                // KarPur data_patch.
 void data_patch_read(uint64_t off, void *buf, uint64_t n);  // KarPur data_patch.c: after each RomFS image read
 void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, uint64_t n);   // after an Oodle decode
 int data_patch_wants_decodes(void);                         // the list has fields in Oodle-packed files
+int data_patch_open(void);                                 // fields of packed files not set yet
 void data_watch_init(void);                                // KarPur data_watch.c: from rt_patches_init
 void frame_dt_init(void);                                  // KarPur frame_dt.c: from rt_patches_init
 void frame_dt_present(void);                               // KarPur frame_dt.c: before each present
@@ -275,7 +276,7 @@ int rt_patch_count(void);                                  // sets in the genera
 const char *rt_patch_name(int set);                        // a set's name, NULL out of range
 void rt_patch_enable(int set);                             // turns a set on (before the game runs)
 int rt_patch_enabled(int set);                             // the set is on (0 for -1)
-void rt_patch_disable(int set);                            // before the guest starts: a set needs another that is off
+void rt_patch_disable(int set);                            // a set off (also live: the generated code reads the flag per call)
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
                                                            // the next time it runs
 void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)

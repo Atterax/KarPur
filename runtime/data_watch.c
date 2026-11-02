@@ -35,6 +35,7 @@ typedef struct {
 static Want want[MAX_WANT];
 static int nwant;
 static uint64_t guest_decoder;
+static int watch_set = -1, dumping;   // the patch set; DATA_WATCH asked for dumps (keeps the redirect on)
 static struct { uint64_t calls, out, matched, failed; } S;
 
 static uint64_t fnv1a64(const uint8_t *p, uint64_t n) {
@@ -89,6 +90,13 @@ static void host_oodle(Cpu *c) {
                (unsigned long long)S.failed, (unsigned long long)a[1], (unsigned long long)r);
     if (!r || r > RT_ADDRESS_LIMIT || a[0] + a[1] > RT_ADDRESS_LIMIT || a[2] + r > RT_ADDRESS_LIMIT) return;
     data_patch_decoded((const uint8_t *)(uintptr_t)a[0], a[1], (uint8_t *)(uintptr_t)a[2], r);
+    // With the redirect on, trees flicker after the world loads until the next loading screen (docs/progress.md
+    // 2026-11-02; cause not found). The fields are set once, when their files load at the start, so once all are set
+    // the decoder calls go direct again: the generated code reads rt_patch_on at every call.
+    if (!dumping && !data_patch_open() && rt_patch_enabled(watch_set)) {
+        rt_patch_disable(watch_set);
+        rt_log("data watch: every wanted field is set; the Oodle decoder is called directly again");
+    }
     const uint8_t *src = (const uint8_t *)(uintptr_t)a[0];
     uint64_t print;
     for (int i = 0; i < nwant; i++) {
@@ -118,5 +126,6 @@ void data_watch_init(void) {
     if (!rt_patch_enabled(set)) return;
     rt_log("data watch: every call of the Oodle decoder main+%#x goes through the host", OODLE_DECOMPRESS);
     const char *dw = cfg_get("TOTK_DATA_WATCH");
-    if (dw && *dw && strcmp(dw, "0")) load_list();
+    watch_set = set;
+    if (dw && *dw && strcmp(dw, "0")) dumping = 1, load_list();
 }

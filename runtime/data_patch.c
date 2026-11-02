@@ -38,6 +38,7 @@ typedef struct {
     uint64_t packed, unpacked, print;   // decoded: which file
     char type;     // 'f' f32, 'i' i32, 'u' u32, 'h' i16, 'H' u16
     float factor;
+    int done;          // decoded: set at least once
     int absolute;      // set value instead of multiplying (a mod's value, group "mod=<value>")
     double value;
     char name[64];
@@ -62,6 +63,13 @@ static int by_offset(const void *a, const void *b) {
 }
 
 int data_patch_wants_decodes(void) { return ndecoded > 0; }
+
+// Fields of packed files not set yet (data_watch.c turns its decoder redirect off at 0).
+int data_patch_open(void) {
+    int n = 0;
+    for (int i = 0; i < ndecoded; i++) n += !__atomic_load_n(&decoded[i].done, __ATOMIC_RELAXED);
+    return n;
+}
 
 static uint64_t fnv1a64(const uint8_t *p, uint64_t n) {
     uint64_t h = 0xCBF29CE484222645ull;
@@ -186,6 +194,7 @@ void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, 
         if (print_head != head) print = fnv1a64(packed, head), print_head = head;
         if (print != f->print) continue;
         scale(f, out + f->at);
+        __atomic_store_n(&f->done, 1, __ATOMIC_RELAXED);
         uint64_t k = __atomic_add_fetch(&applied, 1, __ATOMIC_RELAXED);
         if (k <= 64) rt_log("data patch: %s in a packed file (+%#llx) %s%g", f->name, (unsigned long long)f->at,
                             f->absolute ? "= " : "x", f->absolute ? f->value : f->factor);
