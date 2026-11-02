@@ -24,6 +24,20 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-02: GBAtemp-Patches des Mod-Autors (Fl4sh) für 3.0.1 gelesen
+- Der Maintainer hat die Patch-Dateien (`.pchtxt`, Build-ID 709BFD66…, Violet 3.0.1) geschickt; nur zum Lesen, nichts übernommen, nichts im Repository. Notizen des Autors: behoben werden Ruckeln in Gebäuden, Ruckeln beim Gehen/Laufen, Windrad-Animationen, NPC- und Kampf-Animationen, Menütempo. Die Offsets sind main-Offsets (`offset_shift 0x100`; `0x92dd2c`, `0xc07dc4`, `0x7f1a6c` passen zu unseren Funden).
+- **60 FPS (3.0.1):**
+  - `0x2b7a874` `movz w1, #1` (in der 45-fps-Datei `#75`), im Bildmodus-Bereich; in 4.0.0 liegt dort die Funktion `0x2b79f60` (dort `movz w9, #2` an `0x2b7a808`).
+  - `0x92dd24/28` x2 = 16666667 fest (45 fps: 22222223). Bei uns gemessen (`fps_dt`).
+  - `0xb92780/84` x1 = 33333334 fest (auch in der 45-fps-Datei!).
+  - `0x2b7c540` `movz w0, #60.0f`.
+  - `0x170c408` 10.0f (bei uns `step_ten`: ohne Wirkung auf das Figur-Ruckeln).
+  - **`0x20a8d3c` `movk w8, #0x42c0, lsl #16` (oberer Teil → 96.0f, wenn der untere 0 ist): neu, nicht im NX-Optimizer.** Kandidat für das Ruckeln in Gebäuden.
+  - Zweite Datei (andere Build-ID BB560BDF…, wohl ein anderes Modul): `0x4877d0` `movz w8, #1`.
+- **Improved Graphic Quality (3.0.1):** LOD-Stellen `0xc07dc4`/`0x7f1a6c` → `fmov s0, #-15.0` (bekannt), dazu `0xbd7014/18` x8 = 0x00000780_00000780 und `0xbd7020/24` x8 = 0x00000438_00000438: zweimal 1920 und zweimal 1080, vermutlich Grenzen der dynamischen Auflösung. Für später (Auflösung/Schärfe).
+- **21:9:** `0xcf11e8` eine FMOV-Konstante (Seitenverhältnis).
+- Nächster Schritt: `calls.py --insn` an `0x20a8d3c`, `0x2b7a874`, `0xb92780`, `0x4877d0`, `0xbd7014` in 4.0.0, um die Gegenstücke zu finden.
+
 ### 2026-11-02: Figur-Ruckeln nur in Gebäuden; step_ten ohne Wirkung
 - `STEP_TEN=1`: Figur ruckelt weiter, sonst nichts anders. Das Ruckeln gibt es **nur in Gebäuden**, draußen läuft die Figur flüssig.
 - Web: Eine Cheat-Liste auf GBAtemp (Cheat-Datenbank-Thread, Beitrag 10395321) nennt für den 60-fps-Cheat 3.0.1 „fixed stutter indoors“ und „stutter while walking/running“. Die Seite ist aus der Agent-Umgebung nicht erreichbar (gbatemp.net löst nicht auf). Der Maintainer soll die Code-Zeilen (Adressen und Werte) abschreiben; daraus lassen sich die Stellen für 4.0.0 suchen.
