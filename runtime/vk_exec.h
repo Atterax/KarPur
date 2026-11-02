@@ -116,7 +116,7 @@ typedef struct VkExec {
     // take the full barrier as before.
     VkImage hz_w[32], hz_r[64];
     int nhz_w, nhz_r;
-    int hz_other;                        // untracked writes since the last full barrier, or the write list overflowed
+    int hz_other;                        // untracked writes since the last full barrier (VK_HZ_*: what made them), or 0
     int hz_rall;                         // the read list overflowed or a draw sampled an image it could not name
     int pass_deferred;                   // the open pass began without a full barrier: draws check what they sample
     uint32_t hz_gen;                     // bumped by every full barrier
@@ -151,6 +151,13 @@ int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
 
+// Barrier tracking: what set VkExec.hz_other, and why a pass or clear took the full barrier.
+enum { VK_HZ_NONE, VK_HZ_OP, VK_HZ_GAME, VK_HZ_DRAW_WRITES, VK_HZ_XFB, VK_HZ_AFTER_PASS, VK_HZ_CB_START, VK_HZ_OVERFLOW,
+       VK_HZ_RESTART, VK_HZ_N };
+enum { VK_HZ_WHY_OFF, VK_HZ_WHY_OTHER, VK_HZ_WHY_UNKNOWN, VK_HZ_WHY_FBL, VK_HZ_WHY_FIRST, VK_HZ_WHY_SAMPLED,
+       VK_HZ_WHY_N };
+#define VK_HZ_SET(ex, src) do { if (!(ex)->hz_other) (ex)->hz_other = (src); } while (0)
+
 // Replay counters of the current frame: with TOTK_TRACE=gfx logged and reset at each present, else summed and logged
 // as means every 600 frames (vk_exec_frame_log).
 typedef struct {
@@ -158,6 +165,8 @@ typedef struct {
     uint64_t barriers;   // full barriers recorded (pass starts, clears, copies, dispatches: each waits for all before)
     uint64_t light_barriers, deferred, hz_restarts;   // barrier tracking: attachment-only barriers, passes and clears
                                                       // without a full barrier, passes restarted for a sampled write
+    uint64_t full_why[VK_HZ_WHY_N];   // why a pass or clear took the full barrier (VK_HZ_WHY_*)
+    uint64_t other_src[VK_HZ_N];      // for VK_HZ_WHY_OTHER: what made the untracked writes (VK_HZ_*)
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions

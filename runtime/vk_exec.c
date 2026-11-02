@@ -77,6 +77,14 @@ static void frame_summary(uint64_t frame) {
            f->draws_seen / d, f->clears / d, f->copies / d, f->dispatches / d, f->barriers / d, f->light_barriers / d,
            f->deferred / d, f->hz_restarts / d, f->fb_draws / d,
            f->fb_barriers / d, f->fb_restarts / d);
+    rt_log("vk_exec:   full barrier before a pass or clear because of: untracked writes %.1f (ops %.1f, game barriers "
+           "%.1f, storage writes of draws %.1f, transform feedback %.1f, after a pass %.1f, buffer start %.1f, list full "
+           "%.1f, restarts %.1f), images not named %.1f, feedback layouts %.1f, first in buffer %.1f, sampled before %.1f",
+           f->full_why[VK_HZ_WHY_OTHER] / d, f->other_src[VK_HZ_OP] / d, f->other_src[VK_HZ_GAME] / d,
+           f->other_src[VK_HZ_DRAW_WRITES] / d, f->other_src[VK_HZ_XFB] / d, f->other_src[VK_HZ_AFTER_PASS] / d,
+           f->other_src[VK_HZ_CB_START] / d, f->other_src[VK_HZ_OVERFLOW] / d, f->other_src[VK_HZ_RESTART] / d,
+           f->full_why[VK_HZ_WHY_UNKNOWN] / d, f->full_why[VK_HZ_WHY_FBL] / d, f->full_why[VK_HZ_WHY_FIRST] / d,
+           f->full_why[VK_HZ_WHY_SAMPLED] / d);
     memset(f, 0, sizeof *f);
     since = frame;
 }
@@ -578,7 +586,7 @@ static int hz_has(const VkImage *l, int n, VkImage img) {
 
 static void hz_add_w(VkExec *ex, VkImage img) {
     if (!img || hz_has(ex->hz_w, ex->nhz_w, img)) return;
-    if (ex->nhz_w == (int)(sizeof ex->hz_w / sizeof *ex->hz_w)) { ex->hz_other = 1; return; }
+    if (ex->nhz_w == (int)(sizeof ex->hz_w / sizeof *ex->hz_w)) { VK_HZ_SET(ex, VK_HZ_OVERFLOW); return; }
     ex->hz_w[ex->nhz_w++] = img;
 }
 
@@ -643,7 +651,18 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 // write is not tracked, so the next pass or clear takes a full barrier too.
 void vk_exec_barrier(VkExec *ex) {
     barrier_to(ex, NULL, NULL, 0);
-    ex->hz_other = 1;
+    VK_HZ_SET(ex, VK_HZ_OP);
+}
+
+// Why a pass or clear needs the full barrier (VK_HZ_WHY_*), -1: it does not; counted per frame.
+static int full_why(const VkExec *ex, int fbl) {
+    int w = !vk_exec_track_on() ? VK_HZ_WHY_OFF : ex->hz_other ? VK_HZ_WHY_OTHER : ex->hz_rall ? VK_HZ_WHY_UNKNOWN
+          : fbl ? VK_HZ_WHY_FBL : ex->barrier_at < 0 ? VK_HZ_WHY_FIRST : -1;
+    if (w >= 0) {
+        vk_exec_frame.full_why[w]++;
+        if (w == VK_HZ_WHY_OTHER && ex->hz_other < VK_HZ_N) vk_exec_frame.other_src[ex->hz_other]++;
+    }
+    return w;
 }
 
 // Feedback-layout transitions a pass begin with want[] needs (barrier_to records them).
@@ -657,12 +676,13 @@ static int fbl_changes(const VkExec *ex, const VkImage *want, int nwant) {
 // Before a pass begins: the full barrier unless tracking shows the pass touches nothing earlier work wrote or sampled
 // (an attachment-only barrier when it renders into an image written since: attachment after attachment).
 static void pass_barrier(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
-    int full = !vk_exec_track_on() || ex->hz_other || ex->hz_rall || fbl_changes(ex, want, nwant) || ex->barrier_at < 0;
+    int full = full_why(ex, fbl_changes(ex, want, nwant)) >= 0;
     int waw = 0;
     for (uint32_t i = 0; i < 9 && !full; i++) {
         const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
         if ((i < 8 && i >= ex->pass_ncolor) || !t->image) continue;
-        if (hz_has(ex->hz_r, ex->nhz_r, t->image)) full = 1;   // sampled since: its reads finish before the writes
+        if (hz_has(ex->hz_r, ex->nhz_r, t->image))   // sampled since: its reads finish before the writes
+            full = 1, vk_exec_frame.full_why[VK_HZ_WHY_SAMPLED]++;
         else if (hz_has(ex->hz_w, ex->nhz_w, t->image)) waw = 1;
     }
     if (full) {
@@ -676,8 +696,9 @@ static void pass_barrier(VkExec *ex, const VkImage *want, const VkImageAspectFla
 
 // Before a whole-image clear outside a pass: as pass_barrier, for the cleared image.
 static void clear_barrier(VkExec *ex, VkImage img) {
-    if (!vk_exec_track_on() || ex->hz_other || ex->hz_rall || ex->nfbl || ex->barrier_at < 0 ||
-        hz_has(ex->hz_r, ex->nhz_r, img))
+    int full = full_why(ex, ex->nfbl) >= 0;
+    if (!full && hz_has(ex->hz_r, ex->nhz_r, img)) full = 1, vk_exec_frame.full_why[VK_HZ_WHY_SAMPLED]++;
+    if (full)
         barrier_to(ex, NULL, NULL, 0);
     else {
         if (hz_has(ex->hz_w, ex->nhz_w, img)) attach_barrier(ex);
@@ -760,7 +781,7 @@ void vk_exec_pass_end(VkExec *ex) {
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
     if (vk_dump_armed) vk_dump_pass_end(ex);
-    if (ex->recorded != after_end) ex->hz_other = 1;   // copies of stand-ins after the pass are not tracked
+    if (ex->recorded != after_end) VK_HZ_SET(ex, VK_HZ_AFTER_PASS);   // copies of stand-ins after the pass: untracked
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     for (int i = 0; i < 8; i++)
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
@@ -1011,7 +1032,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
         case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool; break;
-        case OP_BARRIER: vk_exec_barrier(ex); break;
+        case OP_BARRIER: vk_exec_barrier(ex), ex->hz_other = VK_HZ_GAME; break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND)
                 vk_exec_frame.draws_seen++, split_draws++, vk_prog_select(ex, 0);
@@ -1052,7 +1073,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     ex->barrier_at = -1;
     ex->nfbl = 0;   // the previous command buffer ended with a full barrier: every image is in GENERAL
     hz_reset(ex);
-    ex->hz_other = 1;   // the first pass or clear takes the full barrier: copies at the start of the buffer
+    ex->hz_other = VK_HZ_CB_START;   // the first pass or clear takes the full barrier: copies at the buffer's start
     vk_exec_frame.submits++;
     split_draws = part_start = 0;
     part_t0 = kern_now_ns();

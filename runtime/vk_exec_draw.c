@@ -1155,7 +1155,7 @@ void vk_exec_hazard_draw(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
         int hit = HZ.unknown;
         for (int i = 0; i < HZ.n && !hit; i++) hit = vk_exec_hz_written(ex, HZ.img[i]);
         if (hit) {
-            ex->hz_other = 1;   // the pass begins again behind the full barrier
+            ex->hz_other = VK_HZ_RESTART;   // the pass begins again behind the full barrier
             vk_exec_pass_end(ex);
             vk_exec_pass_begin(ex);
             ex->dirty |= VK_EXEC_DIRTY_ALL;
@@ -1167,7 +1167,8 @@ void vk_exec_hazard_draw(VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
         if (HZ.unknown) ex->hz_rall = 1;
         HZ.gen = ex->hz_gen;
     }
-    if (HZ.writes || ex->xfb_active) ex->hz_other = 1;
+    if (HZ.writes) VK_HZ_SET(ex, VK_HZ_DRAW_WRITES);
+    if (ex->xfb_active) VK_HZ_SET(ex, VK_HZ_XFB);
 }
 
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
@@ -1184,7 +1185,7 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
                 const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
                 if ((d >> i & 1) && t->img && t->img->fb_usage) ((VkTexImage *)t->img)->fb_learned = 1;
             }
-        ex->hz_other = 1;   // barrier tracking: the restart takes the full barrier
+        ex->hz_other = VK_HZ_RESTART;   // barrier tracking: the restart takes the full barrier
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);   // learned targets now in the feedback layout; the full barrier cleared fb_dirty
         vk_exec_frame.fb_restarts++;
