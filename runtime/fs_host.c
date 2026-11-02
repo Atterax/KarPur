@@ -22,6 +22,7 @@
 
 #include "fs.h"
 #include "host.h"
+#include "nvn_api.h"
 #include "platform/platform.h"
 #include "romfs_path.h"
 
@@ -873,8 +874,24 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     rt_fatal("fs: host file handle table full (%d)", NFILES);
 }
 
+// KarPur: file reads land in guest memory through the kernel (ReadFile), and the write watch the VRAM mirrors and
+// texture checks rely on may not see kernel writes. Violet streams an area's meshes and textures this way while the
+// player walks: new areas flickered, lost objects and showed wrong tree textures until a reload (2026-11-02). With
+// TOTK_READ_MARK=1 every read buffer is marked written for the back end (nvn_guest_written), as a host write.
+static void read_mark(void *buffer, uint64_t n) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("READ_MARK", "0");
+    // Before the first frame the back end has neither mirrors nor uploaded textures to keep (and may not be started).
+    if (on && n && __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED))
+        nvn_guest_written((uint64_t)(uintptr_t)buffer, n);
+}
+
 static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
-    if (romfs_handle(h)) return romfs_read(out, h, offset, buffer, size);
+    if (romfs_handle(h)) {
+        uint32_t r = romfs_read(out, h, offset, buffer, size);
+        if (!r && out) read_mark(buffer, *out);
+        return r;
+    }
     PlatFile *f;
     int mode;
     if (!out || offset < 0 || (!buffer && size) || !file_of(h, &f, &mode)) return FS_R_INVALID_ARGUMENT;
@@ -888,6 +905,7 @@ static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffe
         done += (uint64_t)n;
     }
     *out = done;
+    read_mark(buffer, done);
     return 0;
 }
 

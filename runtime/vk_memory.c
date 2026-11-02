@@ -1502,7 +1502,7 @@ static int hot_refresh = -1;
 static int hot_refresh_on(void) {
     if (hot_refresh < 0) {
         const char *e = cfg_get("TOTK_HOT_REFRESH");
-        hot_refresh = e && *e ? atoi(e) : 1;
+        hot_refresh = e && *e ? atoi(e) : 2;
         rt_log("mem: hot chunks %s (TOTK_HOT_REFRESH=%d)", hot_refresh == 2 ? "copied into the mirror before the first draw "
                "that binds them" : hot_refresh ? "copied into the mirror at each submission's start"
                : "bound from imported memory", hot_refresh);
