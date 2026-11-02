@@ -516,7 +516,8 @@ void vk_mem_census(uint64_t frame) {
     static uint64_t window_start;
     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
-    if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
+    // KarPur: every 1800 frames after the first two (30 s at 60 fps), so a long run shows what changed along the way
+    if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || (frame && frame % 1800 == 0))
         mirror_log(frame), shadow_log(frame);   // mirror_log also logs the write-watch line
     if (frame == 1200) {   // loading is over: the first window starts here
         for (int c = 0; c < VK_MCLS_N; c++)
