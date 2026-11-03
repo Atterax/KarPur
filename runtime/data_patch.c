@@ -25,6 +25,11 @@
 //                      "mod=0.016666666666666666"); TOTK_MOD_VALUES=game/data_find.txt then applies them. Violet's
 //                      indoor walking steps by a double 1/30 that two Lua-like interpreter opcodes read (main+0x4135c,
 //                      main+0x422e4; docs/progress.md 2026-11-03), so the constant should sit in a script file.
+//   TOTK_SCRIPT_STEP=1 (default; 0 turns it off) replaces every double 1/30 in what the game reads and unpacks with 1/60
+//                      as it loads, so the scripts step their fixed 1/30 s updates (indoor walking) at 60 Hz: with the
+//                      13 found in 4.0.0 set to 1/60 walking indoors ran smooth at 60 fps and nothing else changed
+//                      (maintainer's test, docs/progress.md 2026-11-03). Their accumulators take the frame time, so the
+//                      speed stays right at any frame rate.
 // type f64 is a 64-bit double.
 //
 // The original values never leave the player's PC; the log names fields and offsets only.
@@ -68,13 +73,20 @@ static int by_offset(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
-static int find_on;   // TOTK_DATA_FIND
+static int find_on;      // TOTK_DATA_FIND
+static int step_on = -1; // TOTK_SCRIPT_STEP
+static volatile int64_t steps_set;
 
-int data_patch_wants_decodes(void) { return ndecoded > 0 || find_on; }
+static int step_wanted(void) {
+    if (step_on < 0) step_on = rt_knob("SCRIPT_STEP", "1");
+    return step_on;
+}
+
+int data_patch_wants_decodes(void) { return ndecoded > 0 || find_on || step_wanted(); }
 
 // Fields of packed files not set yet (data_watch.c turns its decoder redirect off at 0).
 int data_patch_open(void) {
-    if (find_on) return 1;   // the search wants every decode
+    if (find_on || step_wanted()) return 1;   // the search and the step replacement want every decode
     int n = 0;
     for (int i = 0; i < ndecoded; i++) n += !__atomic_load_n(&decoded[i].done, __ATOMIC_RELAXED);
     return n;
@@ -208,21 +220,31 @@ static void find_note(int romfs, uint64_t a, uint64_t b, uint64_t c, uint64_t d)
     if (k <= 64) rt_log("data find: double 1/30 %s (#%d)", romfs ? "in a stored RomFS file" : "in an Oodle-packed file", k);
 }
 
-static void find_in(int romfs, const uint8_t *p, uint64_t n, uint64_t base, uint64_t unpacked, uint64_t print,
+static void find_in(int romfs, uint8_t *p, uint64_t n, uint64_t base, uint64_t unpacked, uint64_t print,
                     uint64_t packed) {
+    static const double d160 = 1.0 / 60.0;
     for (uint64_t i = 0; i + 8 <= n; i++) {
         if (p[i + 7] != 0x3F || p[i + 6] != 0xA1) continue;
         uint64_t v;
         memcpy(&v, p + i, 8);
         if (v != D130) continue;
-        if (romfs) find_note(1, base + i, 0, 0, 0);
-        else find_note(0, unpacked, print, i, packed);
+        if (find_on) {
+            if (romfs) find_note(1, base + i, 0, 0, 0);
+            else find_note(0, unpacked, print, i, packed);
+        }
+        if (step_on > 0) {
+            memcpy(p + i, &d160, 8);
+            int64_t k = plat_inc64(&steps_set);
+            if (k <= 16 || !(k & (k - 1)))
+                rt_log("script step: double 1/30 #%lld in %s set to 1/60 (TOTK_SCRIPT_STEP=0 keeps it)", (long long)k,
+                       romfs ? "a stored RomFS file" : "an Oodle-packed file");
+        }
     }
 }
 
 // A read of n bytes at byte offset off of romfs.bin landed in buf.
 void data_patch_read(uint64_t off, void *buf, uint64_t n) {
-    if (find_on) find_in(1, buf, n, off, 0, 0, 0);
+    if (find_on || step_wanted()) find_in(1, buf, n, off, 0, 0, 0);
     if (!nfields || off >= hi || off + n <= lo) return;
     int i = 0, j = nfields;
     while (i < j) {   // first field at or after off
@@ -250,7 +272,7 @@ void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, 
         dry = e && *e && strcmp(e, "0");
     }
     uint64_t print = 0, print_head = 0;
-    if (find_on) {
+    if (find_on || step_wanted()) {
         uint64_t head = packed_n < 4096 ? packed_n : 4096;
         find_in(0, out, n, 0, n, fnv1a64(packed, head), packed_n);
     }
