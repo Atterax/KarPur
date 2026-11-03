@@ -1434,9 +1434,9 @@ static void mirror_sync(PoolRec *r) {
 // uses the imported buffer, unless the GPU wrote an overlapping range into the mirror in this submission (that write
 // reaches guest memory only at the submission's end; the mirror is then the one copy that holds it). Hot changes made
 // while a submission is recorded count from the next one (mirror_gen). TOTK_MIRROR_HOT=0 turns hot chunks off.
-// KarPur: TOTK_HOT_LATE_SUBS (1..255, default 2) sets it; Violet's trees flickered after a save loaded in the woods
+// KarPur: TOTK_HOT_LATE_SUBS (1..255, default 1) sets it; Violet's trees flickered after a save loaded in the woods
 // while the hot set kept growing (a ring of chunks, each caught too late until learned; docs/progress.md 2026-11-03).
-static int HOT_LATE_SUBS = 2;
+static int HOT_LATE_SUBS = 1;   // 1 since 2026-11-03 (with hot chunks bound from imported memory: no tree flicker)
 // Chunk size as a shift: 64 KiB by default (KarPur 2026-11-03; 4 KiB from test G until then); TOTK_HOT_KB=4..1024 (a
 // power of two) sets it. With 4 KiB chunks Violet's trees flickered after a save loaded among them: the tree data sits in
 // a ring whose 4 KiB chunks each had to be caught late before they turned hot, and the hot set kept growing for
@@ -1502,7 +1502,12 @@ static int mirror_written_here(const PoolRec *r, uint64_t off, uint64_t n) {   /
 static int race_on(void);
 static int race_pool(const PoolRec *r);
 
-// TOTK_HOT_REFRESH=1 (KarPur, default since test G; 0: bound from imported memory as before): hot chunks are not read from imported memory; instead every submission
+// KarPur 2026-11-03: the default is 0 again: hot chunks are bound from imported memory, so the GPU reads them when it
+// runs, as on the Switch. With copies (1, 2) CPU writes made while the GPU ran still missed the copy and single trees
+// flickered after a save loaded among them; bound from imported memory with chunks turning hot at the first late or
+// racing write (TOTK_HOT_LATE_SUBS, TOTK_RACE_SUBS) and 64 KiB chunks no tree flickered and the field held 60 fps
+// (~2000 bindings to hot chunks per frame, 2.5-3 MiB uploads instead of 13+ MiB copies).
+// TOTK_HOT_REFRESH=1 (KarPur, default from test G until 2026-11-03): hot chunks are not read from imported memory; instead every submission
 // that uses the pool copies them from guest memory into the mirror at the start of its GPU work (the late sync's
 // prologue copies run on the GPU, when the submission starts). A binding that touches a hot chunk keeps the fast mirror,
 // and only the hot bytes cross PCIe, once per submission (with imported bindings a whole binding is read over PCIe).
@@ -1510,7 +1515,7 @@ static int hot_refresh = -1;
 static int hot_refresh_on(void) {
     if (hot_refresh < 0) {
         const char *e = cfg_get("TOTK_HOT_REFRESH");
-        hot_refresh = e && *e ? atoi(e) : 2;
+        hot_refresh = e && *e ? atoi(e) : 0;   // KarPur: 0 since 2026-11-03 (tree flicker after a load)
         rt_log("mem: hot chunks %s (TOTK_HOT_REFRESH=%d)", hot_refresh == 2 ? "copied into the mirror before the first draw "
                "that binds them" : hot_refresh ? "copied into the mirror at each submission's start"
                : "bound from imported memory", hot_refresh);
@@ -1733,7 +1738,7 @@ void vk_mem_mirror_begin(void) {
 // On by default since test G (2026-11-02): with deferred submits, 4 KiB chunks and hot refresh it keeps every object
 // and holds 60 fps. Alone (64 KiB chunks bound from imported memory) it made 323 chunks hot and cost half the frame
 // rate. TOTK_MIRROR_RACE=0 turns it off.
-static int RACE_SUBS = 2;   // TOTK_RACE_SUBS (1..255, default 2)
+static int RACE_SUBS = 1;   // TOTK_RACE_SUBS (1..255, default 1 since 2026-11-03)
 static void hot_subs_init(void) {
     static int done;
     if (done) return;
@@ -1741,7 +1746,7 @@ static void hot_subs_init(void) {
     const char *a = cfg_get("TOTK_HOT_LATE_SUBS"), *b = cfg_get("TOTK_RACE_SUBS");
     if (a && *a && atoi(a) >= 1 && atoi(a) <= 255) HOT_LATE_SUBS = atoi(a);
     if (b && *b && atoi(b) >= 1 && atoi(b) <= 255) RACE_SUBS = atoi(b);
-    if (HOT_LATE_SUBS != 2 || RACE_SUBS != 2)
+    if (HOT_LATE_SUBS != 1 || RACE_SUBS != 1)
         rt_log("mem: a chunk turns hot after %d late and %d racing submissions (TOTK_HOT_LATE_SUBS, TOTK_RACE_SUBS)",
                HOT_LATE_SUBS, RACE_SUBS);
 }
