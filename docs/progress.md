@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Gefunden: ein double 1/30 im Speicher ist der Bewegungsschritt drinnen
+- `POKE_SCAN=d64:0-100` (24 Treffer): F7, F6, F6, F6 → `double 1/30 at 0xde071f4d0`; mit nur dieser Stelle auf 1/60 **läuft die Figur im Gebäude flüssig** (Maintainer: nach dem ersten Schritt alles flüssig).
+- Die Gegenprobe vorher (`POKE=0x5e071f4d0`) schlug fehl, weil der gemappte Speicher in diesem Lauf woanders lag: `0x5e071f4d0` und `0xde071f4d0` unterscheiden sich um 0x800000000, die untere Hälfte ist gleich. Feste Adressen taugen also nicht.
+- Nächster Schritt: den Code finden, der diesen Wert berechnet oder speichert. In main gibt es keinen double 1/30, aber 2× `fmov d, #30.0` (`consts.py`); vermutlich 1.0/30.0 zur Laufzeit. Bericht: `consts.py --only double`, danach `calls.py --insn` an den Stellen.
+
 ### 2026-11-03: Halbierung float/double 1/30 im Gebäude: ein F6, Gegenprobe negativ
 - `POKE_SCAN=f32:0-100,d64:0-100` (66 float- und 25 double-Treffer in diesem Lauf): F7, F7, **F6** (bei 11 double-Treffern `0x5d057b8d8 .. 0x5e071f4d0`), dann F7 bis `double 1/30 at 0x5e071f4d0`. Maintainer: „manchmal gut“.
 - Gegenprobe `POKE=0x5e071f4d0=d:1/60` allein: ruckelt wieder. Die Adressen der Treffer wechseln zum Teil zwischen Läufen (`0x5d05bb8d8` vorher, `0x5d057b8d8` jetzt); `0x5e071f4d0` war in beiden Läufen dabei.
