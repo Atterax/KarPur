@@ -2068,7 +2068,10 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
     if (nwbl) {
         mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                  VK_ACCESS_2_TRANSFER_READ_BIT);
-        for (int i = 0; i < nwbl; i++) wbl[i].r->wb_sub = msub;
+        for (int i = 0; i < nwbl; i++) {
+            wbl[i].r->wb_sub = msub;
+            rbw_arm_range(wbl[i].r->import_lo + wbl[i].off, wbl[i].size, fence);   // KarPur TOTK_READBACK_WATCH
+        }
         mrep.wb_ranges += (uint64_t)nwbl;
         rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies) + 2;
         mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,

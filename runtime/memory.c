@@ -82,6 +82,79 @@ static int watched(uint64_t addr, uint64_t size) {
            (addr >= g->alias.base && size <= ALIAS_SIZE && addr - g->alias.base <= ALIAS_SIZE - size);
 }
 
+// ---- KarPur readback watch (readback_watch.c, TOTK_READBACK_WATCH / TOTK_READBACK_GUARD): pages the GPU writes back
+// into are made inaccessible until the CPU first touches them. Under frz_lock like the freezes: a page is armed when
+// it is read-write, or read-only in a frozen region (the GPU writes into frozen pages too); a release gives it back
+// read-only while its region is still frozen, else read-write, so a freeze never loses a page. A region holding an
+// armed page does not freeze (freeze_locked wants every page read-write), and a thaw leaves armed pages alone. Kernel
+// accesses to guest memory fail on an armed page instead of faulting, so mem_thaw (file reads), mem_rbw_release (file
+// writes) and every mapping change here release the pages first.
+static uint8_t *rbw;   // one bit per guest page, NULL while the watch is off
+static volatile int64_t rbw_armed;
+
+static int rbw_bit(uint64_t p) { return rbw[p >> 15] >> (p >> 12 & 7) & 1; }
+
+int mem_rbw_init(void) {
+    if (!rbw) rbw = calloc(RT_ADDRESS_LIMIT >> 15, 1);
+    return rbw != NULL;
+}
+
+// frz_lock held exclusively.
+static void rbw_release_locked(uint64_t a, uint64_t n) {
+    if (!rbw || !n || !__atomic_load_n(&rbw_armed, __ATOMIC_RELAXED) || a >= RT_ADDRESS_LIMIT) return;
+    uint64_t end = a + n < RT_ADDRESS_LIMIT ? a + n : RT_ADDRESS_LIMIT;
+    for (uint64_t p = a & ~(PAGE - 1); p < end; p += PAGE)
+        if (rbw_bit(p)) {
+            rbw[p >> 15] &= (uint8_t)~(1u << (p >> 12 & 7));
+            plat_dec64(&rbw_armed);
+            plat_mem_protect(p, PAGE, frz[p >> FRZ_SHIFT] ? PLAT_PROT_READ : PLAT_PROT_RW);
+        }
+}
+
+void mem_rbw_release(uint64_t a, uint64_t n) {
+    if (!rbw || !__atomic_load_n(&rbw_armed, __ATOMIC_RELAXED)) return;
+    plat_mutex_lock(&frz_lock);
+    rbw_release_locked(a, n);
+    plat_mutex_unlock(&frz_lock);
+}
+
+// 1: the page is armed now, 2: it was armed already; 0: not a watched read-write page.
+int mem_rbw_arm(uint64_t page) {
+    if (!rbw || page >= RT_ADDRESS_LIMIT || (page & (PAGE - 1))) return 0;
+    uint64_t end;
+    int ok = 0;
+    plat_mutex_lock(&frz_lock);
+    int st = rbw_bit(page) || !watched(page, PAGE) ? -1 : plat_mem_state(page, page + PAGE, &end);
+    if (rbw_bit(page)) ok = 2;
+    else if ((st == PLAT_PROT_RW || (st == PLAT_PROT_READ && frz[page >> FRZ_SHIFT])) &&
+             plat_mem_protect(page, PAGE, PLAT_PROT_NONE)) {
+        rbw[page >> 15] |= (uint8_t)(1u << (page >> 12 & 7));
+        plat_inc64(&rbw_armed);
+        ok = 1;
+    }
+    plat_mutex_unlock(&frz_lock);
+    return ok;
+}
+
+// The access-fault hook's half (readback_watch.c): 1 the page was armed and is accessible again (report it), 2 another
+// thread released it meanwhile and the access can run now (retry), 0 not ours (a write into a frozen page goes on to
+// thaw_fault).
+int mem_rbw_fault(uint64_t a, int write) {
+    if (!rbw || a >= RT_ADDRESS_LIMIT) return 0;
+    uint64_t p = a & ~(PAGE - 1), end;
+    int r = 0;
+    plat_mutex_lock(&frz_lock);
+    if (rbw_bit(p)) {
+        rbw_release_locked(p, PAGE);
+        r = 1;
+    } else {
+        int st = plat_mem_state(p, p + PAGE, &end);
+        if (st == PLAT_PROT_RW || (!write && st == PLAT_PROT_READ)) r = 2;
+    }
+    plat_mutex_unlock(&frz_lock);
+    return r;
+}
+
 // frz_lock held exclusively. why: 1 a write fault, 2 mem_thaw (holds the region thawed), 3 a mapping change here.
 static void thaw_locked(uint64_t r, int why) {
     if (why == 2) thaw_ms[r] = (uint32_t)plat_now_ms() | 1;
@@ -98,9 +171,10 @@ static void thaw_locked(uint64_t r, int why) {
     plat_inc64(&frz_count[why]);
 }
 
-// frz_lock held exclusively.
+// frz_lock held exclusively. Releases the readback watch's pages in the range too.
 static void thaw_range_locked(uint64_t a, uint64_t n, int why) {
     if (!n || a >= RT_ADDRESS_LIMIT) return;
+    rbw_release_locked(a, n);
     uint64_t r0 = a >> FRZ_SHIFT, r1 = (a + n - 1 < RT_ADDRESS_LIMIT ? a + n - 1 : RT_ADDRESS_LIMIT - 1) >> FRZ_SHIFT;
     for (uint64_t r = r0; r <= r1; r++) thaw_locked(r, why);
 }

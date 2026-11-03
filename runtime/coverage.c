@@ -130,7 +130,16 @@ static void write_lists(uint64_t frame) {
     if (nhost) write_host(frame);
 }
 
-static void at_exit(void) { write_lists(last_frame); }
+// At the end of the run: the game ends through plat_exit, which runs no atexit handlers, so perf.c prof_write calls
+// this on that path; the atexit handler covers the others. The lists are written once.
+static int recording, exit_written;
+
+void coverage_exit(void) {
+    if (!recording || __atomic_exchange_n(&exit_written, 1, __ATOMIC_ACQ_REL)) return;
+    write_lists(last_frame);
+}
+
+static void at_exit(void) { coverage_exit(); }
 
 void coverage_present(uint64_t frame) {
     static int on = -1, was5, was4;
@@ -156,8 +165,9 @@ void coverage_present(uint64_t frame) {
             on = 0;
             return;
         }
+        recording = 1;
         atexit(at_exit);
-        rt_log("coverage: on (%s%d host functions); F5 starts the next phase, F4 writes game/coverage",
+        rt_log("coverage: on (%s%d host functions); F5 starts the next phase, F4 writes game/coverage (also at exit)",
                mask ? "functions of main, " : "", nhost);
     }
     if (!on) return;

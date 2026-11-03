@@ -197,6 +197,10 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+// KarPur: every access fault (read or write) goes to fn first, with the faulting host instruction and 1 for a write;
+// fn returns 1 when the access should run again. Set once, before or after plat_mem_fault_hook (which installs the
+// handler).
+void plat_mem_access_hook(int (*fn)(uint64_t addr, uintptr_t rip, int write));
 // KarPur, diagnostics: every write (reads too, with reads = 1) into the 4 KiB page at page faults; fn(address, host
 // instruction, 1 for a write) runs on the accessing thread, then the access is single-stepped with the page open and
 // the page is protected again. One page at a time (a new call moves the watch; 0 ends it); fn must not take locks or

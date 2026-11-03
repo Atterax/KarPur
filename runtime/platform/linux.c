@@ -918,11 +918,15 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // write-fault hook first (memory.c thaws a frozen region); a fault in this executable's code then goes to the crash
 // hook (main.c); anything else gets the default action. Runs on the thread's signal stack.
 static int (*fault_hook)(uint64_t addr);
+static int (*access_hook)(uint64_t addr, uintptr_t rip, int write);   // KarPur: plat_mem_access_hook
 static void (*crash_fn)(const PlatCrash *c);
 
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
     long err = u->uc_mcontext.gregs[REG_ERR];
+    if (sig == SIGSEGV && access_hook &&
+        access_hook((uint64_t)(uintptr_t)si->si_addr, (uintptr_t)u->uc_mcontext.gregs[REG_RIP], (err & 2) != 0))
+        return;
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
     Dl_info at, self;
@@ -960,6 +964,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     fault_hook = fn;
     fault_install();
 }
+
+void plat_mem_access_hook(int (*fn)(uint64_t addr, uintptr_t rip, int write)) { access_hook = fn; }
 
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;

@@ -166,6 +166,16 @@ void mem_thaw(uint64_t a, uint64_t n);                     // makes the frozen r
                                                            // before a kernel write (file read) into guest memory
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
+// KarPur readback watch (memory.c, used by readback_watch.c, TOTK_READBACK_WATCH)
+int mem_rbw_init(void);                                    // allocates the page bits; 0 out of memory
+int mem_rbw_arm(uint64_t page);                            // makes a watched read-write page inaccessible; 1 armed,
+                                                           // 2 armed already, 0 refused
+int mem_rbw_fault(uint64_t a, int write);                  // fault on a: 1 was armed (now accessible), 2 retry, 0 not ours
+void mem_rbw_release(uint64_t a, uint64_t n);              // read-write again before a kernel access (file write)
+void rbw_arm_range(uint64_t addr, uint64_t size, uint64_t fence);   // readback_watch.c: GPU writes back there at fence
+void rbw_cpu_synced(uint64_t fence);                       // readback_watch.c: the game waited for this fence
+void rbw_present(uint64_t frame);                          // readback_watch.c: summary every 600 presents
+void rbw_exit(void);                                       // readback_watch.c: summary at the end of the run
 void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse after thread exit
 
 // ---- modules (loader.c)
@@ -186,6 +196,7 @@ void data_watch_init(void);                                // KarPur data_watch.
 void frame_dt_init(void);                                  // KarPur frame_dt.c: from rt_patches_init
 void frame_dt_present(void);                               // KarPur frame_dt.c: before each present
 void coverage_present(uint64_t frame);                     // KarPur coverage.c: TOTK_COVERAGE, before each present
+void coverage_exit(void);                                  // coverage.c: write the lists at the end of the run (once)
 int coverage_gpu_counters(uint64_t *v, const char **names); // vk_exec.c: replay totals (v) and their names; returns the
                                                            // count; either pointer may be NULL
 void value_scan_present(uint64_t frame);                   // KarPur value_scan.c: before each present

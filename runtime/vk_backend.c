@@ -495,6 +495,7 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
 // After a fence wait: the value is done, so its replay is too; a later submission the replay records meanwhile marks
 // its targets with a later fence, which write_back_small leaves alone. No drain.
 static void vk_be_cpu_synced(uint64_t fence) {
+    rbw_cpu_synced(fence);   // KarPur TOTK_READBACK_WATCH: the game waited for this fence
     if (!vk_texture_small_dirty()) return;
     vk_sync_start();
     vk_present_drain();

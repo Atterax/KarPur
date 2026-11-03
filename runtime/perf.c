@@ -51,6 +51,8 @@ void prof_start(void) {
 void prof_write(void) {
     perf_summary_flush();
     prof_sampler_write();
+    coverage_exit();   // KarPur: TOTK_COVERAGE / TOTK_HOSTCALLS lists, as the exit path skips atexit
+    rbw_exit();        // KarPur: TOTK_READBACK_WATCH summary
 }
 
 // ---- TOTK_TRACE=perf: frame interval and the time the render thread spends waiting, logged every 60 presents. The
