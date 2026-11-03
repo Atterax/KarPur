@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Baum-Flackern nach dem Laden: vorerst nicht reproduzierbar, pausiert
+- `SCRIPT_STEP=0` (Oodle-Umweg aus): mehr flackernde Bäume als mit Standard. Der Umweg ist nicht die Ursache (er verschiebt eher Ladezeitpunkte günstig).
+- Standard: Flackern nur nach dem Laden eines Spielstands, nach einem Ladebildschirm/Zonenwechsel weg. Mit einem weit fortgeschrittenen Spielstand (im Test-Profil) laden 99 % aller Texturen und Objekte normal, auch bei schnellem Fliegen und Reisen; **nur Palmen und selten Bäume** zeigen kurz Dreiecke und Verformungen, bis die Daten nachkommen. Flackern beim Laden nur hin und wieder; im Testlauf nicht mehr auszulösen.
+- Spiegel-Zusammenfassung in diesem Lauf (Frame 600): late sync 1,7 Seiten/Frame, 5 heiße Stücke, 0,1 während GPU-Lauf beschriebene Stücke: kaum Last.
+- Pausiert, bis der Maintainer einen Spielstand hat, der es zuverlässig zeigt. Dann: Läufe mit `mem: mirror frame`-Zeilen vor und nach einer Schnellreise vergleichen; Palmen-Dreiecke deuten auf veraltete Vertex-/Transform-Feedback-Daten (vgl. frühere Einträge zu Palmen).
+
 ### 2026-11-03: Ausweis-Foto und Video-Ton erledigt
 - Mit `WB_ONESHOT` (Standard) ohne weitere Schalter: Foto auf dem Ausweis da; mit dem echten Spielstand draußen weiter stabil 60 fps (Maintainer).
 - Damit erledigt: Ton der Bink-Sequenz (`audren.c`, id-Kollisionen unbenutzter Einträge) und Ausweis-Foto (einmalige GPU-Ziele beim Fence-Warten zurückschreiben).
