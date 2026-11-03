@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Wächter: der Schritt wird nicht neu geschrieben; jetzt auch Lesezugriffe
+- Lauf mit Wächter: letzter Kandidat `double 1/30 at 0x5e08204d0` (Adresse wieder anders). Über mehrere Minuten, auch nach Verlassen/Betreten des Gebäudes: **0 Schreibzugriffe** auf das Wort, 95 auf andere Stellen der Seite (der Wächter arbeitet). Der Wert wird also einmal beim Laden gesetzt und bleibt.
+- Darum meldet der Wächter jetzt auch **Lesezugriffe** (`TOTK_WATCH_READS`, Standard 1; Seite `PAGE_NOACCESS`): Die Bewegung liest den Schritt jedes Bild, so findet man deren Code und das Feld. Log: `x read by f_… = main+…`.
+
 ### 2026-11-03: Die 30.0-double-Stellen sind es nicht; Schreib-Wächter gebaut
 - `main+0x9dc94c` (in `0x9dc8fc`): Zeit über `GetSystemTick`/`ConvertToTimeSpan` in Sekunden (÷1e9), verglichen mit 30.0 (ein 30-s-Zeitlimit). `main+0x31a14b0`: `fmov d8, #30.0`, danach Vergleich. Keine Division, also nicht der Schritt. Der double 1/30 entsteht woanders (Laufzeit-Division oder Daten).
 - Neu: Schreib-Wächter. `plat_write_watch` (win32: Seite schreibgeschützt, Vectored Exception Handler meldet die Host-Instruktion, Einzelschritt mit Trap-Flag, danach wieder geschützt; Linux: nicht umgesetzt). `value_scan.c` setzt ihn automatisch auf das Wort, das nach einer Halbierung übrig bleibt, und loggt alle 300 Presents die schreibenden Funktionen (`rt_lifted_function`, neu in `main.c`), die Gast-Rücksprungadresse und zwei Rahmen darüber; Host-Schreibzugriffe (eigener Poke-Thread) zählen extra.

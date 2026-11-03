@@ -951,8 +951,8 @@ static void fault_install(void) {
 }
 
 // KarPur write watch: not implemented on Linux (the Windows build is the one that runs the game).
-int plat_write_watch(uint64_t page, void (*fn)(uint64_t addr, uintptr_t rip)) {
-    (void)page, (void)fn;
+int plat_write_watch(uint64_t page, int reads, void (*fn)(uint64_t addr, uintptr_t rip, int write)) {
+    (void)page, (void)reads, (void)fn;
     return 0;
 }
 

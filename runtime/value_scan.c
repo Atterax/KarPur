@@ -287,14 +287,16 @@ static void cand_name(const Cand *c, char *buf, size_t n) {
 // guest write to the word names the lifted function that wrote it, the guest return address and two frames further
 // up, logged every 300 presents. That finds the code that sets the value, which a code patch can then change for good
 // (the word's address differs between runs). Host writes (our own poke thread, copies of the runtime) count apart.
-typedef struct { uint64_t fn, lr, up1, up2; volatile int64_t n; } Writer;
+// TOTK_WATCH_READS=1 (default; 0: writes only) watches reads of the word too: a value set once at load is found by the
+// code that reads it every frame.
+typedef struct { uint64_t fn, lr, up1, up2; int write; volatile int64_t n; } Writer;
 #define MAX_WRITERS 16
 static Writer writers[MAX_WRITERS];
 static volatile int nwriters, writers_lock;
 static volatile int64_t w_host, w_page, w_lost;
 static volatile uint64_t watch_addr, watch_req;
 
-static void watch_write(uint64_t a, uintptr_t rip) {   // the writing thread, inside the exception handler
+static void watch_write(uint64_t a, uintptr_t rip, int write) {   // the accessing thread, inside the exception handler
     uint64_t w = watch_addr;
     if (a + 8 <= w || a >= w + 8) { plat_inc64(&w_page); return; }
     uint64_t fn = rt_lifted_function(rip);
@@ -307,8 +309,8 @@ static void watch_write(uint64_t a, uintptr_t rip) {   // the writing thread, in
     }
     while (__atomic_exchange_n(&writers_lock, 1, __ATOMIC_ACQUIRE)) {}
     int i = 0;
-    while (i < nwriters && !(writers[i].fn == fn && writers[i].lr == lr)) i++;
-    if (i == nwriters && nwriters < MAX_WRITERS) writers[nwriters++] = (Writer){fn, lr, up1, up2, 0};
+    while (i < nwriters && !(writers[i].fn == fn && writers[i].lr == lr && writers[i].write == write)) i++;
+    if (i == nwriters && nwriters < MAX_WRITERS) writers[nwriters++] = (Writer){fn, lr, up1, up2, write, 0};
     if (i < nwriters) writers[i].n++;
     else plat_inc64(&w_lost);
     __atomic_store_n(&writers_lock, 0, __ATOMIC_RELEASE);
@@ -317,10 +319,12 @@ static void watch_write(uint64_t a, uintptr_t rip) {   // the writing thread, in
 static void watch_report(void) {
     char a[96], b[96], c[96], d[96], nm[64];
     name_of(watch_addr, nm, sizeof nm);
-    rt_log("value scan: writes to the watched word %s: %d writers in lifted code, %lld host writes, %lld other writes "
-           "in its page%s", nm, nwriters, (long long)w_host, (long long)w_page, w_lost ? " (writer table full)" : "");
+    rt_log("value scan: accesses to the watched word %s: %d readers/writers in lifted code, %lld host accesses, %lld "
+           "other accesses in its page%s", nm, nwriters, (long long)w_host, (long long)w_page,
+           w_lost ? " (table full)" : "");
     for (int i = 0; i < nwriters; i++)
-        rt_log("value scan:   %lld x by f_%llx = %s, returns to %s, then %s, then %s", (long long)writers[i].n,
+        rt_log("value scan:   %lld x %s by f_%llx = %s, returns to %s, then %s, then %s", (long long)writers[i].n,
+               writers[i].write ? "written" : "read",
                (unsigned long long)writers[i].fn, ldr_describe(writers[i].fn, a, sizeof a),
                ldr_describe(writers[i].lr, b, sizeof b), ldr_describe(writers[i].up1, c, sizeof c),
                ldr_describe(writers[i].up2, d, sizeof d));
@@ -429,9 +433,10 @@ void value_scan_present(uint64_t frame) {
         watch_addr = req;
         char nm[64];
         name_of(req, nm, sizeof nm);
-        int ok = plat_write_watch(req, watch_write);
-        rt_log("value scan: %s writes to %s (leave and enter the building again to catch the code that sets it)",
-               ok ? "watching" : "cannot watch (platform)", nm);
+        int reads = rt_knob("WATCH_READS", "1");
+        int ok = plat_write_watch(req, reads, watch_write);
+        rt_log("value scan: %s %s %s (leave and enter the building again to catch the code that sets it)",
+               ok ? "watching" : "cannot watch (platform)", reads ? "reads and writes of" : "writes to", nm);
     }
     if (watch_addr && frame % 300 == 0) watch_report();
     if (!scan_frame && (on == 2 ? ikb_foreground() && ikb_down(KEY_F9) : frame == 900)) {

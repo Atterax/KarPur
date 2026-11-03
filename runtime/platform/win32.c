@@ -565,7 +565,8 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 // the writing instruction runs once more with the page writable and the trap flag set, whose single-step exception
 // protects the page again. Writes another thread makes in that short window are missed (it is a diagnostic).
 static volatile uint64_t ww_page;
-static void (*ww_fn)(uint64_t addr, uintptr_t rip);
+static DWORD ww_prot = PAGE_READONLY;   // PAGE_NOACCESS when reads are watched too
+static void (*ww_fn)(uint64_t addr, uintptr_t rip, int write);
 static _Thread_local int ww_step;
 
 static LONG CALLBACK ww_veh(EXCEPTION_POINTERS *ep) {
@@ -574,33 +575,34 @@ static LONG CALLBACK ww_veh(EXCEPTION_POINTERS *ep) {
     DWORD old;
     if (er->ExceptionCode == EXCEPTION_SINGLE_STEP && ww_step) {
         ww_step = 0;
-        if (pg) VirtualProtect((void *)(uintptr_t)pg, 4096, PAGE_READONLY, &old);
+        if (pg) VirtualProtect((void *)(uintptr_t)pg, 4096, ww_prot, &old);
         ep->ContextRecord->EFlags &= ~0x100u;
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (!pg || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 ||
-        er->ExceptionInformation[0] != 1)
+        er->ExceptionInformation[0] > 1 || (!er->ExceptionInformation[0] && ww_prot != PAGE_NOACCESS))
         return EXCEPTION_CONTINUE_SEARCH;
     uint64_t a = (uint64_t)er->ExceptionInformation[1];
     if ((a & ~0xFFFull) != pg) return EXCEPTION_CONTINUE_SEARCH;
-    if (ww_fn) ww_fn(a, (uintptr_t)ep->ContextRecord->Rip);
+    if (ww_fn) ww_fn(a, (uintptr_t)ep->ContextRecord->Rip, (int)er->ExceptionInformation[0]);
     VirtualProtect((void *)(uintptr_t)pg, 4096, PAGE_READWRITE, &old);
     ep->ContextRecord->EFlags |= 0x100u;
     ww_step = 1;
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
-int plat_write_watch(uint64_t page, void (*fn)(uint64_t addr, uintptr_t rip)) {
+int plat_write_watch(uint64_t page, int reads, void (*fn)(uint64_t addr, uintptr_t rip, int write)) {
     static int added;
     DWORD old;
     uint64_t prev = ww_page;
     page &= ~0xFFFull;
     if (prev && prev != page) VirtualProtect((void *)(uintptr_t)prev, 4096, PAGE_READWRITE, &old);
     ww_fn = fn;
+    ww_prot = reads ? PAGE_NOACCESS : PAGE_READONLY;
     ww_page = page;
     if (!page) return 1;
     if (!added) added = AddVectoredExceptionHandler(1, ww_veh) != NULL;   // first: ahead of the thaw and crash handlers
-    return added && VirtualProtect((void *)(uintptr_t)page, 4096, PAGE_READONLY, &old);
+    return added && VirtualProtect((void *)(uintptr_t)page, 4096, ww_prot, &old);
 }
 
 static void (*crash_fn)(const PlatCrash *c);
