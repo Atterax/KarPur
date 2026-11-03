@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Video-Ton behoben
+- Mit beiden Absicherungen (Stimmen und Kanal-Ressourcen) ist der Ton der Bink-Sequenz **perfekt** (Maintainer). Ursache: `request_update` ordnete die Einträge über ihre id zu, und unbenutzte Einträge mit id 0 überschrieben in derselben Aktualisierung die benutzte Stimme bzw. ihren linken Kanal. TotK benutzte offenbar keine Stimme mit id 0 neben solchen Einträgen.
+- Nächstes Ziel: schwarzes Figurenbild auf dem Ausweis.
+
 ### 2026-11-03: Video-Ton da, aber nur rechts
 - Mit der Voice-Absicherung: **Ton im Intro-Video hörbar**, aber nur auf dem rechten Kanal. Zählung: 1 Eintrag in Benutzung (Index 0, id 0), PCM16 stereo 48 kHz, spielt. Bestätigt die Ursache: unbenutzte Einträge mit id 0 setzten die Stimme zurück.
 - Gleiche Ursache vermutet bei den Kanal-Ressourcen (Mix-Lautstärken je Kanal): Ein unbenutzter Eintrag mit id 0 überschreibt den linken Kanal der Stimme (id 0) mit Nullen, der rechte (id 1) bleibt. Gleiche Absicherung in `request_update` für die Kanal-Ressourcen.
