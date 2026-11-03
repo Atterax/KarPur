@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto: Puffer A bleibt auch nach der GPU leer
+- Zählung nach Abschluss der GPU (`MEMORY=import`): A (Quelle der ersten BC1-Kopie) **0 Bytes nicht null**, B (Rücklesung der ersten BC1-Textur) 0, C 0. Die GPU füllt A also nicht; die BC1-Daten in A müsste die CPU schreiben (eigene Kompression aus einer früheren Rücklesung des gerenderten Fotos, andere Größe).
+- Neu: `TOTK_READBACK_LOG=1` loggt jede Textur → Puffer-Kopie (jede Größe, bis 40) mit Form, Region, Puffer und Bildnummer und zählt den Puffer nach Abschluss der GPU.
+
 ### 2026-11-03: Ausweis-Foto: alle drei Puffer beim Einplanen null
 - `WRITE_LOG` mit `MEMORY=import`: A (Bild 458), B (459) und C (558): **0 von 622080 Bytes nicht null**. C wird also schon schwarz geladen/gespeichert. A und B sind beim Einplanen gezählt; schreibt die GPU A im selben Arbeitsschritt, ist das zu früh.
 - Neu: Puffer-Kopien und Rücklesungen geloggter Texturen werden nach Abschluss der GPU (`vk_completion_add`) noch einmal gezählt („copy source after the GPU finished“, „readback done“).

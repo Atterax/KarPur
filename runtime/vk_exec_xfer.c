@@ -442,7 +442,19 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     if (to_image) vk_texture_gpu_written(p->tex), vk_texture_write_note("buffer copy", p->tex, p->src, size, NULL);
     else vk_mem_gpu_wrote(&m, size), note_gpu_write(ex, p->src, size),
          vk_texture_write_note("readback to buffer (texture is the source)", p->tex, p->src, size, NULL);
-    if (vk_texture_write_logged(p->tex)) {
+    // KarPur TOTK_READBACK_LOG=1: every texture-to-buffer copy (any size, up to 40) with the texture's shape and the
+    // buffer, counted once the GPU has finished: where a game reads a render back to the CPU (the trainer card photo,
+    // docs/progress.md 2026-11-03)
+    static int rb_log = -1, rb_n;
+    if (rb_log < 0) rb_log = rt_knob("READBACK_LOG", "0");
+    if (!to_image && rb_log && rb_n < 40 && p->tex) {
+        rb_n++;
+        rt_log("vk: readback log: %ux%u fmt %#x at %#llx (region %d,%d %dx%d) -> buffer %#llx+%#llx (frame %llu)",
+               p->tex->d.width, p->tex->d.height, p->tex->d.format, (unsigned long long)(uintptr_t)p->tex->mem, p->r.xoffset,
+               p->r.yoffset, p->r.width, p->r.height, (unsigned long long)p->src, (unsigned long long)size,
+               (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+    }
+    if (vk_texture_write_logged(p->tex) || (!to_image && rb_log && rb_n <= 40)) {
         ReadbackCount *r = malloc(sizeof *r);
         if (r) *r = (ReadbackCount){p->src, size, to_image}, vk_completion_add(ex->fence, readback_done, r);
     }
