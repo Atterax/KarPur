@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Der Schritt ist eine Skript-Konstante (Interpreter)
+- `--listing`: `main+0x4135c` und `main+0x422e4` sind Opcodes eines Bytecode-Interpreters: Dispatch `ldr x8, [x25]; add x26, x8, #0x10; br x8`, Befehlszeiger x27 in 4-Byte-Schritten, Werte als 16-Byte-TValue (8 Byte Wert, Typ bei +8: 3 = Ganzzahl, 0x13 = Kommazahl), `fsub d0, d0, d1` mit Ergebnistyp 0x13. Das passt zu Lua 5.4 (`LUA_VNUMINT` 0x03, `LUA_VNUMFLT` 0x13). `main+0x4135c` kopiert einen Wert (MOVE/GETUPVAL o. Ä.), `main+0x422e4` ist eine Subtraktion.
+- Folgerung: Die Fortbewegung drinnen wird von einem Skript gesteuert; `1/30` ist eine Konstante im Skript (luac faltet `1/30` zu einer double-Konstante).
+- Neu: `TOTK_DATA_FIND=1` (`data_patch.c`): sucht in allen RomFS-Lesungen und Oodle-Entpackungen nach dem double 1/30 und schreibt pro Fund eine Zeile nach `game/data_find.txt` (romfs/oodle-Format, Wert 1/60, neuer Typ `f64`). `TOTK_MOD_VALUES=game/data_find.txt` setzt dann alle Funde beim Laden auf 1/60.
+
 ### 2026-11-03: Leser des Bewegungsschritts gefunden
 - Lauf mit Lese-Wächter (`double 1/30 at 0x5e071f4d0`, danach Laufen flüssig): zwei Leser, beide aufgerufen von `main+0x448a8` (darüber `0x27e00`, `0x26cb4`): **`main+0x4135c`** (~2,4 Lesezugriffe pro Bild) und **`main+0x422e4`** (~1,2 pro Bild). Keine Schreibzugriffe.
 - Neu in `calls.py`: `--listing MOD+OFF` (ganze Funktion, `--max N`) und `--dstores OFF` (alle `str d, [x, #OFF]` in main, mit FDIV-/Int→double-Markierung kurz davor), um vom gelesenen Feld zum Code zu kommen, der den Schritt setzt.

@@ -20,6 +20,12 @@
 //   TOTK_DATA_PATCH_LIST=path  the list (default game/data_patch.txt)
 //   TOTK_MOD_VALUES=1  set the values a community mod has in these fields (game/mod_patch.txt, written by
 //                      tools/mod_report.py --apply: group "mod=<value>"), as if the mod were installed
+//   TOTK_DATA_FIND=1   find every double 1/30 (0x3fa1111111111111) in what the game reads from RomFS and unpacks with
+//                      Oodle, and append a line for each to game/data_find.txt with the value 1/60 (group
+//                      "mod=0.016666666666666666"); TOTK_MOD_VALUES=game/data_find.txt then applies them. Violet's
+//                      indoor walking steps by a double 1/30 that two Lua-like interpreter opcodes read (main+0x4135c,
+//                      main+0x422e4; docs/progress.md 2026-11-03), so the constant should sit in a script file.
+// type f64 is a 64-bit double.
 //
 // The original values never leave the player's PC; the log names fields and offsets only.
 #include <stdint.h>
@@ -36,7 +42,7 @@
 typedef struct {
     uint64_t at;   // byte offset in romfs.bin, or in the unpacked file (decoded)
     uint64_t packed, unpacked, print;   // decoded: which file
-    char type;     // 'f' f32, 'i' i32, 'u' u32, 'h' i16, 'H' u16
+    char type;     // 'f' f32, 'i' i32, 'u' u32, 'h' i16, 'H' u16, 'd' f64
     float factor;
     int done;          // decoded: set at least once
     int absolute;      // set value instead of multiplying (a mod's value, group "mod=<value>")
@@ -62,10 +68,13 @@ static int by_offset(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
-int data_patch_wants_decodes(void) { return ndecoded > 0; }
+static int find_on;   // TOTK_DATA_FIND
+
+int data_patch_wants_decodes(void) { return ndecoded > 0 || find_on; }
 
 // Fields of packed files not set yet (data_watch.c turns its decoder redirect off at 0).
 int data_patch_open(void) {
+    if (find_on) return 1;   // the search wants every decode
     int n = 0;
     for (int i = 0; i < ndecoded; i++) n += !__atomic_load_n(&decoded[i].done, __ATOMIC_RELAXED);
     return n;
@@ -98,7 +107,7 @@ static int load_list(const char *path, float view, float spawn, float count, int
             f.at = at;
             if (oodle) f.packed = packed, f.unpacked = unpacked, f.print = print;
             f.type = !strcmp(type, "f32") ? 'f' : !strcmp(type, "i32") ? 'i' : !strcmp(type, "u32") ? 'u'
-                   : !strcmp(type, "i16") ? 'h' : !strcmp(type, "u16") ? 'H' : 0;
+                   : !strcmp(type, "i16") ? 'h' : !strcmp(type, "u16") ? 'H' : !strcmp(type, "f64") ? 'd' : 0;
             if (!strncmp(group, "mod=", 4)) {
                 f.absolute = mods, f.value = strtod(group + 4, NULL), f.factor = mods ? 0.0f : 1.0f;
             } else {
@@ -123,6 +132,12 @@ void data_patch_init(void) {
     // TOTK_MOD_VALUES=1 (or a list path): the values tools/mod_report.py --apply took from a mod (game/mod_patch.txt)
     const char *mv = cfg_get("TOTK_MOD_VALUES");
     int mods = mv && *mv && strcmp(mv, "0");
+    find_on = rt_knob("DATA_FIND", "0");
+    if (find_on) {
+        FILE *fp = fopen("game/data_find.txt", "w");   // a fresh list each run
+        if (fp) fputs("# double 1/30 found by TOTK_DATA_FIND (karpur); apply with TOTK_MOD_VALUES=game/data_find.txt\n", fp), fclose(fp);
+        rt_log("data find: looking for double 1/30 in RomFS reads and Oodle decodes; lines go to game/data_find.txt");
+    }
     if (view == 1.0f && spawn == 1.0f && count == 1.0f && !mods) return;
     int skipped = 0;
     if (view != 1.0f || spawn != 1.0f || count != 1.0f) {
@@ -152,6 +167,7 @@ static void scale(Field *f, uint8_t *p) {
         case 'u': { uint32_t v = (uint32_t)f->value; memcpy(p, &v, 4); break; }
         case 'h': { int16_t v = (int16_t)f->value; memcpy(p, &v, 2); break; }
         case 'H': { uint16_t v = (uint16_t)f->value; memcpy(p, &v, 2); break; }
+        case 'd': { double v = f->value; memcpy(p, &v, 8); break; }
         }
         return;
     }
@@ -161,11 +177,52 @@ static void scale(Field *f, uint8_t *p) {
     case 'u': { uint32_t v; memcpy(&v, p, 4); v = (uint32_t)(v * f->factor + 0.5f); memcpy(p, &v, 4); break; }
     case 'h': { int16_t v; memcpy(&v, p, 2); v = (int16_t)(v * f->factor + (v < 0 ? -0.5f : 0.5f)); memcpy(p, &v, 2); break; }
     case 'H': { uint16_t v; memcpy(&v, p, 2); v = (uint16_t)(v * f->factor + 0.5f); memcpy(p, &v, 2); break; }
+    case 'd': { double v; memcpy(&v, p, 8); v *= f->factor; memcpy(p, &v, 8); break; }
+    }
+}
+
+static uint64_t width(const Field *f) { return f->type == 'h' || f->type == 'H' ? 2 : f->type == 'd' ? 8 : 4; }
+
+// ---- TOTK_DATA_FIND: double 1/30 in the data the game reads
+#define FIND_MAX 256
+static const uint64_t D130 = 0x3FA1111111111111ull;
+static struct { uint64_t a, b, c, d; } found[FIND_MAX];   // romfs: (off, 0, 0, 0); oodle: (unpacked, print, off, packed)
+static int nfound;
+static volatile int find_lock;
+
+static void find_note(int romfs, uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
+    while (__atomic_exchange_n(&find_lock, 1, __ATOMIC_ACQUIRE)) {}
+    int i = 0;
+    while (i < nfound && !(found[i].a == a && found[i].b == b && found[i].c == c)) i++;
+    int fresh = i == nfound && nfound < FIND_MAX;
+    if (fresh) found[nfound++] = (typeof(found[0])){a, b, c, d};
+    int k = nfound;
+    __atomic_store_n(&find_lock, 0, __ATOMIC_RELEASE);
+    if (!fresh) return;
+    char line[160];
+    if (romfs) snprintf(line, sizeof line, "romfs %llx f64 mod=0.016666666666666666 d130_%d\n", (unsigned long long)a, k);
+    else snprintf(line, sizeof line, "oodle %llu %llu %llx %llx f64 mod=0.016666666666666666 d130_%d\n",
+                  (unsigned long long)d, (unsigned long long)a, (unsigned long long)b, (unsigned long long)c, k);
+    FILE *fp = fopen("game/data_find.txt", "a");
+    if (fp) fputs(line, fp), fclose(fp);
+    if (k <= 64) rt_log("data find: double 1/30 %s (#%d)", romfs ? "in a stored RomFS file" : "in an Oodle-packed file", k);
+}
+
+static void find_in(int romfs, const uint8_t *p, uint64_t n, uint64_t base, uint64_t unpacked, uint64_t print,
+                    uint64_t packed) {
+    for (uint64_t i = 0; i + 8 <= n; i++) {
+        if (p[i + 7] != 0x3F || p[i + 6] != 0xA1) continue;
+        uint64_t v;
+        memcpy(&v, p + i, 8);
+        if (v != D130) continue;
+        if (romfs) find_note(1, base + i, 0, 0, 0);
+        else find_note(0, unpacked, print, i, packed);
     }
 }
 
 // A read of n bytes at byte offset off of romfs.bin landed in buf.
 void data_patch_read(uint64_t off, void *buf, uint64_t n) {
+    if (find_on) find_in(1, buf, n, off, 0, 0, 0);
     if (!nfields || off >= hi || off + n <= lo) return;
     int i = 0, j = nfields;
     while (i < j) {   // first field at or after off
@@ -175,7 +232,7 @@ void data_patch_read(uint64_t off, void *buf, uint64_t n) {
     }
     for (; i < nfields; i++) {
         Field *f = &fields[i];
-        uint64_t w = f->type == 'h' || f->type == 'H' ? 2 : 4;
+        uint64_t w = width(f);
         if (f->at + w > off + n) break;
         scale(f, (uint8_t *)buf + (f->at - off));
         uint64_t k = __atomic_add_fetch(&applied, 1, __ATOMIC_RELAXED);
@@ -193,9 +250,13 @@ void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, 
         dry = e && *e && strcmp(e, "0");
     }
     uint64_t print = 0, print_head = 0;
+    if (find_on) {
+        uint64_t head = packed_n < 4096 ? packed_n : 4096;
+        find_in(0, out, n, 0, n, fnv1a64(packed, head), packed_n);
+    }
     for (int i = 0; i < ndecoded; i++) {
         Field *f = &decoded[i];
-        uint64_t head = f->packed < 4096 ? f->packed : 4096, w = f->type == 'h' || f->type == 'H' ? 2 : 4;
+        uint64_t head = f->packed < 4096 ? f->packed : 4096, w = width(f);
         if (f->unpacked != n || packed_n < head || f->at + w > n) continue;
         if (print_head != head) print = fnv1a64(packed, head), print_head = head;
         if (print != f->print) continue;
