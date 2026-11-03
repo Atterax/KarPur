@@ -34,6 +34,9 @@ Sets (switched with their TOTK_ variable):
   dynres_full (off by default; TOTK_DYNRES_FULL=1, test) main+0xbd7014 and +0xbd7020: the pair 1280x720 (the lower
            bound of the dynamic resolution, it seems) becomes 1920x1080, as in a third-party 3.0.1 quality patch.
 
+  interval_one (off by default; TOTK_INTERVAL_ONE=1, test) main+0x2b7a874: `add w1, w20, #1` becomes `movz w1, #1`,
+           the argument of a virtual call in the frame-mode function, as in a third-party 3.0.1 60 fps patch.
+
 Tried and dropped: the 30 fps frame time and vsync count in main+0x2b79f60 (no effect on the interval or the speed).
 
 tools/lift.py uses build/fps_patches.txt by itself when the file exists.
@@ -59,7 +62,7 @@ EXEFS = ROOT / 'game' / 'extracted' / 'update' / 'exefs'
 
 
 def describe(w):
-    """Short text of a 64-bit or SIMD 32-bit LDR (immediate) or move-wide word for the mismatch report."""
+    """Short text of a 64-bit or SIMD 32-bit LDR (immediate), move-wide or ADD (immediate) word for the report."""
     if (w & 0xFFC00000) == 0xBD400000:
         return f'ldr s{w & 31}, [x{(w >> 5) & 31}, #{((w >> 10) & 0xFFF) * 4:#x}]'
     if (w & 0xFFC00000) == 0xF9400000:
@@ -67,6 +70,8 @@ def describe(w):
     if (w & 0x1F800000) == 0x12800000:
         name = {0: 'movn', 2: 'movz', 3: 'movk'}.get((w >> 29) & 3, 'move-wide')
         return f'{name} {"x" if w >> 31 else "w"}{w & 31}, #{(w >> 5) & 0xFFFF:#x} lsl {16 * ((w >> 21) & 3)}'
+    if (w & 0x7F800000) == 0x11000000:
+        return f'add {"x" if w >> 31 else "w"}{w & 31}, {"x" if w >> 31 else "w"}{(w >> 5) & 31}, #{(w >> 10) & 0xFFF:#x}'
     return 'another kind of instruction'
 
 
@@ -134,8 +139,11 @@ SITES = [
     # bound to 1920x1080
     ('dynres_full', 'TOTK_DYNRES_FULL', 0, 0xbd7014, movz_x(8, 0x500, 0), [movz_x(8, 0x780, 0)]),
     ('dynres_full', 'TOTK_DYNRES_FULL', 0, 0xbd7020, movz_x(8, 0x2D0, 0), [movz_x(8, 0x438, 0)]),
+    # interval_one (test): main+0x2b7a874 `add w1, w20, #1` (w20 read from [x10, #0x20]) is the argument of a virtual
+    # call in the frame-mode function main+0x2b79f60; the third-party 3.0.1 60 fps patch sets w1 = 1 at this offset
+    ('interval_one', 'TOTK_INTERVAL_ONE', 0, 0x2b7a874, 0x11000000 | 1 << 10 | 20 << 5 | 1, [movz_w(1, 1, 0)]),
 ]
-OPTIONAL = {'lod_bias', 'data_watch', 'step_ten', 'indoor_fix', 'dynres_full'}
+OPTIONAL = {'lod_bias', 'data_watch', 'step_ten', 'indoor_fix', 'dynres_full', 'interval_one'}
 OODLE_DECOMPRESS = 0xcc8750   # main offset of OodleLZ_Decompress in 4.0.0 (calls.py --string oodle, 2026-11-02)
 PAGE_OODLE_HOST = 0xfd0       # patch page offset of the host wrapper (runtime/data_watch.c)
 

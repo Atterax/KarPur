@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: indoor_fix ohne Wirkung; dynres_full vielleicht etwas schärfer; Test interval_one
+- `INDOOR_FIX=1`: Figur ruckelt im Gebäude weiter.
+- `DYNRES_FULL=1`: Maintainer meint, die Auflösung sei „ein bisschen besser“ (nicht sicher, Screenshot nachts). Das Overlay kann es nicht zeigen: Die Pass-Zählung (`vk_exec.c`) misst die Größe der Render-Ziele, nicht den Viewport; eine dynamische Auflösung zeichnet meist nur in einen Teil des Ziels. Für später: Viewport-Größe des Szenen-Pass messen.
+- Neu: optionaler Satz `interval_one` (`TOTK_INTERVAL_ONE=1`): `main+0x2b7a874` `add w1, w20, #1` → `movz w1, #1` (Argument eines virtuellen Aufrufs im Bildmodus, wie der 3.0.1-Patch).
+
 ### 2026-11-02: 4.0.0-Gegenstücke der Fl4sh-Patches; Testsätze indoor_fix und dynres_full
 - `calls.py --insn` in 4.0.0:
   - `0x20a8d38/3c`: `movz w8, #0x5000` / `movk w8, #0x4743, lsl #16` = **50000.0f**, danach `fmov s1, w8`, FP-Vergleich, `b.cond`. Der Patch macht daraus 96.15625f (oberer Teil 0x42c0). **Gleiche Stelle wie in 3.0.1.**
