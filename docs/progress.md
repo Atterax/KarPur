@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Video-Ton da, aber nur rechts
+- Mit der Voice-Absicherung: **Ton im Intro-Video hörbar**, aber nur auf dem rechten Kanal. Zählung: 1 Eintrag in Benutzung (Index 0, id 0), PCM16 stereo 48 kHz, spielt. Bestätigt die Ursache: unbenutzte Einträge mit id 0 setzten die Stimme zurück.
+- Gleiche Ursache vermutet bei den Kanal-Ressourcen (Mix-Lautstärken je Kanal): Ein unbenutzter Eintrag mit id 0 überschreibt den linken Kanal der Stimme (id 0) mit Nullen, der rechte (id 1) bleibt. Gleiche Absicherung in `request_update` für die Kanal-Ressourcen.
+
 ### 2026-11-03: Bink legt die Stimme richtig an; Verdacht: Renderer überschreibt sie
 - `KARPUR_WATCH` auf nn::audio: Beim Start `AcquireFinalMix` (6 Kanäle) und `AddDeviceSink` (main+0x20da0/0x20dd8). Zur Sequenz: `AcquireMemoryPool` (0xa000 Byte) + `RequestAttachMemoryPool` → 1, **`AcquireVoiceSlot(48000 Hz, 2 Kanäle, PCM16)` → 1**, `AppendWaveBuffer` → 1, `SetVoicePlayState(Started)`, später Paused, dann Stopped (main+0x2157c … 0x21870). Bink macht also alles richtig, der Renderer sah trotzdem 0 Stimmen in Benutzung.
 - Verdacht: `request_update` ordnet jeden Eintrag über seine id zu; unbenutzte Einträge mit derselben id (z. B. 0) setzen die Bink-Stimme in derselben Aktualisierung wieder zurück.

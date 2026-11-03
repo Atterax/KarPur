@@ -231,8 +231,16 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     take(&in, h.render_info, "render info");
     need(in.p == in.end, "unconsumed update input");
 
-    for (uint32_t i = 0; i < h.voice_resources / sizeof(AudrenChannelIn); i++) {
+    // KarPur: as for voices below, an unused channel resource must not overwrite a used one of this update with the
+    // same id: the movie's stereo voice played on the right only, its left channel's mix volumes zeroed by an unused
+    // entry with id 0 (docs/progress.md 2026-11-03).
+    const uint32_t nch = (uint32_t)(h.voice_resources / sizeof(AudrenChannelIn));
+    uint8_t ch_used[1024 * 6] = {0};
+    for (uint32_t i = 0; i < nch; i++)
+        if (chans[i].in_use && chans[i].id < sizeof ch_used) ch_used[chans[i].id] = 1;
+    for (uint32_t i = 0; i < nch; i++) {
         need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
+        if (!chans[i].in_use && ch_used[chans[i].id]) continue;
         r->channels[chans[i].id] = chans[i];
     }
     // KarPur: an entry not in use must not reset a voice that another entry of this update uses under the same id.
