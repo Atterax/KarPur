@@ -741,6 +741,7 @@ NVN_API(nvnQueuePresentTexture) {
     o->avail[idx] = slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     value_scan_present(o->presents);         // KarPur value_scan.c: TOTK_VALUE_SCAN, TOTK_POKE
+    coverage_present(o->presents);           // KarPur coverage.c: TOTK_COVERAGE
     frame_dt_present();                      // KarPur frame_dt.c: the measured frame time for set fps_dt
     rt_frame_presented(t, o->presents);
 }

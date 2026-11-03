@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Szenen-Mitschnitt (TOTK_COVERAGE)
+- Erster Baustein für den nativen Weg: `runtime/coverage.c`. Der Generator schreibt in jede Funktion `FN_ENTER`, das bei gesetztem `g_fnprof` `fnprof_hit` ruft (bisher leer in `main.c`). Mit `TOTK_COVERAGE=1` markiert die Runtime jede ausgeführte Funktion von main pro Phase (16-Bit-Maske je Instruktionswort). F5 startet die nächste Phase (Boot = 0, bis 16), F4 schreibt die Listen (auch beim Beenden): `game/coverage/phases.txt` (Phase, Start-Present, Funktionen, neu, nur hier) und `game/coverage/functions.txt` (main-Offset, Maske). Nur Adressen und Zahlen. Kostet fps (ein Aufruf pro Funktion); erfasst ab dem ersten Present.
+- Nächster Schritt: ein Werkzeug, das die Offsets einer Phase mit Namen und Hinweisen versieht (SDK-Symbole, referenzierte Strings, Aufrufer), z. B. „nur im Charakter-Editor“.
+
 ### 2026-11-03: Flacker-Fix zurückgenommen; Resizable BAR ohne Platzierung; Richtung nativer Port
 - Bericht: Resizable BAR an (Speichertyp 4 device-local + host-visible, Heap 15977 MiB), aber der NVIDIA-Treiber bietet `VK_EXT_map_memory_placed` nicht an. Ohne Einblenden an der festen Gastadresse landen die CPU-Schreibzugriffe nicht im VRAM; die Idee entfällt in dieser Form.
 - `HOT_KB=4 HOT_COOL=300` (aus importiertem Speicher): fps sinken von Anfang an.
