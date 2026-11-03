@@ -25,6 +25,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
+#include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
@@ -466,6 +467,31 @@ typedef struct ViewNode { struct ViewNode *next; ViewKey k; VkImageView view; } 
 static nvn_hmap view_of;                 // ViewKey -> VkImageView
 static nvn_hmap views_by_image;          // VkImage -> its first ViewNode
 
+// KarPur: the UNORM and sRGB formats of the same bytes; a sampled view takes the view format the game set when it is the
+// other one of such a pair (TOTK_VIEW_SRGB=0 keeps the image's). Violet renders the Pokedex and wardrobe models into an
+// sRGB target and samples it through an RGBA8 UNORM view (no decode); read as sRGB they came out darker and too
+// saturated (docs/progress.md 2026-11-03).
+static int srgb_pair(VkFormat a, VkFormat b) {
+    static const VkFormat p[][2] = {
+        {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB}, {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB},
+        {VK_FORMAT_A8B8G8R8_UNORM_PACK32, VK_FORMAT_A8B8G8R8_SRGB_PACK32},
+        {VK_FORMAT_BC1_RGB_UNORM_BLOCK, VK_FORMAT_BC1_RGB_SRGB_BLOCK}, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_FORMAT_BC1_RGBA_SRGB_BLOCK},
+        {VK_FORMAT_BC2_UNORM_BLOCK, VK_FORMAT_BC2_SRGB_BLOCK}, {VK_FORMAT_BC3_UNORM_BLOCK, VK_FORMAT_BC3_SRGB_BLOCK},
+        {VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC7_SRGB_BLOCK}};
+    for (unsigned i = 0; i < sizeof p / sizeof *p; i++)
+        if ((a == p[i][0] && b == p[i][1]) || (a == p[i][1] && b == p[i][0])) return 1;
+    return 0;
+}
+
+static VkFormat sampled_format(const VkTexImage *img, const view_t *v, int hv) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("VIEW_SRGB", "1");
+    TexVkFormat b;
+    if (!on || !hv || !v->set_format || !tex_vk_format(v->format, &b) || b.vk != b.ideal || !srgb_pair(img->format, b.vk))
+        return img->format;
+    return b.vk;
+}
+
 // An image view of a registered texture for a shader resource of type `rtype` (GfxShaderRes.type); VK_NULL_HANDLE when
 // the image cannot serve it (the caller binds a stand-in). Texture lock held.
 static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage) {
@@ -517,12 +543,13 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
             }
     }
     uint32_t swz = (uint32_t)sw[0] | (uint32_t)sw[1] << 8 | (uint32_t)sw[2] << 16 | (uint32_t)sw[3] << 24;
-    ViewKey k = {img->image, img->format, vt, aspect, l0, nl, y0, ny, swz};
+    VkFormat vfmt = storage ? img->format : sampled_format(img, v, hv);
+    ViewKey k = {img->image, vfmt, vt, aspect, l0, nl, y0, ny, swz};
     if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
     VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
     if (found) return found;
     VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image, .viewType = vt,
-                                .format = img->format,
+                                .format = vfmt,
                                 .components = {swz_of(sw[0]), swz_of(sw[1]), swz_of(sw[2]), swz_of(sw[3])},
                                 .subresourceRange = {aspect, l0, nl, y0, ny}};
     VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,

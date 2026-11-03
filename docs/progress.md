@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Dunkle 3D-Modelle in Menüs: sRGB-Ansicht beim Sampeln ignoriert
+- Maintainer: In Pokédex, Umkleide und allen Menüs mit 3D-Modellen sind Figuren zu dunkel, seit Anfang an; ebenso 30 fps dort (GPU ~28 ms), seit Anfang an. `MEMORY=import`: unverändert dunkel (keine Spiegel-Ursache).
+- `DUMP=f9` im Pokédex: Raichu wird in ein `rgba8srgb` 1440x600-Ziel gezeichnet (pass 0048, PNG hell und richtig) und von der Oberfläche (pass 0141) über eine Ansicht mit `view-nvn-fmt 0x25` (RGBA8 UNORM) gesampelt. `get_view` baute Sample-Views immer im Format des Bildes; das sRGB-Bild wurde also dekodiert statt roh gelesen → dunkler und gesättigter.
+- Änderung (Test, mit Freigabe des Maintainers): `vk_exec_draw.c sampled_format` nimmt für Sample-Views das vom Spiel gesetzte Ansichtsformat, wenn es das UNORM/sRGB-Gegenstück des Bildformats ist (RGBA8, BGRA8, ABGR8, BC1/2/3/7). `TOTK_VIEW_SRGB=0` schaltet es ab.
+
 ### 2026-11-03: Regenbogen-Stämme und 30 fps: BC-Storage und Block-View-Alias zurückgenommen
 - Maintainer (Nacht, Wald): Baumstämme mit Regenbogen-Mustern (Korrektur des Maintainers: **gehören so**, bemalte Bäume im Spiel), 30 fps draußen (GPU busy ~28 ms); in Pokédex und Umkleide sind die 3D-Modelle zu dunkel (eigenes Thema, Bild 4 zeigt die normale Helligkeit draußen), dort ebenfalls 30 fps.
 - Die Rücknahme bleibt trotzdem: die beiden Änderungen beim Ausweis-Foto haben nichts gebracht: Block-View-Alias (auch aus freigegebenen Texturen: an wiederverwendetem Speicher landete fremder Inhalt in neuen BC-Texturen) und STORAGE-Nutzung für BC-Texturen. Beide zurückgenommen; `WB_ONESHOT` (die eigentliche Foto-Lösung) bleibt.
