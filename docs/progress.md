@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Flacker-Fix zurückgenommen; Resizable BAR ohne Platzierung; Richtung nativer Port
+- Bericht: Resizable BAR an (Speichertyp 4 device-local + host-visible, Heap 15977 MiB), aber der NVIDIA-Treiber bietet `VK_EXT_map_memory_placed` nicht an. Ohne Einblenden an der festen Gastadresse landen die CPU-Schreibzugriffe nicht im VRAM; die Idee entfällt in dieser Form.
+- `HOT_KB=4 HOT_COOL=300` (aus importiertem Speicher): fps sinken von Anfang an.
+- Auf Wunsch des Maintainers Standards zurück auf den Stand vor dem Flacker-Fix: `HOT_REFRESH` 2, `HOT_KB` 4, `HOT_LATE_SUBS`/`RACE_SUBS` 2; seltenes Baum-Flackern wird hingenommen. Schalter (`HOT_REFRESH=0`, `HOT_COOL`, `HOT_KB`, `*_SUBS`) bleiben für spätere Arbeit.
+- Neue Richtung (Maintainer): Schritt für Schritt verstehen, wie das Spiel arbeitet (Boot, Titel, Intro, Charakter-Editor, …), mit Werkzeugen, die nur Berichte liefern, als Weg zu einem nativen Port.
+
 ### 2026-11-03: HOT_COOL hält den heißen Satz klein, fps sinken trotzdem; Resizable-BAR-Idee
 - `HOT_COOL=300` (64 KiB, aus importiertem Speicher): „hot now“ bleibt bei ~370 Stücken (23 MiB), über 1800 abgekühlt; trotzdem sanken die fps nach einiger Zeit. 2000–3000 Bindungen pro Frame an heiße Stücke: Eine Bindung, die ein heißes Stück berührt, liest den ganzen Bereich über PCIe. Nicht getestet: `HOT_KB=4 HOT_COOL=300`.
 - Maintainer fragt nach DX12: hilft nicht (das Problem ist der getrennte Speicher, nicht die API), Umstieg wäre ein Neubau des Grafikteils samt Shader-Übersetzung nach DXIL. Langfristiges Ziel des Maintainers: ein nativer Port durch Reverse Engineering statt Tricks.
