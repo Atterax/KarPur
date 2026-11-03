@@ -122,6 +122,44 @@ static void size_summary(double frames) {
     cur_psz = -1;
 }
 
+// KarPur: vk_exec_frame summed over its resets, so coverage.c can tell how much each F5 phase replayed.
+static VkExecFrame exec_total;
+// KarPur: time of vk_exec_record on the replay thread: walking the records into Vulkan commands (pipelines, views and
+// barriers made on the way included), and the mirror and uniform snapshot work around it (vk_mem_mirror_*, vk_usnap_*).
+static uint64_t replay_walk_ns, replay_sync_ns;
+
+static void add_total(const VkExecFrame *f) {
+    _Static_assert(sizeof(VkExecFrame) % sizeof(uint64_t) == 0, "VkExecFrame holds uint64_t counters only");
+    const uint64_t *s = (const uint64_t *)f;
+    uint64_t *d = (uint64_t *)&exec_total;
+    for (size_t i = 0; i < sizeof *f / sizeof *s; i++) d[i] += s[i];
+}
+
+// coverage.c (TOTK_COVERAGE, TOTK_HOSTCALLS): the replay totals so far, as named counters. The replay runs on the
+// render thread and these are read at a present, so a phase boundary may move a frame's counts to its neighbour.
+int coverage_gpu_counters(uint64_t *v, const char **names) {
+    static const char *const n[] = {"exec:submits", "exec:passes", "exec:draws seen", "exec:draws", "exec:dispatches",
+                                    "exec:clears", "exec:copies", "exec:calls", "exec:full barriers",
+                                    "shader:keys", "shader:translated", "time:replay walk", "time:replay sync",
+                                    "time:inline copies", "bytes:inline copies"};
+    enum { N = sizeof n / sizeof *n };
+    if (names)
+        for (int i = 0; i < N; i++) names[i] = n[i];
+    if (v) {
+        const VkExecFrame *f = &vk_exec_frame, *t = &exec_total;
+        uint64_t keys = 0, xlated = 0, ins = 0, inb = 0;
+        gfx_shader_counts(&keys, &xlated);
+        nvn_inline_stats(&ins, &inb);
+        const uint64_t x[N] = {t->submits + f->submits, t->passes + f->passes, t->draws_seen + f->draws_seen,
+                               t->draws + f->draws, t->dispatches + f->dispatches, t->clears + f->clears,
+                               t->copies + f->copies, t->calls + f->calls, t->barriers + f->barriers, keys, xlated,
+                               __atomic_load_n(&replay_walk_ns, __ATOMIC_RELAXED),
+                               __atomic_load_n(&replay_sync_ns, __ATOMIC_RELAXED), ins, inb};
+        memcpy(v, x, sizeof x);
+    }
+    return N;
+}
+
 // Without TOTK_TRACE=gfx: the means per frame over the last 600 presents, for finding what makes a frame slow on the
 // GPU (each full barrier lets the GPU run nothing else until all earlier work is done).
 static void frame_summary(uint64_t frame) {
@@ -148,6 +186,7 @@ static void frame_summary(uint64_t frame) {
            f->full_why[VK_HZ_WHY_UNKNOWN] / d, f->full_why[VK_HZ_WHY_FBL] / d, f->full_why[VK_HZ_WHY_FIRST] / d,
            f->full_why[VK_HZ_WHY_SAMPLED] / d, f->game_barriers_tracked / d);
     size_summary(d);
+    add_total(f);
     memset(f, 0, sizeof *f);
     since = frame;
 }
@@ -172,6 +211,7 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
            (unsigned long long)f->fb_layouts, list);
+    add_total(f);
     memset(f, 0, sizeof *f);
     nfw = 0;
 }
@@ -1066,6 +1106,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
         case OP_CALL:
             if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
+            vk_exec_frame.calls++;
             walk(ex, nvn_op_first(((const p_jump *)a)->target), depth + 1);
             break;
         case OP_SET_RT: set_rt(ex, a); break;
@@ -1170,15 +1211,20 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     split_draws = part_start = 0;
     part_t0 = kern_now_ns();
     x_here = 1;
+    uint64_t t0 = kern_now_ns();
     if (n) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
+    uint64_t t1 = kern_now_ns();
     for (int i = 0; i < n; i++) {
         if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
         walk(ex, nvn_op_first(handles[i]), 0);
     }
     vk_exec_pass_end(ex);
     x_here = 0;
+    uint64_t t2 = kern_now_ns();
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory
+    replay_walk_ns += t2 - t1;
+    replay_sync_ns += t1 - t0 + kern_now_ns() - t2;
     if (ex->nviews) {
         ViewList *l = malloc(sizeof *l + sizeof(VkImageView) * (size_t)ex->nviews);
         if (!l) rt_fatal("vk: out of memory");

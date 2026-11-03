@@ -7,8 +7,14 @@
 //   game/coverage/phases.txt   one line per phase: its number, the present it began at, functions seen, functions
 //                              seen in no earlier phase, functions seen in this phase only
 //   game/coverage/functions.txt one line per function of main that ran: main offset (hex) and the phase mask (hex)
-// Addresses and counts only, nothing of the game's code or data; tools turn the offsets into names and reports. The
-// call per function costs frame rate, so it is for analysis runs, not for play. docs/progress.md 2026-11-03.
+//   game/coverage/hostcalls.txt calls per phase of every host function the game called: NVN procs ("nvn:..."), the
+//                              SDK functions the runtime replaces (by symbol) and the runtime's own entry points;
+//                              then the Vulkan replay counters ("exec:draws", "exec:calls", ..., vk_exec.c), which
+//                              show what the recorded command buffers did when they ran, not when they were recorded
+// Addresses, names of host functions and counts only, nothing of the game's code or data; tools turn the offsets into
+// names and reports (tools/phases.py). The call per function costs frame rate, so it is for analysis runs, not for
+// play. TOTK_HOSTCALLS=1 records the host calls alone: hostfn.c counts every call anyway, this file only snapshots
+// the counts at each F5, so that mode costs no frame rate. docs/progress.md 2026-11-03.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +33,19 @@ static uint16_t *mask;           // per instruction word of main
 static uint64_t base, words;
 static volatile int phase;
 static uint64_t phase_frame[MAX_PHASES];
+#define MAX_GPU 32
+static int nhost;                          // host functions registered (fixed once hostfn_seal ran)
+static int ngpu;                           // replay counters of the Vulkan back end, after the host functions
+static const char *gpu_names[MAX_GPU];
+static uint64_t *host_snap[MAX_PHASES];    // counts of both when each phase began; phase 0 counts from the start
+static uint64_t last_frame;
+
+static void snapshot(uint64_t *out) {
+    hostfn_snapshot(out, nhost);
+    if (ngpu) coverage_gpu_counters(out + nhost, NULL);
+}
+
+static const char *counter_name(int i) { return i < nhost ? hostfn_slot_name(i) : gpu_names[i - nhost]; }
 
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
     (void)lr, (void)x0;
@@ -37,8 +56,40 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
     }
 }
 
-static void write_lists(uint64_t frame) {
-    plat_file_mkdir_p("game/coverage");
+static void write_host(uint64_t frame) {
+    int total = nhost + ngpu;
+    uint64_t *now = calloc((size_t)total, sizeof *now);
+    FILE *h = now ? fopen("game/coverage/hostcalls.txt", "w") : NULL;
+    if (!h) {
+        free(now);
+        rt_log("coverage: cannot write game/coverage/hostcalls.txt");
+        return;
+    }
+    snapshot(now);
+    int last = phase < MAX_PHASES ? phase : MAX_PHASES - 1, used = 0;
+    fprintf(h, "# calls per phase (one column per phase, then the host function); KarPur TOTK_COVERAGE/HOSTCALLS\n");
+    fprintf(h, "# presents:");
+    for (int k = 0; k <= last; k++) fprintf(h, " %llu", (unsigned long long)phase_frame[k]);
+    fprintf(h, " %llu\n", (unsigned long long)frame);
+    for (int i = 0; i < total; i++) {
+        uint64_t d[MAX_PHASES], any = 0;
+        for (int k = 0; k <= last; k++) {
+            uint64_t end = k < last ? host_snap[k + 1][i] : now[i];
+            d[k] = end - host_snap[k][i];
+            any |= d[k];
+        }
+        if (!any && i < nhost) continue;   // replay counters are written even when zero
+        used += i < nhost;
+        for (int k = 0; k <= last; k++) fprintf(h, "%llu ", (unsigned long long)d[k]);
+        fprintf(h, "%s\n", counter_name(i));
+    }
+    fclose(h);
+    free(now);
+    rt_log("coverage: %d of %d host functions called, %d replay counters; per phase in game/coverage/hostcalls.txt",
+           used, nhost, ngpu);
+}
+
+static void write_functions(uint64_t frame) {
     FILE *f = fopen("game/coverage/functions.txt", "w"), *p = fopen("game/coverage/phases.txt", "w");
     if (!f || !p) {
         if (f) fclose(f);
@@ -73,32 +124,48 @@ static void write_lists(uint64_t frame) {
                (unsigned long long)only[k]);
 }
 
-static void at_exit(void) {
-    if (mask) write_lists(0);
+static void write_lists(uint64_t frame) {
+    plat_file_mkdir_p("game/coverage");
+    if (mask) write_functions(frame);
+    if (nhost) write_host(frame);
 }
+
+static void at_exit(void) { write_lists(last_frame); }
 
 void coverage_present(uint64_t frame) {
     static int on = -1, was5, was4;
     if (on < 0) {
-        on = rt_knob("COVERAGE", "0");
+        int functions = rt_knob("COVERAGE", "0"), host = functions || rt_knob("HOSTCALLS", "0");
+        on = host;
         if (!on) return;
-        const RtLoaded *m = ldr_module(0);
-        base = m->base, words = m->size >> 2;
-        mask = calloc(words, sizeof *mask);
-        if (!mask) {
-            rt_log("coverage: out of memory");
+        nhost = hostfn_count();   // sealed before the guest ran, so no slot comes later
+        ngpu = coverage_gpu_counters(NULL, NULL);
+        if (ngpu > MAX_GPU) ngpu = 0;
+        else coverage_gpu_counters(NULL, gpu_names);
+        for (int k = 0; k < MAX_PHASES && nhost; k++)
+            if (!(host_snap[k] = calloc((size_t)(nhost + ngpu), sizeof(uint64_t)))) nhost = 0, ngpu = 0;
+        if (functions) {
+            const RtLoaded *m = ldr_module(0);
+            base = m->base, words = m->size >> 2;
+            mask = calloc(words, sizeof *mask);
+            if (!mask) rt_log("coverage: out of memory for the function masks");
+            else g_fnprof = 1;
+            rt_log("coverage: functions of %s (%llu words)", m->name, (unsigned long long)words);
+        }
+        if (!mask && !nhost) {
             on = 0;
             return;
         }
-        g_fnprof = 1;
         atexit(at_exit);
-        rt_log("coverage: on for %s (%llu words); F5 starts the next phase, F4 writes game/coverage", m->name,
-               (unsigned long long)words);
+        rt_log("coverage: on (%s%d host functions); F5 starts the next phase, F4 writes game/coverage",
+               mask ? "functions of main, " : "", nhost);
     }
     if (!on) return;
+    last_frame = frame;
     int fg = ikb_foreground(), k5 = fg && ikb_down(KEY_F5), k4 = fg && ikb_down(KEY_F4);
     if (k5 && !was5 && phase + 1 < MAX_PHASES) {
         phase_frame[phase + 1] = frame;
+        if (nhost) snapshot(host_snap[phase + 1]);
         __atomic_store_n(&phase, phase + 1, __ATOMIC_RELEASE);
         rt_log("coverage: phase %d begins at present %llu (F5)", phase, (unsigned long long)frame);
     }

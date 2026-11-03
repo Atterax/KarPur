@@ -418,8 +418,17 @@ NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 // so a handle may be gone by the time the caller is submitted. Deferred binds stay deferred. A copy is OP_BEGIN, its
 // records and OP_END (flatten_recording checked them), so the records go over as one block; usage grows by the same
 // bytes as record by record.
+// KarPur: time and bytes of these copies over all recording threads, for coverage.c (vk_exec.c coverage_gpu_counters).
+static uint64_t inline_ns, inline_bytes;
+
+void nvn_inline_stats(uint64_t *ns, uint64_t *bytes) {
+    *ns = __atomic_load_n(&inline_ns, __ATOMIC_RELAXED);
+    *bytes = __atomic_load_n(&inline_bytes, __ATOMIC_RELAXED);
+}
+
 static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
     if (!handle) rt_fatal("nvn: %s with a null handle", what);
+    uint64_t t0 = kern_now_ns();
     uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what);
     if (bytes <= 16) return;
     size_t body = (size_t)bytes - 16;
@@ -429,6 +438,8 @@ static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
     o->cmd_used += body;
     o->hw_used += body;
     o->last_rec = 0;
+    __atomic_fetch_add(&inline_ns, kern_now_ns() - t0, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&inline_bytes, body, __ATOMIC_RELAXED);
 }
 // void nvnCommandBuffer{Call,Copy}Commands(NVNcommandBuffer *cmd, int n, const NVNcommandHandle *handles)
 NVN_API(nvnCommandBufferCallCommands) {

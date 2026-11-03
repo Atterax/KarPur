@@ -187,6 +187,16 @@ uint64_t hostfn_calls(void) {
     return n;
 }
 
+int hostfn_count(void) { return nslots; }
+
+const char *hostfn_slot_name(int i) { return i >= 0 && i < nslots ? slots[i].name : NULL; }
+
+// KarPur: the running call counts, read without stopping the guest; coverage.c takes one at every phase change and
+// reports the differences, so the per-phase counts cost nothing on the call path.
+void hostfn_snapshot(uint64_t *out, int n) {
+    for (int i = 0; i < n && i < nslots; i++) out[i] = __atomic_load_n(&slots[i].calls, __ATOMIC_RELAXED);
+}
+
 static int by_calls(const void *a, const void *b) {
     uint64_t x = (*(const Slot *const *)a)->calls, y = (*(const Slot *const *)b)->calls;
     return x < y ? 1 : x > y ? -1 : 0;

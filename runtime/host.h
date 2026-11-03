@@ -114,6 +114,9 @@ const char *hostfn_name(uint64_t addr);                    // name registered at
 void hostfn_seal(void);                                    // build the dispatch table (rt_dispatch_init over every
                                                            // linked module); idempotent; registration ends here
 uint64_t hostfn_calls(void);                               // host-function calls so far, all threads
+int hostfn_count(void);                                    // registered host functions (slots); fixed after hostfn_seal
+const char *hostfn_slot_name(int i);                       // name of slot i, NULL past the end
+void hostfn_snapshot(uint64_t *out, int n);                // call counts of the first n slots (coverage.c phases)
 void hostfn_report(void);                                  // call count per host function to stderr, busiest first
 int hostfn_table_size(int observers);                      // linked HOST_OVERRIDE (0) / HOST_OBSERVER (1) entries
 const char *hostfn_table_name(int observers, int i);       // symbol of linked entry i, NULL past the end
@@ -183,6 +186,8 @@ void data_watch_init(void);                                // KarPur data_watch.
 void frame_dt_init(void);                                  // KarPur frame_dt.c: from rt_patches_init
 void frame_dt_present(void);                               // KarPur frame_dt.c: before each present
 void coverage_present(uint64_t frame);                     // KarPur coverage.c: TOTK_COVERAGE, before each present
+int coverage_gpu_counters(uint64_t *v, const char **names); // vk_exec.c: replay totals (v) and their names; returns the
+                                                           // count; either pointer may be NULL
 void value_scan_present(uint64_t frame);                   // KarPur value_scan.c: before each present
 uint64_t ldr_symbol(const char *name);                     // exported definition, 0 if none
 uint64_t ldr_plt_stub(const char *module, const char *name); // PLT stub whose GOT slot holds name, 0 if none

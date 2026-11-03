@@ -162,6 +162,7 @@ enum { VK_HZ_WHY_OFF, VK_HZ_WHY_OTHER, VK_HZ_WHY_UNKNOWN, VK_HZ_WHY_FBL, VK_HZ_W
 // as means every 600 frames (vk_exec_frame_log).
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
+    uint64_t calls;      // KarPur: OP_CALL replayed (nvnCommandBufferCallCommands: a recorded command handle run again)
     uint64_t barriers;   // full barriers recorded (pass starts, clears, copies, dispatches: each waits for all before)
     uint64_t light_barriers, deferred, hz_restarts;   // barrier tracking: attachment-only barriers, passes and clears
                                                       // without a full barrier, passes restarted for a sampled write
