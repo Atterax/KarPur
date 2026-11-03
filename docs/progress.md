@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Flackern kam mit 64 KiB wieder; Test HOT_REFRESH=0
+- Mit 64 KiB (Standard) flackerte es in einem späteren Lauf doch wieder (350 heiße Stücke, 13,4 MiB/Frame kopiert, 0,6 Stücke/Frame während des GPU-Laufs beschrieben). Es bleibt ein Wettlauf: Schreibzugriffe während des GPU-Laufs kann der Spiegel nicht rechtzeitig haben.
+- `HOT_REFRESH=0` (heiße Stücke aus importiertem Speicher gebunden, die GPU liest beim Ausführen), 4 Neustarts, Frame 1800: 87–175 heiße Stücke (5–11 MiB), **~1600–2000 Bindungen pro Frame** an heiße Stücke, Upload nur noch 2,5–2,8 MiB/Frame, nichts nachkopiert. Ergebnis zu Flackern und fps steht aus.
+
 ### 2026-11-03: Baum-Flackern nach dem Laden behoben: heiße Stücke 64 KiB (Standard)
 - `RACE_SUBS=1 HOT_LATE_SUBS=1`: extremes Flackern nach dem Laden; heiße Stücke bleiben bei ~1100 (4,3 MiB). Schneller lernen allein hilft nicht.
 - `HOT_KB=64`: **kein Flackern nach dem Laden, keins nach langen Reisen, keine kaputten Bäume/Palmen** (Maintainer). Frame 1800: 449 heiße Stücke (28,1 MiB), 12,6 MiB/Frame nachkopiert.
