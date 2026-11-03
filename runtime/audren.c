@@ -399,20 +399,33 @@ static IpcBuffer pick(const IpcBuffer *a, unsigned na, const IpcBuffer *b, unsig
 // docs/progress.md 2026-11-03). Numbers only.
 static void census(AudioRenderer *r) {
     static int on = -1;
-    static uint64_t t0, seen;   // seen: kinds (format * 8 + channels) that played in this window
-    static int peak, kinds_rate[64];
+    static uint64_t t0, seen, updates;   // seen: kinds (format * 8 + channels) that played in this window
+    static int peak, kinds_rate[64], used_peak, st_peak[4], ps_peak[4], pend_peak, valid_peak;
     if (on < 0) on = rt_knob("AUDIO_CENSUS", "0");
     if (!on) return;
-    int playing = 0;
+    int playing = 0, used = 0, st[4] = {0}, ps[4] = {0}, pend = 0, valid = 0;
+    updates++;
     for (int i = 0; i < r->param.voice_count; i++) {
         const ServerVoice *v = &r->voices[i];
-        if (!v->in.in_use || v->state != SV_STARTED) continue;
+        if (!v->in.in_use) continue;
+        used++;
+        st[v->state & 3]++;
+        ps[v->in.play_state & 3]++;
+        for (int b = 0; b < 4; b++) pend += v->pending[b] != 0, valid += v->valid[b] != 0;
+        if (v->state != SV_STARTED) continue;
         playing++;
         int k = (v->in.sample_format & 7) * 8 + (v->in.channel_count & 7);
         seen |= 1ull << k;
         kinds_rate[k] = (int)v->in.sample_rate;
     }
     if (playing > peak) peak = playing;
+    if (used > used_peak) used_peak = used;
+    if (pend > pend_peak) pend_peak = pend;
+    if (valid > valid_peak) valid_peak = valid;
+    for (int k = 0; k < 4; k++) {
+        if (st[k] > st_peak[k]) st_peak[k] = st[k];
+        if (ps[k] > ps_peak[k]) ps_peak[k] = ps[k];
+    }
     uint64_t now = kern_now_ns();
     if (!t0) t0 = now;
     if (now - t0 < 5000000000ull) return;
@@ -420,8 +433,13 @@ static void census(AudioRenderer *r) {
     size_t o = 0;
     for (int k = 0; k < 64 && o < sizeof kinds - 40; k++)
         if (seen >> k & 1) o += (size_t)snprintf(kinds + o, sizeof kinds - o, " fmt%d/%dch/%dHz", k / 8, k % 8, kinds_rate[k]);
-    rt_log("audio census: renderer %p: up to %d voices playing in the last 5 s;%s", (void *)r, peak, o ? kinds : " none");
-    t0 = now, peak = 0, seen = 0;
+    rt_log("audio census: renderer %p: up to %d voices playing in the last 5 s;%s; %llu updates, up to %d voices in use "
+           "(server state stopped/started/paused/stopping up to %d/%d/%d/%d, requested play state started/stopped/paused "
+           "up to %d/%d/%d), wave buffers waiting up to %d, queued up to %d, renderer state %u", (void *)r, peak,
+           o ? kinds : " none", (unsigned long long)updates, used_peak, st_peak[0], st_peak[1], st_peak[2], st_peak[3],
+           ps_peak[0], ps_peak[1], ps_peak[2], pend_peak, valid_peak, r->state);
+    t0 = now, peak = 0, seen = 0, updates = 0, used_peak = 0, pend_peak = 0, valid_peak = 0;
+    memset(st_peak, 0, sizeof st_peak), memset(ps_peak, 0, sizeof ps_peak);
 }
 
 static void renderer_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {

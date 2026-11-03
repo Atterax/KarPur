@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Video-Ton läuft über den Audio-Renderer, dort spielt keine Stimme
+- Zählung: Der ganze Spielton (Wwise o. Ä.) kommt über **AudioOut** (235 Puffer/5 s, PCM16 stereo). Während der 1:20-Bink-Sequenz liefert AudioOut fast nur Stille (lautestes Sample 0; einmal ~3800 = das hörbare Logo-Geräusch).
+- Der **Audio-Renderer** (beim Start geöffnet, 32 Stimmen) bekommt **nur während der Sequenz** RequestUpdates, meldet aber „up to 0 voices playing“. Der Video-Ton geht also an den Renderer, und unser Renderer spielt ihn nicht ab.
+- Zählung erweitert: Stimmen in Benutzung, Server-Zustand und vom Spiel gewünschter Abspielzustand, wartende/aktive Wave-Buffer, Zustand des Renderers (gestartet/gestoppt).
+- Ausweis: das Figurenbild ist ein schwarzes Rechteck; keine passende „skipped/unsupported“-Meldung im Log.
+
 ### 2026-11-03: Erster Bericht Ton/Ausweis; Audio-Zählung
 - Log: ein Audio-Renderer (48 kHz, 32 Stimmen, 1 Sink, REV10) und ein AudioOut (wird geöffnet, ohne Fehler). Keine Meldungen zu album/capsrv/jpeg; `uncovered-imports.txt` nennt nur nn::audio-Clientfunktionen (laufen über unsere audren:u-IPC bzw. als Rechenfunktionen im SDK). Das Ausweis-Foto entsteht also wohl rein auf der GPU.
 - Neu: `TOTK_AUDIO_CENSUS=1`: alle 5 s je Renderer die meisten gleichzeitig spielenden Stimmen mit Art (Format/Kanäle/Rate) und je AudioOut Puffer, Frames und lautestes Sample. Damit ist zu sehen, welcher Weg während der Bink-Sequenz Daten bekommt und ob sie still sind.
