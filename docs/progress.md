@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Halbierung float/double 1/30 im Gebäude: ein F6, Gegenprobe negativ
+- `POKE_SCAN=f32:0-100,d64:0-100` (66 float- und 25 double-Treffer in diesem Lauf): F7, F7, **F6** (bei 11 double-Treffern `0x5d057b8d8 .. 0x5e071f4d0`), dann F7 bis `double 1/30 at 0x5e071f4d0`. Maintainer: „manchmal gut“.
+- Gegenprobe `POKE=0x5e071f4d0=d:1/60` allein: ruckelt wieder. Die Adressen der Treffer wechseln zum Teil zwischen Läufen (`0x5d05bb8d8` vorher, `0x5d057b8d8` jetzt); `0x5e071f4d0` war in beiden Läufen dabei.
+- Unklar: Fehlurteil beim F6, oder der Schritt liegt in einem der anderen 10 Treffer. Nächster Lauf: nur double (`POKE_SCAN=d64:0-100`), pro Schritt 10 s laufen.
+
 ### 2026-11-03: Speichersuche im Gebäude: 33333334 ns ist es nicht
 - Suche auf F9 im Klassenzimmer (Present 2290): float 1/30 57 Treffer (alle 57 nach 300 Presents noch da), float 30.0 13833 (wohl Animationsdaten), double 1/30 24 (22 bleiben), int32 33333334 ns 0, int64 33333334 ns 9 (bei `0x617e7a230/240` und sieben in Folge ab `0x6187262d8`, Abstand 16 Byte: eine Tabelle).
 - Halbierung über die 9 int64-Treffer: in jeder Hälfte F7, nichts sonst auffällig.
