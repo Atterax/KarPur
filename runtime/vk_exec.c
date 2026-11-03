@@ -424,6 +424,7 @@ static void resolve_target(const tex_t *t, const view_t *v, int has_v, int depth
             return;
         }
         nvn_fmt = v->format;
+        if (vk_dump_armed) vk_dump_block_target(t->d.width, t->d.height);
         if (layers > 1) {   // an uncompressed view of a BC image has one layer (no maintenance6 here)
             warn_once(W_BLOCK_LAYERS, "render target format %#x: block view of %u layers, first layer only", t->d.format,
                       layers);

@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto ist eine BC1-Textur 1440x864, von der GPU geschrieben
+- `DUMP=f9` beim Ausweis (`passes.txt`, Frame 927): Die Ausweis-Passes (rgba8srgb 1920x1080) samplen u. a. **tex 577 BC1 (vk 133) 1440x864, 1 Level, mirrored 0, gpu_owned 1, uploads 0** an `0x5ef463600`, sonst nur kleine BC-UI-Texturen und den Font-Atlas. Kein Porträt-Render-Ziel in diesem Bild; die Figur ist in keinem PNG. Das Foto wird also einmal gerendert und mit einem Shader nach BC1 komprimiert (die Runtime kann BC-Texturen über Block-Views als Render-Ziel nehmen, `vk_exec.c`), danach nur noch gesampelt; es kommt schwarz an.
+- Neu: `TOTK_DUMP=bc[:WxH]` startet den Bild-Mitschnitt in dem Pass, in dem eine BC-Textur (≥256 breit oder genau WxH) zum ersten Mal über eine Block-View gezeichnet wird: zeigt, was die Kompression liest.
+- Vorsorglich: `vk_texture.c` übernimmt jetzt auch Inhalt zwischen **Block-Views** mit eigenem Deskriptor (BC und eine unkomprimierte Textur mit einem Texel pro Block, gleiche Bytes, z. B. BC1 1440x864 ↔ RG32UI 360x216), auch von einer freigegebenen Textur vor deren Abbau. Log `vk: block view alias: …` (bis 16).
+
 ### 2026-11-03: Ausweis-Foto: keine Alias- oder Kopier-Fehlschläge; Bild-Mitschnitt per F9
 - `ALIAS_LOG=1`: keine einzige Zeile. Auch keine Kopier-Warnungen („copy … skipped“) im Log.
 - `TOTK_DUMP=f9` (`vk_dump.c`): der Bild-Mitschnitt startet beim Druck auf F9 statt bei einer festen Bildnummer. Standardordner jetzt `game/framedump` (ignoriert; die PNGs zeigen das Spiel). `passes.txt` nennt je Pass die Ziele und die gebundenen Texturen mit Größe, Format, Adresse, Spiegel-Zustand und Upload-Zahl: damit ist zu sehen, woher die Textur des Ausweis-Fotos kommt (von der GPU gezeichnet oder vom CPU hochgeladen).

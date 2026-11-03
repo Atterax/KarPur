@@ -865,11 +865,27 @@ out:
 
 static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
-static int dump_on_key;   // TOTK_DUMP=f9: the frame after an F9 press in the game window (KarPur)
+static int dump_on_key;   // TOTK_DUMP=f9: the frame after an F9 press in the game window (KarPur); 3: TOTK_DUMP=bc
+static uint32_t bc_w, bc_h;   // TOTK_DUMP=bc:WxH: only a BC target of that size starts the dump
+
+// TOTK_DUMP=bc[:WxH] (KarPur): the frame in which a BC texture (at least 256 wide, or WxH) is first drawn through a
+// block view is dumped from that pass on: a game that compresses a one-off render (Violet's trainer card photo)
+// shows there which texture the compression reads.
+void vk_dump_block_target(uint32_t w, uint32_t h) {
+    if (dump_on_key != 3 || (bc_w ? w != bc_w || h != bc_h : w < 256)) return;
+    dump_on_key = 2;
+    dump_frame = frame_now();
+    rt_log("vk_dump: BC target %ux%u drawn: frame %llu goes to %s from this pass on", w, h,
+           (unsigned long long)dump_frame, dir);
+}
 
 void vk_dump_init(void) {
     const char *e = cfg_get("TOTK_DUMP");
     if (e && !strcmp(e, "f9")) dump_on_key = 1, dump_frame = UINT64_MAX;
+    if (e && !strncmp(e, "bc", 2)) {
+        dump_on_key = 3, dump_frame = UINT64_MAX;
+        if (e[2] == ':') sscanf(e + 3, "%ux%u", &bc_w, &bc_h);
+    }
     if (!e || !*e || !(dump_frame || (dump_frame = strtoull(e, NULL, 10)))) return;
     const char *lf = cfg_get("TOTK_DUMP_LOG");
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
@@ -906,7 +922,8 @@ void vk_dump_init(void) {
         if (bd_size && !(bufs_f = fopen(path, "w"))) bd_size = 0;
     }
     vk_dump_armed = 1;
-    if (dump_on_key) rt_log("vk_dump: press F9 in the game to dump the next frame to %s", dir);
+    if (dump_on_key == 3) rt_log("vk_dump: the first BC texture drawn through a block view starts the dump to %s", dir);
+    else if (dump_on_key) rt_log("vk_dump: press F9 in the game to dump the next frame to %s", dir);
     else rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
 }
 
