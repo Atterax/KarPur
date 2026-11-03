@@ -1089,10 +1089,28 @@ void vk_texture_write_note(const char *op, const tex_t *t, uint64_t a, uint64_t 
                t->d.height, t->d.format, (unsigned long long)(uintptr_t)t->mem, src->d.width, src->d.height,
                src->d.format, (unsigned long long)(uintptr_t)src->mem,
                (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
-    else
-        rt_log("vk: write log: %s into %ux%u fmt %#x at %#llx%s%llx+%#llx (frame %llu)", op, t->d.width, t->d.height,
+    else {
+        // what the guest memory holds there now (the CPU's view): bytes that are not zero and distinct 8-byte blocks
+        // among the first 4096, numbers only; a black BC1 image is mostly zero blocks
+        char what[96] = "";
+        if (a && n && n < (64u << 20) && plat_mem_readable(a, n)) {
+            const uint8_t *b = (const uint8_t *)(uintptr_t)a;
+            uint64_t nz = 0, seen[64] = {0};
+            for (uint64_t i = 0; i < n; i++) nz += b[i] != 0;
+            int distinct = 0;
+            for (uint64_t i = 0; i + 8 <= n && i < 4096 * 8; i += 8) {
+                uint64_t v;
+                memcpy(&v, b + i, 8);
+                uint64_t h = (v * 0x9E3779B97F4A7C15ull) >> 52;   // 4096 buckets
+                if (!(seen[h >> 6] >> (h & 63) & 1)) seen[h >> 6] |= 1ull << (h & 63), distinct++;
+            }
+            snprintf(what, sizeof what, ", guest bytes not zero %llu of %llu, about %d distinct blocks of the first 4096",
+                     (unsigned long long)nz, (unsigned long long)n, distinct);
+        }
+        rt_log("vk: write log: %s into %ux%u fmt %#x at %#llx%s%llx+%#llx (frame %llu)%s", op, t->d.width, t->d.height,
                t->d.format, (unsigned long long)(uintptr_t)t->mem, a ? " buffer " : " ", (unsigned long long)a,
-               (unsigned long long)n, (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+               (unsigned long long)n, (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), what);
+    }
 }
 
 void vk_texture_gpu_written(const tex_t *t) {
