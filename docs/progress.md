@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Menü-Modelle hell; fps sinken mit der Zeit durch wachsende heiße Stücke; Test HOT_COOL
+- `VIEW_SRGB` (Standard): Pokédex und Umkleide jetzt richtig hell (Maintainer), Pokédex 60 fps.
+- fps im Wald mit den Baum-Einstellungen von heute (heiße Stücke aus importiertem Speicher): nicht stabil. Varianten des Maintainers: `HOT_KB=16` anfangs stabil ohne Flackern, nach langem Spielen 28 fps (GPU ~30 ms) und schwankende CPU-Last; `HOT_REFRESH=2 RACE_SUBS=1 HOT_LATE_SUBS=1`: 60 fps, aber Flackern.
+- Ursache: Ein Stück bleibt für immer heiß; der heiße Satz wächst beim Herumlaufen, die GPU liest immer mehr über PCIe.
+- Neu (Test, Standard aus): `TOTK_HOT_COOL=n`: ein heißes Stück ohne späten oder während des GPU-Laufs erfolgten CPU-Schreibzugriff seit n Submissions geht in den Spiegel zurück (die späte Synchronisation hält seine Spiegel-Bytes ohnehin aktuell); Stücke, die die GPU über den importierten Puffer beschrieb, bleiben heiß. Die Spiegel-Zusammenfassung zeigt „cooled N, hot now M“. Testwert 300 (~5 s).
+
 ### 2026-11-03: Dunkle 3D-Modelle in Menüs: sRGB-Ansicht beim Sampeln ignoriert
 - Maintainer: In Pokédex, Umkleide und allen Menüs mit 3D-Modellen sind Figuren zu dunkel, seit Anfang an; ebenso 30 fps dort (GPU ~28 ms), seit Anfang an. `MEMORY=import`: unverändert dunkel (keine Spiegel-Ursache).
 - `DUMP=f9` im Pokédex: Raichu wird in ein `rgba8srgb` 1440x600-Ziel gezeichnet (pass 0048, PNG hell und richtig) und von der Oberfläche (pass 0141) über eine Ansicht mit `view-nvn-fmt 0x25` (RGBA8 UNORM) gesampelt. `get_view` baute Sample-Views immer im Format des Bildes; das sRGB-Bild wurde also dekodiert statt roh gelesen → dunkler und gesättigter.

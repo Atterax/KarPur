@@ -66,6 +66,9 @@ typedef struct PoolRec {
     uint8_t *race_cnt;                 // per chunk: submissions during whose GPU run the CPU wrote it (race_apply)
     uint32_t *race_seen;               // per chunk: the last such submission
     uint8_t *gpu_w;                    // per chunk: the GPU wrote it into the mirror (written back to guest memory)
+    uint32_t *hot_sub;                 // KarPur per chunk: the submission that made it hot (TOTK_HOT_COOL)
+    uint8_t *pin;                      // KarPur per chunk: hot because the GPU wrote it through imported memory: never cools
+    uint32_t cool_sub;                 // KarPur: the last submission that looked for chunks to cool
     uint32_t nchunks, nhot;
     uint8_t demote;                    // replay: queued to give up its mirror at the next submission (KarPur)
     uint32_t refresh_sub;              // replay: the last submission that copied its hot chunks at first use (KarPur)
@@ -248,7 +251,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
-    free(r->hot), free(r->late_cnt), free(r->late_seen);
+    free(r->hot), free(r->late_cnt), free(r->late_seen), free(r->hot_sub), free(r->pin);
     free(r->chunk_sub), free(r->race_cnt), free(r->race_seen), free(r->gpu_w);
     free(r);
 }
@@ -1445,7 +1448,7 @@ static int HOT_LATE_SUBS = 1;   // 1 since 2026-11-03 (with hot chunks bound fro
 static int HOT_SHIFT = 16;
 #define HOT_UNKNOWN_SIZE (1ull << 20)   // bytes a binding of unknown size is taken to cover
 static int mirror_hot = -1;
-static volatile int64_t m_hot_chunks, m_hot_binds;
+static volatile int64_t m_hot_chunks, m_hot_binds, m_cooled;
 static int hot_on(void) {
     if (mirror_hot < 0) {
         mirror_hot = rt_knob("MIRROR_HOT", "1");
@@ -1465,8 +1468,9 @@ static int hot_init(PoolRec *r) {
     uint32_t n = (uint32_t)((r->import_hi - r->import_lo + (1ull << HOT_SHIFT) - 1) >> HOT_SHIFT);
     r->hot = calloc(n, 1), r->late_cnt = calloc(n, 1), r->late_seen = calloc(n, sizeof *r->late_seen);
     r->chunk_sub = calloc(n, sizeof *r->chunk_sub), r->race_cnt = calloc(n, 1), r->race_seen = calloc(n, sizeof *r->race_seen);
-    r->gpu_w = calloc(n, 1);
-    if (!r->hot || !r->late_cnt || !r->late_seen || !r->chunk_sub || !r->race_cnt || !r->race_seen || !r->gpu_w)
+    r->gpu_w = calloc(n, 1), r->hot_sub = calloc(n, sizeof *r->hot_sub), r->pin = calloc(n, 1);
+    if (!r->hot || !r->late_cnt || !r->late_seen || !r->chunk_sub || !r->race_cnt || !r->race_seen || !r->gpu_w ||
+        !r->hot_sub || !r->pin)
         rt_fatal("vk: out of memory for a pool's hot chunks");
     r->nchunks = n;
     return 1;
@@ -1479,6 +1483,7 @@ static void hot_mark(PoolRec *r, uint64_t off, uint64_t n) {
     for (uint64_t c = a; c <= b; c++)
         if (!r->hot[c]) {
             r->hot[c] = 1, r->nhot++;
+            r->hot_sub[c] = msub;
             plat_inc64(&m_hot_chunks);
             __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
         }
@@ -1623,7 +1628,14 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
     PoolRec *r = sp->pool;
     if (!r || r->mstate != MS_ON || !size) return;
     if (sp->buffer != r->mbuf) {   // KarPur: written through the imported buffer: the mirror's bytes are stale now
-        if (hot_on()) hot_mark(r, sp->offset, size);
+        if (hot_on()) {
+            hot_mark(r, sp->offset, size);
+            if (r->pin) {   // the mirror has no copy of these bytes: such a chunk never cools (TOTK_HOT_COOL)
+                uint64_t a = sp->offset >> HOT_SHIFT, b = (sp->offset + size - 1) >> HOT_SHIFT;
+                if (b >= r->nchunks) b = r->nchunks - 1;
+                for (uint64_t c = a; c <= b; c++) r->pin[c] = 1;
+            }
+        }
         return;
     }
     range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
@@ -1887,6 +1899,31 @@ void vk_mem_mirror_late(uint64_t fence) {
                 }
         }
         r->mgen = gen_now;
+        // KarPur TOTK_HOT_COOL=n (submissions, test; 0 = off): a hot chunk with no late or racing CPU write for n
+        // submissions goes back to the mirror. The late sync keeps copying every CPU write into the mirror, hot or not,
+        // so its bytes there are current; chunks the GPU wrote through imported memory (pin) stay hot. Without it the
+        // hot set only grew while one walked, and the GPU read more and more over PCIe: Violet's fps sank after long
+        // play with hot chunks bound from imported memory (docs/progress.md 2026-11-03).
+        static int cool = -1;
+        if (cool < 0) {
+            const char *e = cfg_get("TOTK_HOT_COOL");
+            cool = e && *e ? atoi(e) : 0;
+            if (cool < 0) cool = 0;
+            if (cool) rt_log("mem: hot chunks cool down after %d submissions without late writes (TOTK_HOT_COOL)", cool);
+        }
+        if (cool && r->nhot && r->hot_sub && msub - r->cool_sub >= 30) {
+            r->cool_sub = msub;
+            for (uint32_t c = 0; c < r->nchunks; c++) {
+                if (!r->hot[c] || r->pin[c]) continue;
+                uint32_t last = r->hot_sub[c];
+                if (r->late_seen[c] - last < 0x80000000u) last = r->late_seen[c];
+                if (r->race_seen[c] - last < 0x80000000u) last = r->race_seen[c];
+                if (msub - last <= (uint32_t)cool) continue;
+                r->hot[c] = 0, r->nhot--, r->late_cnt[c] = 0, r->race_cnt[c] = 0;
+                plat_inc64(&m_cooled);
+                __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
+            }
+        }
         if (r->nhot && hot_refresh_on() == 1) {   // KarPur: hot chunks copied into the mirror at the submission's start
             uint64_t span = 1ull << HOT_SHIFT;
             for (uint32_t c = 0; c < r->nchunks; c++) {
@@ -2074,7 +2111,7 @@ static void mirror_log(uint64_t frame) {
     double f = frame > last ? (double)(frame - last) : 1.0, M = 1048576.0;
     last = frame;
     uint64_t fc = (uint64_t)plat_xchg64(&m_flush_calls, 0), fb = (uint64_t)plat_xchg64(&m_flush_bytes, 0);
-    char ver[384] = "";
+    char ver[480] = "";
     if (mirror_verify)
         snprintf(ver, sizeof ver, "; verify: pages compared %lld, skipped %lld (written since), mismatches %lld",
                  (long long)plat_xchg64(&v_pages, 0), (long long)plat_xchg64(&v_skipped, 0),
@@ -2089,6 +2126,13 @@ static void mirror_log(uint64_t frame) {
                  plat_xchg64(&m_hot_binds, 0) / f, plat_xchg64(&m_race_hits, 0) / f, (long long)m_race_chunks,
                  plat_xchg64(&m_refresh_bytes, 0) / f / M, plat_xchg64(&m_refresh_points, 0) / f,
                  plat_xchg64(&m_refresh_skipped, 0) / f);
+        if (m_cooled) {   // KarPur TOTK_HOT_COOL: chunks cooled so far and the ones hot now (read without a lock)
+            int64_t now_hot = 0;
+            for (int i = 0; i < nm; i++) now_hot += mlist[i]->nhot;
+            used = strlen(ver);
+            snprintf(ver + used, sizeof ver - used, ", cooled %lld, hot now %lld (%.1f MiB)", (long long)m_cooled,
+                     (long long)now_hot, now_hot * (double)(1ull << HOT_SHIFT) / M);
+        }
     }
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
