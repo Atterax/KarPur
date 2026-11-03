@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: interval_one ohne Wirkung; es ruckelt nur die Fortbewegung
+- `INTERVAL_ONE=1`: Figur ruckelt im Gebäude weiter, sonst alles normal.
+- Genauer: Es ruckelt **nur das Gehen/Laufen** (Fortbewegung in eine Richtung); Emotes und andere Animationen bleiben flüssig. Also die Position, nicht die Animation.
+- Vermutung: Die Fortbewegung drinnen läuft über einen festen 30-Hz-Schritt mit Akkumulator (z. B. Havok-Charakter-Controller, Strings `hknp…`): bei 60 fps abwechselnd 1 und 0 Schritte. Test: `FPS_DT_NS=33333334` bei 60 fps (Spiel doppelt so schnell, aber dann genau ein 30-Hz-Schritt pro Bild): wird das Laufen drinnen flüssig?
+
 ### 2026-11-03: indoor_fix ohne Wirkung; dynres_full vielleicht etwas schärfer; Test interval_one
 - `INDOOR_FIX=1`: Figur ruckelt im Gebäude weiter.
 - `DYNRES_FULL=1`: Maintainer meint, die Auflösung sei „ein bisschen besser“ (nicht sicher, Screenshot nachts). Das Overlay kann es nicht zeigen: Die Pass-Zählung (`vk_exec.c`) misst die Größe der Render-Ziele, nicht den Viewport; eine dynamische Auflösung zeichnet meist nur in einen Teil des Ziels. Für später: Viewport-Größe des Szenen-Pass messen.
