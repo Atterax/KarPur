@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Video-Ton: nur die .bk2, keine eigene Tondatei; Aufruf-Mitschnitt
+- `TRACE=fs`: Wwise-Bänke werden normal geladen (erst `English(US)/…` – fehlt, normal –, dann die allgemeine). Bei 128,5 s öffnet das Spiel `demo/movie/d020_movie_b/d020_movie_b.bk2`, sonst keine Ton- oder Videodatei. Der Ton steckt in der .bk2; Bink spielt ihn selbst ab.
+- Nächster Schritt mit dem vorhandenen `KARPUR_WATCH` (watch.c): die nn::audio-Aufrufe zum Anlegen und Abspielen von Stimmen mitschneiden (AcquireVoiceSlot, SetVoicePlayState, AppendWaveBuffer, AcquireFinalMix, AddDeviceSink, AcquireMemoryPool, RequestAttachMemoryPool). Frage: versucht Bink es und scheitert, oder versucht es es nie?
+
 ### 2026-11-03: Video-Ton: weder Opus noch Renderer-Stimmen; Bink-Strings
 - Reihenfolge der Zählzeilen: Während der Sequenz keine Opus-Decodes (die Opus-Decoder mit 8/12/16/24 kHz entstehen erst danach, Ausweis-Szene), Renderer ohne Stimmen, AudioOut still bis auf das Logo-Geräusch. Renderer-Antworten geprüft (Pools werden als angemeldet bestätigt, IAudioDevice meldet 2 Kanäle).
 - Bink ist in main eingebaut: Strings „Bink Snd“, „Bink IO“ (in `main+0x7a0`, BinkOpen), Thread-Namen „BinkBackgroundSound“, „BinkBackgroundIO“, „BinkSync%d“ (`main+0x18b1b18`), Shader `movie_for_bink`.
