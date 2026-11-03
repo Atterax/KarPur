@@ -24,6 +24,12 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto erscheint: CPU liest das gerenderte Porträt aus dem Pool
+- Kein Dispatch schreibt den Quellpuffer der BC1-Kopie (0 von 256), also komprimiert die CPU. Sie liest das gerenderte Porträt direkt aus dem (gespiegelten) Pool, ohne Invalidate; die Runtime schrieb GPU-Ziele beim Fence-Warten nur bis 64 KiB zurück (`WB_FENCE_LIMIT`).
+- `WB_FENCE_LIMIT=1073741824`: **Foto auf dem Ausweis sichtbar**; Quellpuffer 43726 von 61952 Bytes nicht null, 1231 verschiedene Blöcke.
+- Gezielte Lösung, Standard an: `TOTK_WB_ONESHOT` (`vk_texture.c wb_eligible`): Ziele bis 16 MiB, die die GPU nicht auch im Frame davor beschrieben hat (einmalige Renders), gehen beim Fence-Warten zurück wie kleine; jedes Frame neu gezeichnete Ziele behalten die 64-KiB-Grenze (kein Mehraufwand im Feld). Abschalten mit `WB_ONESHOT=0`.
+- Nebenbei eingebaut und behalten (ohne Wirkung auf das Foto): Storage-Block-Views für BC-Texturen, Block-View-Alias, Diagnosen `WRITE_LOG`, `READBACK_LOG`, `ALIAS_LOG`, `DUMP=f9|bc`, `WATCH_ADDR`.
+
 ### 2026-11-03: Ausweis-Foto: auch das 352x352-Porträt kommt aus einem leeren Puffer
 - Mit der BC-Storage-Änderung kein Unterschied; die Block-View-Storage-Meldung erscheint nie (kein Shader schreibt die BC-Texturen direkt). `DUMP=bc:352x352` löst nicht aus (leere Dateien): nie über eine Block-View gezeichnet.
 - `WRITE_LOG=352x352`: Bild 515 Puffer `0x60e291f00+0xf200` → BC1 352x352 (`0x5eefed600`), auch nach der GPU **0 Bytes nicht null**; Bild 516 Rücklesung, leer. Die BC1-Blöcke müssten vorher ein Compute-Shader in diesen Puffer schreiben.

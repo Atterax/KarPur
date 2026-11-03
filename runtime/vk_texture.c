@@ -57,6 +57,7 @@ typedef struct Tex {
     uint8_t listed;               // in owned[]
     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
+    uint64_t wr_frame, wr_frame_prev;   // KarPur: the last two frames (presents) in which the GPU wrote it
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
 } Tex;
 
@@ -1071,6 +1072,17 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
 enum { WB_SMALL_DEFAULT = 64 << 10 };
 static int small_pending;
 static uint64_t wb_limit = WB_SMALL_DEFAULT;
+// KarPur TOTK_WB_ONESHOT (default 1; 0 turns it off): a mirrored target up to ONESHOT_MAX bytes that the GPU did not
+// also write the frame before (a one-off render such as Violet's trainer card portrait, which the CPU reads from the
+// pool to compress it, docs/progress.md 2026-11-03) goes back at a fence wait like a small one; targets rendered every
+// frame keep the size limit, so the field costs nothing more.
+#define ONESHOT_MAX (16ull << 20)
+static int wb_oneshot = -1;
+static int wb_eligible(const Tex *e) {
+    if (e->t.L.size <= wb_limit) return 1;
+    if (wb_oneshot < 0) wb_oneshot = rt_knob("WB_ONESHOT", "1");
+    return wb_oneshot && e->t.L.size <= ONESHOT_MAX && (!e->wr_frame_prev || e->wr_frame - e->wr_frame_prev > 1);
+}
 static int wb_trace;
 static int wb_cfg_read;
 
@@ -1155,6 +1167,8 @@ void vk_texture_gpu_written(const tex_t *t) {
 
 static void gpu_written_locked(Tex *e) {
     {
+        uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+        if (fr != e->wr_frame) e->wr_frame_prev = e->wr_frame, e->wr_frame = fr;
         make_fresh(e);   // a partial render keeps what the storage held before
         e->pub.gpu_owned = 1;
         uint64_t f = vk_exec_recording_fence();
@@ -1169,7 +1183,7 @@ static void gpu_written_locked(Tex *e) {
             e->gpu_seq = ++gpu_writes;
             e->gpu_fence = vk_exec_recording_fence();
             wb_cfg_init();
-            if (e->t.L.size <= wb_limit) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+            if (wb_eligible(e)) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
             own_add(e);
         }
     }
@@ -1717,14 +1731,14 @@ void vk_texture_write_back_small(uint64_t fence) {
     __atomic_store_n(&small_pending, 0, __ATOMIC_RELAXED);
     plat_mutex_lock_shared(&owned_lock);
     int n = 0, later = 0;
-    for (int i = 0; i < nowned; i++) n += owned[i]->gpu_dirty && owned[i]->t.L.size <= wb_limit;
+    for (int i = 0; i < nowned; i++) n += owned[i]->gpu_dirty && wb_eligible(owned[i]);
     Tex **hit = n ? malloc(sizeof *hit * (size_t)n) : NULL;
     if (n && !hit) rt_fatal("vk: out of memory for a texture write-back");
     n = 0;
     for (int i = 0; i < nowned; i++) {
         Tex *e = owned[i];
         if (!e->gpu_dirty) continue;
-        if (e->t.L.size > wb_limit) {
+        if (!wb_eligible(e)) {
             if (wb_trace && e->gpu_fence <= fence) {
                 wb_note(e, 1);
                 perf_count(PERF_CNT_WB_SKIP);
