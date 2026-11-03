@@ -417,6 +417,15 @@ static int buffer_side(const VkExec *ex, const Sub *s, uint64_t addr, uint64_t *
     return 1;
 }
 
+// TOTK_WRITE_LOG: a readback of a logged texture is counted again once the GPU has done it (completion thread).
+typedef struct { uint64_t a, n; int to_image; } ReadbackCount;
+static void readback_done(void *arg) {
+    ReadbackCount *r = arg;
+    vk_texture_write_count(r->to_image ? "copy source after the GPU finished: buffer" :
+                                         "readback done (GPU finished): buffer", r->a, r->n);
+    free(r);
+}
+
 static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     Sub s;
     if (!sub_resolve(p->tex, &p->view, p->has_view, &p->r, 1, &s, 0)) return;
@@ -433,6 +442,10 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     if (to_image) vk_texture_gpu_written(p->tex), vk_texture_write_note("buffer copy", p->tex, p->src, size, NULL);
     else vk_mem_gpu_wrote(&m, size), note_gpu_write(ex, p->src, size),
          vk_texture_write_note("readback to buffer (texture is the source)", p->tex, p->src, size, NULL);
+    if (vk_texture_write_logged(p->tex)) {
+        ReadbackCount *r = malloc(sizeof *r);
+        if (r) *r = (ReadbackCount){p->src, size, to_image}, vk_completion_add(ex->fence, readback_done, r);
+    }
 }
 
 static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {

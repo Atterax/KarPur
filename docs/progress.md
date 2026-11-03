@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto: alle drei Puffer beim Einplanen null
+- `WRITE_LOG` mit `MEMORY=import`: A (Bild 458), B (459) und C (558): **0 von 622080 Bytes nicht null**. C wird also schon schwarz geladen/gespeichert. A und B sind beim Einplanen gezählt; schreibt die GPU A im selben Arbeitsschritt, ist das zu früh.
+- Neu: Puffer-Kopien und Rücklesungen geloggter Texturen werden nach Abschluss der GPU (`vk_completion_add`) noch einmal gezählt („copy source after the GPU finished“, „readback done“).
+
 ### 2026-11-03: Ausweis-Foto: Kette GPU → Puffer → CPU → GPU
 - `WRITE_LOG` + `WATCH_ADDR` (Lauf 3): Bild 867 Puffer A `0x60d367200` → BC1 #1 (`0x5ef003600`); Bild 868 **Rücklesung** BC1 #1 → Puffer B `0x60d2cf400`; Bild 967 Puffer C `0x61026b200` → BC1 #2 (`0x5ef463600`, die angezeigte). Puffer A wechselt die Adresse zwischen Läufen, C nicht.
 - Puffer C schreibt **CPU-Code**: Funktionen `main+0x792a90`, `0x7a29d4`, `0x7a2d8c`, `0x7a30ac`, `0x7a344c`, `0x7ade94` (Kette über `0x7ae158`/`0x7a7464`, ein Interpreter-ähnlicher Dispatch mit `br x8` in `0x7a729c`), dazu `memcpy` aus `main+0xedf384` (+0x270, Funktion mit Light-Events: Lade-/Speicher-Thread). Vermutung: Das Foto wird gespeichert (B) und wieder geladen (C).
