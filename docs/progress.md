@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Leser des Bewegungsschritts gefunden
+- Lauf mit Lese-Wächter (`double 1/30 at 0x5e071f4d0`, danach Laufen flüssig): zwei Leser, beide aufgerufen von `main+0x448a8` (darüber `0x27e00`, `0x26cb4`): **`main+0x4135c`** (~2,4 Lesezugriffe pro Bild) und **`main+0x422e4`** (~1,2 pro Bild). Keine Schreibzugriffe.
+- Neu in `calls.py`: `--listing MOD+OFF` (ganze Funktion, `--max N`) und `--dstores OFF` (alle `str d, [x, #OFF]` in main, mit FDIV-/Int→double-Markierung kurz davor), um vom gelesenen Feld zum Code zu kommen, der den Schritt setzt.
+
 ### 2026-11-03: Wächter: der Schritt wird nicht neu geschrieben; jetzt auch Lesezugriffe
 - Lauf mit Wächter: letzter Kandidat `double 1/30 at 0x5e08204d0` (Adresse wieder anders). Über mehrere Minuten, auch nach Verlassen/Betreten des Gebäudes: **0 Schreibzugriffe** auf das Wort, 95 auf andere Stellen der Seite (der Wächter arbeitet). Der Wert wird also einmal beim Laden gesetzt und bleibt.
 - Darum meldet der Wächter jetzt auch **Lesezugriffe** (`TOTK_WATCH_READS`, Standard 1; Seite `PAGE_NOACCESS`): Die Bewegung liest den Schritt jedes Bild, so findet man deren Code und das Feld. Log: `x read by f_… = main+…`.

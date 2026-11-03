@@ -35,6 +35,10 @@ their offset and the functions that compute their address (ADRP+ADD, ADR): to fi
 its error messages.
 
   .venv\\Scripts\\python tools\\calls.py --string oodle --string kraken
+
+--listing MOD+OFF prints every instruction of the function holding MOD+OFF (classes as for --insn, at most --max).
+--dstores OFF lists every STR of a d register at byte offset OFF (hex) in main, marking a division (FDIV d) or an
+integer-to-double conversion shortly before it: where a double field such as a fixed time step is computed.
 """
 
 import argparse
@@ -252,6 +256,45 @@ def insn_report(mod, a, n):
             continue
         mark = '  <==' if q == a else ''
         print(f'  {mod.name}+{q - mod.base:#x}: {insn_kind(mod, q)}{mark}')
+
+
+def listing_report(mod, a, limit):
+    """Every instruction of the function holding a, from its start (at most limit), classed as for --insn."""
+    f = mod.function(a)
+    if not f:
+        print(f'{mod.name}+{a - mod.base:#x}: not inside a function')
+        return
+    n = (f[1] - f[0]) // 4
+    print(f'{mod.name}+{f[0] - mod.base:#x}: {n} instructions' + (f', first {limit} shown' if n > limit else ''))
+    for q in range(f[0], min(f[1], f[0] + 4 * limit), 4):
+        mark = '  <==' if q == a and a != f[0] else ''
+        print(f'  +{q - f[0]:#06x} {mod.name}+{q - mod.base:#x}: {insn_kind(mod, q)}{mark}')
+
+
+def dstores_report(mod, off, near=12):
+    """Stores of a 64-bit FP register (STR d, unsigned offset) at byte offset off from any base in the module's
+    code, with their function, and whether an FDIV d (a division) or SCVTF/UCVTF (integer to float) comes in the
+    near instructions before: to find where a double such as 1/30 is computed and kept in a field."""
+    import numpy as np
+    m = mod.m
+    w = m.words
+    want = 0xFD000000 | (off // 8) << 10   # STR Dt, [Xn, #off]
+    hits = np.flatnonzero((w & 0xFFFFFC00) == want) if off % 8 == 0 and off < 0x8000 else []
+    print(f'{mod.name}: {len(hits)} stores of a d register at offset {off:#x}')
+    for i in hits[:200]:
+        q = m.lo + 4 * int(i)
+        div = cvt = ''
+        for k in range(1, near + 1):
+            if not m.in_text(q - 4 * k):
+                break
+            x = m.word(q - 4 * k)
+            if (x & 0xFFE0FC00) == 0x1E601800:
+                div = f' fdiv d at -{k}'
+            if (x & 0x7F3F0000) in (0x1E620000, 0x1E630000):
+                cvt = f' int->double at -{k}'
+        f = mod.function(q)
+        where = f' in {mod.name}+{f[0] - mod.base:#x} (+{q - f[0]:#x})' if f else ''
+        print(f'  {mod.name}+{q - mod.base:#x}: {insn_kind(mod, q)}{where}{div}{cvt}')
 
 
 def fde_cover(mod, a):
@@ -603,12 +646,17 @@ def main():
     ap.add_argument('--string', action='append', default=[], metavar='TEXT',
                     help='strings of main containing TEXT and the functions that use them')
     ap.add_argument('--around', type=int, default=4, help='instructions before and after for --insn (default 4)')
+    ap.add_argument('--listing', action='append', default=[], metavar='MOD+OFF',
+                    help='every instruction of the function holding MOD+OFF, classed as for --insn (--max N)')
+    ap.add_argument('--max', type=int, default=160, help='instructions shown per --listing (default 160)')
+    ap.add_argument('--dstores', action='append', default=[], metavar='OFF',
+                    help='stores of a d register at byte offset OFF (hex) in main, with nearby divisions')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():
         sys.exit(f'error: {a.exefs} has no main: run tools\\extract.py first')
     want = ({s.split('+', 1)[0] for s in a.addresses} | {o.split('+', 1)[0] for o in a.origin} |
             {o.split('+', 1)[0] for o in a.returns} | {o.split('+', 1)[0] for o in a.insn} |
-            ({'main'} if a.string else set()))
+            {o.split('+', 1)[0] for o in a.listing} | ({'main'} if a.string or a.dstores else set()))
     mods = {}
     for name, base, _ in layout(a.exefs):
         if name in want:
@@ -635,7 +683,12 @@ def main():
         insn_report(mod, addr, a.around)
     for t in a.string:
         string_report(mods['main'], t)
-    if a.origin or a.returns or a.insn or a.string:
+    for o in a.listing:
+        mod, addr = parse(o, mods)
+        listing_report(mod, addr, a.max)
+    for o in a.dstores:
+        dstores_report(mods['main'], int(o, 16))
+    if a.origin or a.returns or a.insn or a.string or a.listing or a.dstores:
         print('=' * 72)
 
 
