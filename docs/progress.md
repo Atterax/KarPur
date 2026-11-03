@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Regenbogen-Stämme und 30 fps: BC-Storage und Block-View-Alias zurückgenommen
+- Maintainer (Nacht, Wald): Baumstämme mit Regenbogen-Mustern (kaputte BC-Texturen), 30 fps draußen (GPU busy ~28 ms); in Pokédex und Umkleide sind die 3D-Modelle zu dunkel (eigenes Thema, Bild 4 zeigt die normale Helligkeit draußen), dort ebenfalls 30 fps.
+- Verdacht: die beiden Änderungen beim Ausweis-Foto, die nichts gebracht haben: Block-View-Alias (auch aus freigegebenen Texturen: an wiederverwendetem Speicher landete fremder Inhalt in neuen BC-Texturen) und STORAGE-Nutzung für BC-Texturen. Beide zurückgenommen; `WB_ONESHOT` (die eigentliche Foto-Lösung) bleibt.
+- Nächste Prüfung: Regenbogen weg? fps draußen wieder 60? Falls 30 fps bleiben: `HOT_REFRESH=2` gegenprüfen (heiße Stücke aus importiertem Speicher kosten PCIe-Lesezugriffe).
+
 ### 2026-11-03: Baum-Flackern behoben: heiße Stücke direkt aus importiertem Speicher, sofort heiß
 - `HOT_REFRESH=0` allein: nur noch einzelne Bäume flackern, nicht in jedem Lauf; 60 fps stabil.
 - `HOT_REFRESH=0 RACE_SUBS=1 HOT_LATE_SUBS=1`: in allen Neustarts **kein Flackern**; Frame 1800: 150–220 heiße Stücke (9–14 MiB), ~700–2150 Bindungen pro Frame an heiße Stücke, Upload 1,2–2,9 MiB/Frame.

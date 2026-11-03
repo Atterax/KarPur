@@ -372,16 +372,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         bc.flags |= VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
         if (type == VK_IMAGE_TYPE_3D) bc.flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
         VkImageUsageFlags hidden = 0;   // creation usage the replay never uses (views restrict theirs, vk_exec.c)
-        // KarPur: a BC texture the game declares as an image is written by shaders through an uncompressed view of its
-        // blocks (vk_exec_draw.c block_storage_view): Violet compresses its trainer card photo into a BC1 texture with
-        // a compute shader, which got a stand-in and left the photo black (docs/progress.md 2026-11-03)
-        int ok = 0;
-        if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && type != VK_IMAGE_TYPE_3D) {
-            VkImageCreateInfo st = bc;
-            st.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-            if ((ok = block_views_ok(&st))) bc = st;
-        }
-        if (!ok) ok = block_views_ok(&bc);
+        int ok = block_views_ok(&bc);
         if (ok && type == VK_IMAGE_TYPE_3D && !image_size(&bc)) {
             // STORAGE usage keeps RADV on GFX9 from the thin layout (image_size), so agl's BC4 encoder still renders
             // into the volume; else the image is made without block views and its encoder passes are left out
@@ -857,25 +848,6 @@ static int alias_compatible(const Tex *e, const Tex *src) {
     return eb && eb == sb && ew == sw && eh == sh;
 }
 
-// KarPur: a block view: one image is block-compressed and the other has one texel per block of it with the same byte
-// count (BC1 and RG32UI, BC3/BC7 and RGBA32UI), the same type and depth and the uncompressed one's size the compressed
-// one's in blocks. Games compress a render with a shader that writes the blocks through such a view and then sample
-// the compressed descriptor over the same bytes: Violet's trainer card photo (BC1 1440x864, docs/progress.md
-// 2026-11-03).
-static int alias_block_view(const Tex *e, const Tex *src) {
-    const VkTexImage *p = &e->pub, *q = &src->pub;
-    if (e->f.depth || e->f.stencil || src->f.depth || src->f.stencil || p->samples > 1 || q->samples > 1) return 0;
-    if (p->type != q->type || p->depth != q->depth || nvn_tex_is_linear(&e->t.d) != nvn_tex_is_linear(&src->t.d)) return 0;
-    int ew, eh, sw, sh, eb = img_block(e, &ew, &eh), sb = img_block(src, &sw, &sh);
-    if (!eb || eb != sb || (ew == sw && eh == sh)) return 0;
-    const VkTexImage *big = ew > 1 ? p : q, *small = ew > 1 ? q : p;
-    int bw = ew > 1 ? ew : sw, bh = ew > 1 ? eh : sh;
-    if ((ew > 1 && (sw != 1 || sh != 1)) || (ew == 1 && (eh != 1))) return 0;
-    return small->width == (big->width + bw - 1) / bw && small->height == (big->height + bh - 1) / bh;
-}
-
-// src holds GPU-written content for a block view: rendered (gpu_owned) or written as a storage image (wr_fence).
-static int alias_block_content(const Tex *src) { return src->pub.gpu_owned || src->wr_fence; }
 
 // src holds content the storage bytes do not: the GPU wrote it and, for a mirrored texture, it was not written back
 // and the CPU has not rewritten the storage since (the new entry's upload then reads the newer bytes).
@@ -990,33 +962,18 @@ static Tex *entry_of(const tex_t *t) {
         // released entries of another descriptor at this address are replaced by the new one; a live one holding
         // GPU-written content is the alias source, preferring the one that differs only in swizzle (same_but_swizzle)
         int alias = 0;
-        Tex *src = NULL, *gone[16];
-        int ngone = 0;
+        Tex *src = NULL;
         for (Tex *p = nvn_hm_get(&by_addr, &k.addr), *nx; p; p = nx) {
             nx = p->next_at;
-            if (p->released) {
-                // KarPur: a released block view over these bytes may still hold the only copy of what the GPU wrote
-                // into them; it is the source unless a live entry is, and goes after the copy
-                if (ngone < 16 && tex_alias && alias_block_view(e, p) && alias_block_content(p)) gone[ngone++] = p;
-                else destroy_tex(p);
-                continue;
-            }
+            if (p->released) { destroy_tex(p); continue; }
             alias = 1;
             if (tex_alias && (!src || (same_but_swizzle(&p->key, &k) && !same_but_swizzle(&src->key, &k))) &&
-                ((alias_compatible(e, p) && alias_has_gpu_content(p)) || (alias_block_view(e, p) && alias_block_content(p))))
+                alias_compatible(e, p) && alias_has_gpu_content(p))
                 src = p;
         }
-        if (!src && ngone) src = gone[0], alias = 1;
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
         if (tex_alias) {
             if (!src) alias_miss_log(e);
-            else if (alias_block_view(e, src)) {
-                static int logged;
-                if (logged++ < 16)
-                    rt_log("vk: block view alias: %ux%u fmt %#x takes the content of %ux%u fmt %#x at %#llx%s",
-                           e->pub.width, e->pub.height, e->t.d.format, src->pub.width, src->pub.height, src->t.d.format,
-                           (unsigned long long)e->pub.addr, src->released ? " (released)" : "");
-            }
             if (src && alias_copy(e, src)) {
                 n_alias_copied++;
                 if (e->pub.mirrored) {   // the content is src's GPU render, newer than the storage bytes
@@ -1034,7 +991,6 @@ static Tex *entry_of(const tex_t *t) {
                 }
             }
         }
-        for (int i = 0; i < ngone; i++) destroy_tex(gone[i]);   // the copy above was recorded; the image is deferred
         e->next_at = nvn_hm_get(&by_addr, &k.addr);
         nvn_hm_put(&by_addr, &k.addr, e);
         nvn_hm_put(&by_key, &k, e);
@@ -1628,8 +1584,6 @@ static int owned_dirty(uint64_t addr, uint64_t size, Tex **hit) {
 // tex_info). Its storage is not marked GPU-owned: only the write fence for ReadTexels.
 void vk_texture_storage_bound_locked(const VkTexImage *img) {
     Tex *e = (Tex *)img;   // pub is the first member
-    // KarPur: a BC texture written through a block view holds the shader's blocks, not what its storage held
-    if (e->pub.block_views) vk_exec_frame_written(&e->t), gpu_written_locked(e);
     vk_texture_write_note("storage image (shader)", &e->t, 0, 0, NULL);
     uint64_t f = vk_exec_recording_fence();
     if (f > e->wr_fence) e->wr_fence = f;
