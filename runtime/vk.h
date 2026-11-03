@@ -336,7 +336,8 @@ void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into b
 // KarPur TOTK_WRITE_LOG=WxH: a GPU write into a texture of that size is logged with how (op), a buffer address and
 // size (a, n) and a source texture; up to 40 lines. For one-off images that come out black (trainer card photo).
 void vk_texture_write_note(const char *op, const tex_t *t, uint64_t a, uint64_t n, const tex_t *src);
-int vk_texture_write_logged(const tex_t *t);         // TOTK_WRITE_LOG names t's size
+int vk_texture_write_logged(const tex_t *t);
+void vk_exec_dispatch_report(uint64_t a, uint64_t n);   // vk_exec_draw.c: recent dispatches writing [a, a+n)         // TOTK_WRITE_LOG names t's size
 void vk_texture_write_count(const char *what, uint64_t a, uint64_t n);   // the counts of the note, now
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission
 uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newest submission recorded to write it; 0: none

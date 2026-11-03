@@ -2486,6 +2486,45 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
+// KarPur, with TOTK_WRITE_LOG: the last 256 dispatches (frame, groups, whether the shader and the pipeline were there,
+// the compute stage's storage buffers). A copy from a buffer into a logged texture names the dispatches whose storage
+// buffers overlap that buffer (vk_exec_dispatch_report): which shader should have filled it and whether it ran (the
+// trainer card photo's BC1 blocks arrive as zeros, docs/progress.md 2026-11-03).
+typedef struct { uint64_t frame, prog; int x, y, z, ind; uint8_t cs, pipe; uint64_t a[16], n[16]; } DispRec;
+static DispRec drec[256];
+static unsigned ndrec;
+static int drec_on = -1;
+static void disp_note(VkExec *ex, int x, int y, int z, int ind, int cs, int pipe) {
+    if (drec_on < 0) drec_on = cfg_get("TOTK_WRITE_LOG") && *cfg_get("TOTK_WRITE_LOG");
+    if (!drec_on) return;
+    DispRec *r = &drec[ndrec++ % 256];
+    *r = (DispRec){__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), (uint64_t)(uintptr_t)ex->prog, x, y, z, ind,
+                   (uint8_t)cs, (uint8_t)pipe, {0}, {0}};
+    for (int i = 0; i < 16; i++) r->a[i] = ex->ssbo[NVN_STAGE_CS][i].addr, r->n[i] = ex->ssbo[NVN_STAGE_CS][i].size;
+}
+
+void vk_exec_dispatch_report(uint64_t a, uint64_t n) {
+    if (drec_on <= 0) return;
+    int shown = 0, skipped = 0;
+    unsigned have = ndrec < 256 ? ndrec : 256;
+    for (unsigned k = 0; k < have; k++) {
+        const DispRec *r = &drec[(ndrec - 1 - k) % 256];
+        skipped += !r->cs || !r->pipe;
+        for (int i = 0; i < 16; i++) {
+            if (!r->n[i] || r->a[i] >= a + n || r->a[i] + r->n[i] <= a) continue;
+            if (shown++ < 8)
+                rt_log("vk: write log:   dispatch %u back (frame %llu, program %#llx, %s %dx%dx%d): storage buffer %d at "
+                       "%#llx+%#llx overlaps the copy source; shader %s, pipeline %s", k, (unsigned long long)r->frame,
+                       (unsigned long long)r->prog, r->ind ? "indirect" : "groups", r->x, r->y, r->z, i,
+                       (unsigned long long)r->a[i], (unsigned long long)r->n[i], r->cs ? "yes" : "MISSING",
+                       r->pipe ? "yes" : "MISSING");
+            break;
+        }
+    }
+    rt_log("vk: write log:   %d of the last %u dispatches wrote a storage buffer over the copy source; %d of them all "
+           "were skipped (no shader or pipeline)", shown, have, skipped);
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
@@ -2493,9 +2532,10 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     dummies_init();
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);   // synchronous: a skipped dispatch changes results
-    if (!cs) return;
+    if (!cs) return disp_note(ex, d->x, d->y, d->z, 0, 0, 0);
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
+    disp_note(ex, d->x, d->y, d->z, 0, 1, p && info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);   // ends the pass; earlier writes are visible to the shader
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
@@ -2519,9 +2559,10 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     dummies_init();
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);
-    if (!cs) return;
+    if (!cs) return disp_note(ex, 0, 0, 0, 1, 0, 0);
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
+    disp_note(ex, 0, 0, 0, 1, 1, p && info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);
     VK_MEM_USE(ip);

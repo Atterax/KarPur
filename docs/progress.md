@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto: auch das 352x352-Porträt kommt aus einem leeren Puffer
+- Mit der BC-Storage-Änderung kein Unterschied; die Block-View-Storage-Meldung erscheint nie (kein Shader schreibt die BC-Texturen direkt). `DUMP=bc:352x352` löst nicht aus (leere Dateien): nie über eine Block-View gezeichnet.
+- `WRITE_LOG=352x352`: Bild 515 Puffer `0x60e291f00+0xf200` → BC1 352x352 (`0x5eefed600`), auch nach der GPU **0 Bytes nicht null**; Bild 516 Rücklesung, leer. Die BC1-Blöcke müssten vorher ein Compute-Shader in diesen Puffer schreiben.
+- Neu: Mit `WRITE_LOG` merkt sich die Runtime die letzten 256 Dispatches (Shader/Pipeline vorhanden, Storage-Puffer der CS-Stufe); eine Puffer-Kopie in eine geloggte Textur nennt die Dispatches, deren Storage-Puffer die Kopierquelle überlappen, und wie viele übersprungen wurden.
+
 ### 2026-11-03: Ausweis-Foto: Ursache gefunden – Shader-Schreibzugriffe in BC-Texturen bekamen einen Platzhalter
 - `READBACK_LOG`: Rücklesungen nur von BC1-Texturen (1440x864, Bild 457, und **352x352** an `0x5eefed600`, Bild 500), beide nach Abschluss der GPU **leer**. Keine Rücklesung eines Farbbilds: Das Spiel komprimiert das Porträt auf der GPU mit einem Shader direkt in die BC1-Textur.
 - Ursache: BC-Texturen bekamen keine Storage-Nutzung, und `get_view` baute Storage-Views nur im BC-Format; ein Shader, der eine BC-Textur über eine Block-View beschreibt (ein RG32UI-Texel pro 4x4-Block), bekam einen Platzhalter und schrieb ins Leere.

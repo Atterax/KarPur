@@ -439,8 +439,11 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     if (to_image) vkCmdCopyBufferToImage(ex->cb, m.buffer, s.img->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     else vkCmdCopyImageToBuffer(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, m.buffer, 1, &c);
     ex->recorded++;
-    if (to_image) vk_texture_gpu_written(p->tex), vk_texture_write_note("buffer copy", p->tex, p->src, size, NULL);
-    else vk_mem_gpu_wrote(&m, size), note_gpu_write(ex, p->src, size),
+    if (to_image) {
+        vk_texture_gpu_written(p->tex), vk_texture_write_note("buffer copy", p->tex, p->src, size, NULL);
+        if (vk_texture_write_logged(p->tex)) vk_exec_dispatch_report(p->src, size);
+    }
+    if (!to_image) vk_mem_gpu_wrote(&m, size), note_gpu_write(ex, p->src, size),
          vk_texture_write_note("readback to buffer (texture is the source)", p->tex, p->src, size, NULL);
     // KarPur TOTK_READBACK_LOG=1: every texture-to-buffer copy (any size, up to 40) with the texture's shape and the
     // buffer, counted once the GPU has finished: where a game reads a render back to the CPU (the trainer card photo,
