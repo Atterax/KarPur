@@ -235,6 +235,22 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
         need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
         r->channels[chans[i].id] = chans[i];
     }
+    // KarPur: an entry not in use must not reset a voice that another entry of this update uses under the same id.
+    // Violet's movie player (Bink) acquires one voice, appends buffers and starts it, yet the server saw no voice in
+    // use (docs/progress.md 2026-11-03): unused entries after it carried its id and reset it again.
+    uint8_t used_id[1024] = {0};
+    int raw_used = 0, first_used_index = -1;
+    uint32_t first_used_id = 0;
+    for (int i = 0; i < vc; i++) {
+        const uint8_t *e = voices + i * voice_stride;
+        uint32_t id;
+        memcpy(&id, e, 4);
+        if (e[9] && id < 1024) {
+            used_id[id] = 1, raw_used++;
+            if (first_used_index < 0) first_used_index = i, first_used_id = id;
+        }
+    }
+    r->raw_used = raw_used, r->raw_first_index = first_used_index, r->raw_first_id = first_used_id;
     for (int i = 0; i < vc; i++) {
         AudrenVoiceIn v;
         AudrenVoiceInV2 v2;
@@ -252,6 +268,7 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
             }
         } else
             memcpy(&v, voices + i * voice_stride, sizeof v);
+        if (!v.in_use && v.id < 1024 && used_id[v.id]) continue;   // the in-use entry with this id decides
         update_voice(r, &v);
         ServerVoice *server = &r->voices[v.id];
         server->use_float_biquads = (uint8_t)float_voices;
@@ -400,7 +417,7 @@ static IpcBuffer pick(const IpcBuffer *a, unsigned na, const IpcBuffer *b, unsig
 static void census(AudioRenderer *r) {
     static int on = -1;
     static uint64_t t0, seen, updates;   // seen: kinds (format * 8 + channels) that played in this window
-    static int peak, kinds_rate[64], used_peak, st_peak[4], ps_peak[4], pend_peak, valid_peak;
+    static int peak, kinds_rate[64], used_peak, st_peak[4], ps_peak[4], pend_peak, valid_peak, raw_peak, raw_idx, raw_id;
     if (on < 0) on = rt_knob("AUDIO_CENSUS", "0");
     if (!on) return;
     int playing = 0, used = 0, st[4] = {0}, ps[4] = {0}, pend = 0, valid = 0;
@@ -420,6 +437,7 @@ static void census(AudioRenderer *r) {
     }
     if (playing > peak) peak = playing;
     if (used > used_peak) used_peak = used;
+    if (r->raw_used > raw_peak) raw_peak = r->raw_used, raw_idx = r->raw_first_index, raw_id = (int)r->raw_first_id;
     if (pend > pend_peak) pend_peak = pend;
     if (valid > valid_peak) valid_peak = valid;
     for (int k = 0; k < 4; k++) {
@@ -435,10 +453,11 @@ static void census(AudioRenderer *r) {
         if (seen >> k & 1) o += (size_t)snprintf(kinds + o, sizeof kinds - o, " fmt%d/%dch/%dHz", k / 8, k % 8, kinds_rate[k]);
     rt_log("audio census: renderer %p: up to %d voices playing in the last 5 s;%s; %llu updates, up to %d voices in use "
            "(server state stopped/started/paused/stopping up to %d/%d/%d/%d, requested play state started/stopped/paused "
-           "up to %d/%d/%d), wave buffers waiting up to %d, queued up to %d, renderer state %u", (void *)r, peak,
-           o ? kinds : " none", (unsigned long long)updates, used_peak, st_peak[0], st_peak[1], st_peak[2], st_peak[3],
-           ps_peak[0], ps_peak[1], ps_peak[2], pend_peak, valid_peak, r->state);
-    t0 = now, peak = 0, seen = 0, updates = 0, used_peak = 0, pend_peak = 0, valid_peak = 0;
+           "up to %d/%d/%d), wave buffers waiting up to %d, queued up to %d, renderer state %u; in the client's input up to %d entries in use (first at index %d with id %d)",
+           (void *)r, peak, o ? kinds : " none", (unsigned long long)updates, used_peak, st_peak[0], st_peak[1],
+           st_peak[2], st_peak[3], ps_peak[0], ps_peak[1], ps_peak[2], pend_peak, valid_peak, r->state, raw_peak, raw_idx,
+           raw_id);
+    t0 = now, peak = 0, seen = 0, updates = 0, used_peak = 0, pend_peak = 0, valid_peak = 0, raw_peak = 0;
     memset(st_peak, 0, sizeof st_peak), memset(ps_peak, 0, sizeof ps_peak);
 }
 

@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Bink legt die Stimme richtig an; Verdacht: Renderer überschreibt sie
+- `KARPUR_WATCH` auf nn::audio: Beim Start `AcquireFinalMix` (6 Kanäle) und `AddDeviceSink` (main+0x20da0/0x20dd8). Zur Sequenz: `AcquireMemoryPool` (0xa000 Byte) + `RequestAttachMemoryPool` → 1, **`AcquireVoiceSlot(48000 Hz, 2 Kanäle, PCM16)` → 1**, `AppendWaveBuffer` → 1, `SetVoicePlayState(Started)`, später Paused, dann Stopped (main+0x2157c … 0x21870). Bink macht also alles richtig, der Renderer sah trotzdem 0 Stimmen in Benutzung.
+- Verdacht: `request_update` ordnet jeden Eintrag über seine id zu; unbenutzte Einträge mit derselben id (z. B. 0) setzen die Bink-Stimme in derselben Aktualisierung wieder zurück.
+- Änderung (`audren.c`): ein nicht benutzter Eintrag setzt keine Stimme zurück, die ein benutzter Eintrag derselben Aktualisierung mit derselben id belegt. Die Zählung meldet zusätzlich die benutzten Einträge in den Rohdaten (Anzahl, Index und id des ersten).
+
 ### 2026-11-03: Video-Ton: nur die .bk2, keine eigene Tondatei; Aufruf-Mitschnitt
 - `TRACE=fs`: Wwise-Bänke werden normal geladen (erst `English(US)/…` – fehlt, normal –, dann die allgemeine). Bei 128,5 s öffnet das Spiel `demo/movie/d020_movie_b/d020_movie_b.bk2`, sonst keine Ton- oder Videodatei. Der Ton steckt in der .bk2; Bink spielt ihn selbst ab.
 - Nächster Schritt mit dem vorhandenen `KARPUR_WATCH` (watch.c): die nn::audio-Aufrufe zum Anlegen und Abspielen von Stimmen mitschneiden (AcquireVoiceSlot, SetVoicePlayState, AppendWaveBuffer, AcquireFinalMix, AddDeviceSink, AcquireMemoryPool, RequestAttachMemoryPool). Frage: versucht Bink es und scheitert, oder versucht es es nie?

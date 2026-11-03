@@ -155,6 +155,8 @@ typedef struct AudioRenderer {
     volatile int32_t running;
     uint32_t state, revision, time_limit, event;   // state 0 started, 1 stopped; event: writable handle
     int logged;
+    int raw_used, raw_first_index;     // KarPur census: voice entries in use in the last update's input, the first one
+    uint32_t raw_first_id;
     uint64_t behavior_flags, elapsed_frames;
     uint64_t stop_released, empty_played, flushed, logged_released;
     ServerVoice *voices;
