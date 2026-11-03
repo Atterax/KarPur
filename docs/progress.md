@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Nächste Ziele: Ton der Bink-Sequenz und Bild auf dem Ausweis
+- Maintainer: Ruckeln in Gebäuden behoben, alles passt. Nächstes: fehlender Ton in der vorgerenderten Intro-Sequenz und fehlendes Figurenbild auf dem Ausweis, zusammen, weil beides am Spielanfang liegt.
+- Für viele Neustarts ein eigener Test-Spielstand: `run_with.py PROFILE_DIR=profile-test` (Pfad relativ zu `build\game`, `main.c portable_paths`); den Ordner löschen = neues Spiel. Der echte Spielstand bleibt unberührt.
+- Erster Bericht: Log-Zeilen zu `audout`, `audren`, `movie`, `album`, `capsrv`, `jpeg`, nicht umgesetzten Diensten, dazu `uncovered-imports.txt` (album/capsrv/jpeg/audio).
+
 ### 2026-11-03: Ruckeln in Gebäuden behoben: Skript-Schritt 1/30 → 1/60 (SCRIPT_STEP, Standard)
 - `DATA_FIND=1`: 13 double 1/30 in Oodle-gepackten Dateien, keiner in gespeicherten RomFS-Dateien.
 - `MOD_VALUES=game/data_find.txt` (alle 13 auf 1/60): **Laufen im Gebäude flüssig**, Tempo richtig, keine anderen Fehler bemerkt.
