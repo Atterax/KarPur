@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Erster Bericht Ton/Ausweis; Audio-Zählung
+- Log: ein Audio-Renderer (48 kHz, 32 Stimmen, 1 Sink, REV10) und ein AudioOut (wird geöffnet, ohne Fehler). Keine Meldungen zu album/capsrv/jpeg; `uncovered-imports.txt` nennt nur nn::audio-Clientfunktionen (laufen über unsere audren:u-IPC bzw. als Rechenfunktionen im SDK). Das Ausweis-Foto entsteht also wohl rein auf der GPU.
+- Neu: `TOTK_AUDIO_CENSUS=1`: alle 5 s je Renderer die meisten gleichzeitig spielenden Stimmen mit Art (Format/Kanäle/Rate) und je AudioOut Puffer, Frames und lautestes Sample. Damit ist zu sehen, welcher Weg während der Bink-Sequenz Daten bekommt und ob sie still sind.
+
 ### 2026-11-03: Nächste Ziele: Ton der Bink-Sequenz und Bild auf dem Ausweis
 - Maintainer: Ruckeln in Gebäuden behoben, alles passt. Nächstes: fehlender Ton in der vorgerenderten Intro-Sequenz und fehlendes Figurenbild auf dem Ausweis, zusammen, weil beides am Spielanfang liegt.
 - Für viele Neustarts ein eigener Test-Spielstand: `run_with.py PROFILE_DIR=profile-test` (Pfad relativ zu `build\game`, `main.c portable_paths`); den Ordner löschen = neues Spiel. Der echte Spielstand bleibt unberührt.

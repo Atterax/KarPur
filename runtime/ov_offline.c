@@ -371,6 +371,29 @@ static void ao_append(Cpu *c) {
         // KarPur: the samples go to the device now; the guest may reuse the buffer once it is released
         if (s->stream && data && bytes && plat_mem_readable(data, bytes))
             SDL_PutAudioStreamData(s->stream, (const void *)(uintptr_t)data, (int)(frames * 2 * AO_CHANNELS));
+        // KarPur TOTK_AUDIO_CENSUS=1: every 5 s the buffers appended and the loudest sample (0..32768), numbers only
+        static int census = -1;
+        static uint64_t t0, nbuf, nframes;
+        static int loud;
+        if (census < 0) census = rt_knob("AUDIO_CENSUS", "0");
+        if (census) {
+            nbuf++, nframes += frames;
+            if (data && bytes && plat_mem_readable(data, bytes))
+                for (uint64_t i = 0; i < bytes / 2; i += 7) {
+                    int16_t v;
+                    memcpy(&v, (const uint8_t *)(uintptr_t)data + 2 * i, 2);
+                    int a = v < 0 ? -(int)v : v;
+                    if (a > loud) loud = a;
+                }
+            uint64_t now = kern_now_ns();
+            if (!t0) t0 = now;
+            if (now - t0 >= 5000000000ull) {
+                rt_log("audio census: audout %#llx: %llu buffers, %llu frames in the last 5 s, loudest sample %d, %s",
+                       (unsigned long long)out, (unsigned long long)nbuf, (unsigned long long)nframes, loud,
+                       s->stream ? "to the device" : "silent (no stream)");
+                t0 = now, nbuf = nframes = 0, loud = 0;
+            }
+        }
     }
     plat_mutex_unlock(&ao_lock);
     ret_x(c, (uint64_t)ok);
