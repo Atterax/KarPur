@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Halbierung fh/fx/ns ohne Treffer; Speichersuche nach 33333334 ns
+- `PATCH_BISECT` über 17 Sätze (4× fh, 10× fx, 3× ns): in jeder Hälfte F7. Auch `0x165d004`/`0x165d43c` (33333334 ns) sind nicht der Bewegungsschritt.
+- Neu in `value_scan.c`: Arten `int32 33333334 ns` und `int64 33333334 ns` (Suche und Poke auf 16666667, `POKE_SCAN=n32:LO-HI,n64:LO-HI`); `TOTK_VALUE_SCAN=f9` startet die Suche erst auf F9 (im Gebäude), die Nachprüfung 300 Presents später.
+- Test: `VALUE_SCAN=f9 POKE_SCAN=n32:0-100000,n64:0-100000`, im Klassenzimmer F9, dann F6 (Laufen flüssig) / F7.
+
 ### 2026-11-03: Bestätigt: Fortbewegung drinnen in festen 30-Hz-Schritten
 - `FPS_DT_NS=33333334` bei 60 fps: alles doppelt so schnell, aber **das Laufen im Gebäude ist flüssig**. Die Fortbewegung drinnen rechnet also feste 1/30-s-Schritte aus der Bildzeit (Akkumulator); bei 16,67 ms pro Bild abwechselnd 1 und 0 Schritte.
 - Kandidaten für den Schritt: `int 33333334 ns` als MOVZ/MOVK in `main+0x165d004` (+0x40) und `main+0x165d43c` (+0x6c), bisher nie getestet; außerdem die 1/60- und 60.0-Konstanten (fh/fx), die bei den Halbierungen fehlten.

@@ -4,15 +4,15 @@
 // (docs/progress.md 2026-11-02). If that step is a float kept in memory (1/30 s, or 30 per second, or 2 vsyncs), a
 // scan finds where it lives and a poke tests a candidate.
 //
-// TOTK_VALUE_SCAN=1: at present 900 and again at present 1200 (in play, after loading), every writable page of the
-// modules' data, the heap and the mapped (alias) memory is searched for the 32-bit floats 1/30 and 30.0 and the 64-bit
-// float 1/30. The log gets the count per kind and region and the first hits as module offsets or guest addresses; the
+// TOTK_VALUE_SCAN=1: at present 900 (TOTK_VALUE_SCAN=f9: when F9 is pressed in the game) and again 300 presents later (in play, after loading), every writable page of the
+// modules' data, the heap and the mapped (alias) memory is searched for the 32-bit floats 1/30 and 30.0, the 64-bit
+// float 1/30 and the integer 33333334 (ns, 32 or 64 bits). The log gets the count per kind and region and the first hits as module offsets or guest addresses; the
 // second scan says which hits of the first one still hold the value (a variable that keeps it, rather than a
 // temporary). Reports addresses only, never memory contents.
 //
 // TOTK_POKE_SCAN=KIND:LO-HI[,KIND:LO-HI...] (needs TOTK_VALUE_SCAN=1): from the first scan on, the hits LO..HI (scan
 // order, 0-based) of KIND are candidates for a bisection by key (see below): f32 (float 1/30) and d64 (double 1/30)
-// get 1/60, f30 (float 30.0) gets 60.0. A thread writes them every millisecond, so a step the game recomputes each
+// get 1/60, f30 (float 30.0) gets 60.0, n32 / n64 (33333334 ns) get 16666667. A thread writes them every millisecond, so a step the game recomputes each
 // frame is mostly overwritten before it is read. Run it with TOTK_PRESENT_INTERVAL=1 (the game then runs too fast).
 //
 // TOTK_PATCH_BISECT=1: the same bisection over the frame-step patch sets (see patch_bisect_start).
@@ -30,8 +30,12 @@
 #include "input_wsys.h"
 #include "platform/platform.h"
 
-enum { KIND_F32_30TH, KIND_F32_30, KIND_F64_30TH, KIND_N };
-static const char *const kind_name[KIND_N] = {"float 1/30", "float 30.0", "double 1/30"};
+enum { KIND_F32_30TH, KIND_F32_30, KIND_F64_30TH, KIND_I32_NS, KIND_I64_NS, KIND_N };
+static const char *const kind_name[KIND_N] = {"float 1/30", "float 30.0", "double 1/30", "int32 33333334 ns",
+                                              "int64 33333334 ns"};
+// KarPur (2026-11-03): Violet moves the player indoors in fixed 1/30 s steps taken from the frame time; the step was
+// none of the code constants (tools/consts.py), so it may be a nanosecond value the game keeps in memory.
+static const uint32_t ns_30 = 33333334u, ns_60 = 16666667u;
 static const uint32_t f32_30th = 0x3D088889u, f32_30 = 0x41F00000u;
 static const uint64_t f64_30th = 0x3FA1111111111111ull;
 
@@ -67,6 +71,7 @@ static void scan_range(uint64_t lo, uint64_t hi, int reg) {
                 if (w[i] == f32_30th) k = KIND_F32_30TH;
                 else if (w[i] == f32_30) k = KIND_F32_30;
                 else if (!(i & 1) && i + 1 < n && ((uint64_t)w[i + 1] << 32 | w[i]) == f64_30th) k = KIND_F64_30TH;
+                else if (w[i] == ns_30) k = !(i & 1) && i + 1 < n && !w[i + 1] ? KIND_I64_NS : KIND_I32_NS;
                 if (k < 0) continue;
                 counts[k][reg]++;
                 if (nhits[k] == chits[k]) {
@@ -89,6 +94,8 @@ static int holds(int k, uint64_t a) {
     const uint32_t *w = (const uint32_t *)(uintptr_t)a;
     if (k == KIND_F32_30TH) return w[0] == f32_30th;
     if (k == KIND_F32_30) return w[0] == f32_30;
+    if (k == KIND_I32_NS) return w[0] == ns_30;
+    if (k == KIND_I64_NS) return w[0] == ns_30 && !w[1];
     return ((uint64_t)w[1] << 32 | w[0]) == f64_30th;
 }
 
@@ -235,8 +242,9 @@ static void poke_scan_parse(void) {
     if (!e || !*e) return;
     for (const char *p = e; *p && npranges < 8;) {
         int k = !strncmp(p, "f32:", 4) ? KIND_F32_30TH : !strncmp(p, "d64:", 4) ? KIND_F64_30TH
-              : !strncmp(p, "f30:", 4) ? KIND_F32_30 : -1;
-        if (k < 0) { rt_log("value scan: TOTK_POKE_SCAN: kind must be f32:, d64: or f30: (\"%s\")", p); return; }
+              : !strncmp(p, "f30:", 4) ? KIND_F32_30 : !strncmp(p, "n32:", 4) ? KIND_I32_NS
+              : !strncmp(p, "n64:", 4) ? KIND_I64_NS : -1;
+        if (k < 0) { rt_log("value scan: TOTK_POKE_SCAN: kind must be f32:, d64:, f30:, n32: or n64: (\"%s\")", p); return; }
         char *q;
         long lo = strtol(p + 4, &q, 10), hi = lo;
         if (*q == '-') hi = strtol(q + 1, &q, 10);
@@ -261,7 +269,9 @@ static void poke_one(Cand *c, int fast) {
         if (v == from && (fast || c->ours)) { *d = to; c->ours = 1; }
         return;
     }
-    uint32_t a30 = c->kind == KIND_F32_30TH ? f32_30th : f32_30, a60 = c->kind == KIND_F32_30TH ? f32_60th : f32_60;
+    int ns = c->kind == KIND_I32_NS || c->kind == KIND_I64_NS;   // the upper word of an int64 stays 0
+    uint32_t a30 = ns ? ns_30 : c->kind == KIND_F32_30TH ? f32_30th : f32_30;
+    uint32_t a60 = ns ? ns_60 : c->kind == KIND_F32_30TH ? f32_60th : f32_60;
     uint32_t v = *w;
     if (fast && v == a30) { *w = a60; c->ours = 1; }
     else if (!fast && c->ours && v == a60) *w = a30;
@@ -357,18 +367,24 @@ static void poke_scan_start(void) {
 
 void value_scan_present(uint64_t frame) {
     static int on = -1, pb = -1;
-    if (on < 0) on = rt_knob("VALUE_SCAN", "0");
+    static uint64_t scan_frame;   // the present of the first scan (900, or the F9 press with TOTK_VALUE_SCAN=f9)
+    if (on < 0) {
+        on = rt_knob("VALUE_SCAN", "0");
+        const char *e = cfg_get("TOTK_VALUE_SCAN");
+        if (on && e && !strcmp(e, "f9")) on = 2, rt_log("value scan: press F9 in the game to scan (TOTK_VALUE_SCAN=f9)");
+    }
     if (pb < 0) pb = rt_knob("PATCH_BISECT", "0");
     if (npokes < 0) pokes_init();
     if (npokes) poke_all();
     if (pb && frame == 900) patch_bisect_start();
     if (!on) return;
-    if (frame == 900) {
+    if (!scan_frame && (on == 2 ? ikb_foreground() && ikb_down(KEY_F9) : frame == 900)) {
+        scan_frame = frame;
         scan_all();
         report(frame);
         poke_scan_parse();
         poke_scan_start();
-    } else if (frame == 1200) {
+    } else if (scan_frame && frame == scan_frame + 300) {
         recheck(frame);
     }
 }
