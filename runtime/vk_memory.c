@@ -1437,8 +1437,11 @@ static void mirror_sync(PoolRec *r) {
 // KarPur: TOTK_HOT_LATE_SUBS (1..255, default 2) sets it; Violet's trees flickered after a save loaded in the woods
 // while the hot set kept growing (a ring of chunks, each caught too late until learned; docs/progress.md 2026-11-03).
 static int HOT_LATE_SUBS = 2;
-// Chunk size as a shift: 4 KiB (a page) by default since test G; TOTK_HOT_KB=4..1024 (a power of two) sets it. Smaller chunks make fewer
-// bytes hot when the CPU writes next to what the GPU reads (a ring buffer filled for the next frame) rather than it.
+// Chunk size as a shift: 64 KiB by default (KarPur 2026-11-03; 4 KiB from test G until then); TOTK_HOT_KB=4..1024 (a
+// power of two) sets it. With 4 KiB chunks Violet's trees flickered after a save loaded among them: the tree data sits in
+// a ring whose 4 KiB chunks each had to be caught late before they turned hot, and the hot set kept growing for
+// minutes; 64 KiB chunks take the ring's neighbours along (no flicker, no broken palms, 60 fps). Smaller chunks make
+// fewer bytes hot when the CPU writes next to what the GPU reads.
 static int HOT_SHIFT = 16;
 #define HOT_UNKNOWN_SIZE (1ull << 20)   // bytes a binding of unknown size is taken to cover
 static int mirror_hot = -1;
@@ -1447,7 +1450,7 @@ static int hot_on(void) {
     if (mirror_hot < 0) {
         mirror_hot = rt_knob("MIRROR_HOT", "1");
         const char *e = cfg_get("TOTK_HOT_KB");
-        long kb = e && *e ? strtol(e, NULL, 10) : 4;
+        long kb = e && *e ? strtol(e, NULL, 10) : 64;   // KarPur: 64 KiB since 2026-11-03 (tree flicker after a load)
         int sh = 10;
         while ((1L << (sh - 10)) < kb && sh < 20) sh++;
         if (sh < 12) sh = 12;
