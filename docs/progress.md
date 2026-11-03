@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Speichersuche im Gebäude: 33333334 ns ist es nicht
+- Suche auf F9 im Klassenzimmer (Present 2290): float 1/30 57 Treffer (alle 57 nach 300 Presents noch da), float 30.0 13833 (wohl Animationsdaten), double 1/30 24 (22 bleiben), int32 33333334 ns 0, int64 33333334 ns 9 (bei `0x617e7a230/240` und sieben in Folge ab `0x6187262d8`, Abstand 16 Byte: eine Tabelle).
+- Halbierung über die 9 int64-Treffer: in jeder Hälfte F7, nichts sonst auffällig.
+- Nächster Test: dieselbe Suche, Halbierung über float 1/30 und double 1/30 (`POKE_SCAN=f32:0-100,d64:0-100`, 81 Kandidaten), Kriterium Laufen im Gebäude.
+
 ### 2026-11-03: Halbierung fh/fx/ns ohne Treffer; Speichersuche nach 33333334 ns
 - `PATCH_BISECT` über 17 Sätze (4× fh, 10× fx, 3× ns): in jeder Hälfte F7. Auch `0x165d004`/`0x165d43c` (33333334 ns) sind nicht der Bewegungsschritt.
 - Neu in `value_scan.c`: Arten `int32 33333334 ns` und `int64 33333334 ns` (Suche und Poke auf 16666667, `POKE_SCAN=n32:LO-HI,n64:LO-HI`); `TOTK_VALUE_SCAN=f9` startet die Suche erst auf F9 (im Gebäude), die Nachprüfung 300 Presents später.
