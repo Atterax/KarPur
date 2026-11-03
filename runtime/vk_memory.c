@@ -1434,7 +1434,9 @@ static void mirror_sync(PoolRec *r) {
 // uses the imported buffer, unless the GPU wrote an overlapping range into the mirror in this submission (that write
 // reaches guest memory only at the submission's end; the mirror is then the one copy that holds it). Hot changes made
 // while a submission is recorded count from the next one (mirror_gen). TOTK_MIRROR_HOT=0 turns hot chunks off.
-enum { HOT_LATE_SUBS = 2 };
+// KarPur: TOTK_HOT_LATE_SUBS (1..255, default 2) sets it; Violet's trees flickered after a save loaded in the woods
+// while the hot set kept growing (a ring of chunks, each caught too late until learned; docs/progress.md 2026-11-03).
+static int HOT_LATE_SUBS = 2;
 // Chunk size as a shift: 4 KiB (a page) by default since test G; TOTK_HOT_KB=4..1024 (a power of two) sets it. Smaller chunks make fewer
 // bytes hot when the CPU writes next to what the GPU reads (a ring buffer filled for the next frame) rather than it.
 static int HOT_SHIFT = 16;
@@ -1728,7 +1730,18 @@ void vk_mem_mirror_begin(void) {
 // On by default since test G (2026-11-02): with deferred submits, 4 KiB chunks and hot refresh it keeps every object
 // and holds 60 fps. Alone (64 KiB chunks bound from imported memory) it made 323 chunks hot and cost half the frame
 // rate. TOTK_MIRROR_RACE=0 turns it off.
-enum { RACE_SUBS = 2 };
+static int RACE_SUBS = 2;   // TOTK_RACE_SUBS (1..255, default 2)
+static void hot_subs_init(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    const char *a = cfg_get("TOTK_HOT_LATE_SUBS"), *b = cfg_get("TOTK_RACE_SUBS");
+    if (a && *a && atoi(a) >= 1 && atoi(a) <= 255) HOT_LATE_SUBS = atoi(a);
+    if (b && *b && atoi(b) >= 1 && atoi(b) <= 255) RACE_SUBS = atoi(b);
+    if (HOT_LATE_SUBS != 2 || RACE_SUBS != 2)
+        rt_log("mem: a chunk turns hot after %d late and %d racing submissions (TOTK_HOT_LATE_SUBS, TOTK_RACE_SUBS)",
+               HOT_LATE_SUBS, RACE_SUBS);
+}
 static uint32_t late_ep = 0x80000000u;   // snapshot epochs of their own, above the texture epochs
 static int mirror_race = -1;
 static int race_on(void) {
@@ -1798,6 +1811,7 @@ static void race_apply(void) {   // replay thread, pool_lock held shared
         if (r->race_seen[h->chunk] == h->sub) continue;
         r->race_seen[h->chunk] = h->sub;
         if (r->race_cnt[h->chunk] < 255) r->race_cnt[h->chunk]++;
+        hot_subs_init();
         if (r->race_cnt[h->chunk] >= RACE_SUBS) hot_mark(r, (uint64_t)h->chunk << HOT_SHIFT, 1), plat_inc64(&m_race_chunks);
     }
     nraceq = 0;
@@ -1858,6 +1872,7 @@ void vk_mem_mirror_late(uint64_t fence) {
                         if (c < r->nchunks && r->late_seen[c] != msub) {
                             r->late_seen[c] = msub;
                             if (r->late_cnt[c] < 255) r->late_cnt[c]++;
+                            hot_subs_init();
                             if (r->late_cnt[c] >= HOT_LATE_SUBS && !r->hot[c]) hot_mark(r, c << HOT_SHIFT, 1);
                         }
                     }

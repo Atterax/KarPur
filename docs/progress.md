@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Baum-Flackern nach dem Laden doch reproduziert: wachsender Satz heißer Stücke
+- Zweites Laden desselben Spielstands: Bäume flackern. Spiegel-Zusammenfassungen: heiße Stücke 874 (Frame 1800) → 2108 (5400) → 3714 (10800), nachkopiert 2,6 → 14,5 MiB/Frame, late sync 436–689 Seiten/Frame, während des GPU-Laufs beschrieben 0,1–1,6 Stücke/Frame. Der heiße Satz wächst stetig: vermutlich ein Ringpuffer der Baumdaten, dessen Stücke erst nach 2 erwischten späten Schreibzugriffen heiß werden; bis dahin liest die GPU veraltete Stücke.
+- Neu: `TOTK_HOT_LATE_SUBS` und `TOTK_RACE_SUBS` (1..255, Standard 2) statt fester Schwellen. Tests: beide 1; zum Vergleich `HOT_KB=64` (größere Stücke, Nachbarn im Ring werden mit heiß).
+
 ### 2026-11-03: Baum-Flackern nach dem Laden: vorerst nicht reproduzierbar, pausiert
 - `SCRIPT_STEP=0` (Oodle-Umweg aus): mehr flackernde Bäume als mit Standard. Der Umweg ist nicht die Ursache (er verschiebt eher Ladezeitpunkte günstig).
 - Standard: Flackern nur nach dem Laden eines Spielstands, nach einem Ladebildschirm/Zonenwechsel weg. Mit einem weit fortgeschrittenen Spielstand (im Test-Profil) laden 99 % aller Texturen und Objekte normal, auch bei schnellem Fliegen und Reisen; **nur Palmen und selten Bäume** zeigen kurz Dreiecke und Verformungen, bis die Daten nachkommen. Flackern beim Laden nur hin und wieder; im Testlauf nicht mehr auszulösen.
