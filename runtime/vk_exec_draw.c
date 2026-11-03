@@ -1270,6 +1270,49 @@ static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int s
                       .separate = (uint8_t)separate, .valid = 1, .image = image, .out = *out};
 }
 
+// KarPur: a storage view of a BC image with block views: one texel per block in an uncompressed format of the block's
+// size (the shader's declared format when it has that size, else R32G32_UINT or R32G32B32A32_UINT), level and layer of
+// the view, 2D. Texture lock held. VK_NULL_HANDLE when the image cannot take it.
+static VkImageView block_storage_view(const VkTexImage *img, const view_t *v, int hv, uint8_t code) {
+    if (!img->block_views || !(img->usage & VK_IMAGE_USAGE_STORAGE_BIT) || img->type != VK_IMAGE_TYPE_2D) return VK_NULL_HANDLE;
+    int f = (int)img->format;
+    int bytes = (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC1_RGBA_SRGB_BLOCK) ||
+                (f >= VK_FORMAT_BC4_UNORM_BLOCK && f <= VK_FORMAT_BC4_SNORM_BLOCK) ? 8 : 16;
+    VkFormat fmt = bytes == 8 ? VK_FORMAT_R32G32_UINT : VK_FORMAT_R32G32B32A32_UINT;
+    VkFormat want = code > 0 && code < 40 ? tex_format[code] : VK_FORMAT_UNDEFINED;
+    static const VkFormat f8[] = {VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32_SINT, VK_FORMAT_R32G32_SFLOAT,
+                                  VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_SINT, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                  VK_FORMAT_R16G16B16A16_UNORM},
+                          f16[] = {VK_FORMAT_R32G32B32A32_UINT, VK_FORMAT_R32G32B32A32_SINT, VK_FORMAT_R32G32B32A32_SFLOAT};
+    const VkFormat *list = bytes == 8 ? f8 : f16;
+    int nlist = bytes == 8 ? 7 : 3;
+    for (int i = 0; i < nlist; i++)
+        if (want == list[i]) fmt = want;
+    uint32_t l0 = hv && v->set_levels ? v->base_level : 0, y0 = hv && v->set_layers ? v->min_layer : 0;
+    if (l0 >= img->levels || y0 >= img->layers) return VK_NULL_HANDLE;
+    ViewKey k = {img->image, fmt, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, l0, 1, y0, 1, 0x05040302u};
+    if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
+    VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
+    if (found) return found;
+    VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                      .usage = VK_IMAGE_USAGE_STORAGE_BIT};
+    VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .pNext = &use, .image = img->image,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, l0, 1, y0, 1}};
+    VkImageView view;
+    if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
+    ViewNode *n = malloc(sizeof *n);
+    if (!n) rt_fatal("vk: out of memory");
+    *n = (ViewNode){nvn_hm_get(&views_by_image, &img->image), k, view};
+    nvn_hm_put(&views_by_image, &img->image, n);
+    nvn_hm_put(&view_of, &k, (void *)view);
+    static int logged;
+    if (logged++ < 8)
+        rt_log("vk_exec: BC image %ux%u (vk format %d) written by a shader through a block view (vk format %d, %ux%u)",
+               img->width, img->height, f, (int)fmt, (img->width + 3) / 4, (img->height + 3) / 4);
+    return view;
+}
+
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
                           VkDescriptorImageInfo *out, VkImage *image) {
     int ms = (r->type & 0x200) != 0;
@@ -1281,7 +1324,9 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
         view_t v;
         int hv;
         const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
-        if (img) view = get_view(ex, img, &v, hv, r->type, storage), *image = img->image;
+        if (img) view = storage && img->block_views ? block_storage_view(img, &v, hv, r->format)
+                                                    : get_view(ex, img, &v, hv, r->type, storage),
+                 *image = img->image;
         if (img && storage) vk_texture_storage_bound_locked(img);
         if (img && !storage && ex->nfbl && in_fbl(ex, img->image)) layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
         if (!storage && !separate) {

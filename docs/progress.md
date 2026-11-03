@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto: Ursache gefunden – Shader-Schreibzugriffe in BC-Texturen bekamen einen Platzhalter
+- `READBACK_LOG`: Rücklesungen nur von BC1-Texturen (1440x864, Bild 457, und **352x352** an `0x5eefed600`, Bild 500), beide nach Abschluss der GPU **leer**. Keine Rücklesung eines Farbbilds: Das Spiel komprimiert das Porträt auf der GPU mit einem Shader direkt in die BC1-Textur.
+- Ursache: BC-Texturen bekamen keine Storage-Nutzung, und `get_view` baute Storage-Views nur im BC-Format; ein Shader, der eine BC-Textur über eine Block-View beschreibt (ein RG32UI-Texel pro 4x4-Block), bekam einen Platzhalter und schrieb ins Leere.
+- Umsetzung: `vk_texture.c` gibt BC-Texturen mit `NVN_TEXTURE_FLAGS_IMAGE` (2D) zusätzlich `STORAGE` (BLOCK_TEXEL_VIEW_COMPATIBLE + EXTENDED_USAGE, wenn das Gerät es erlaubt); `vk_exec_draw.c block_storage_view` baut die Storage-View im unkomprimierten Format der Blockgröße (das vom Shader deklarierte, sonst R32G32_UINT bzw. R32G32B32A32_UINT); `vk_texture_storage_bound_locked` markiert solche Texturen als GPU-beschrieben. Log: `vk_exec: BC image … written by a shader through a block view` (bis 8).
+
 ### 2026-11-03: Ausweis-Foto: Puffer A bleibt auch nach der GPU leer
 - Zählung nach Abschluss der GPU (`MEMORY=import`): A (Quelle der ersten BC1-Kopie) **0 Bytes nicht null**, B (Rücklesung der ersten BC1-Textur) 0, C 0. Die GPU füllt A also nicht; die BC1-Daten in A müsste die CPU schreiben (eigene Kompression aus einer früheren Rücklesung des gerenderten Fotos, andere Größe).
 - Neu: `TOTK_READBACK_LOG=1` loggt jede Textur → Puffer-Kopie (jede Größe, bis 40) mit Form, Region, Puffer und Bildnummer und zählt den Puffer nach Abschluss der GPU.

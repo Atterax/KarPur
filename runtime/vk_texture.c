@@ -371,7 +371,16 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         bc.flags |= VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
         if (type == VK_IMAGE_TYPE_3D) bc.flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
         VkImageUsageFlags hidden = 0;   // creation usage the replay never uses (views restrict theirs, vk_exec.c)
-        int ok = block_views_ok(&bc);
+        // KarPur: a BC texture the game declares as an image is written by shaders through an uncompressed view of its
+        // blocks (vk_exec_draw.c block_storage_view): Violet compresses its trainer card photo into a BC1 texture with
+        // a compute shader, which got a stand-in and left the photo black (docs/progress.md 2026-11-03)
+        int ok = 0;
+        if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && type != VK_IMAGE_TYPE_3D) {
+            VkImageCreateInfo st = bc;
+            st.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+            if ((ok = block_views_ok(&st))) bc = st;
+        }
+        if (!ok) ok = block_views_ok(&bc);
         if (ok && type == VK_IMAGE_TYPE_3D && !image_size(&bc)) {
             // STORAGE usage keeps RADV on GFX9 from the thin layout (image_size), so agl's BC4 encoder still renders
             // into the volume; else the image is made without block views and its encoder passes are left out
@@ -1133,12 +1142,19 @@ void vk_texture_write_note(const char *op, const tex_t *t, uint64_t a, uint64_t 
     }
 }
 
+static void gpu_written_locked(Tex *e);
+
 void vk_texture_gpu_written(const tex_t *t) {
     if (!t || !t->mem) return;
     vk_exec_frame_written(t);
     lock();
     Tex *e = entry_of(t);
-    if (e) {
+    if (e) gpu_written_locked(e);
+    unlock();
+}
+
+static void gpu_written_locked(Tex *e) {
+    {
         make_fresh(e);   // a partial render keeps what the storage held before
         e->pub.gpu_owned = 1;
         uint64_t f = vk_exec_recording_fence();
@@ -1157,7 +1173,6 @@ void vk_texture_gpu_written(const tex_t *t) {
             own_add(e);
         }
     }
-    unlock();
 }
 
 void vk_texture_release(const tex_t *t) {
@@ -1599,6 +1614,8 @@ static int owned_dirty(uint64_t addr, uint64_t size, Tex **hit) {
 // tex_info). Its storage is not marked GPU-owned: only the write fence for ReadTexels.
 void vk_texture_storage_bound_locked(const VkTexImage *img) {
     Tex *e = (Tex *)img;   // pub is the first member
+    // KarPur: a BC texture written through a block view holds the shader's blocks, not what its storage held
+    if (e->pub.block_views) vk_exec_frame_written(&e->t), gpu_written_locked(e);
     vk_texture_write_note("storage image (shader)", &e->t, 0, 0, NULL);
     uint64_t f = vk_exec_recording_fence();
     if (f > e->wr_fence) e->wr_fence = f;
