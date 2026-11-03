@@ -282,6 +282,50 @@ static void cand_name(const Cand *c, char *buf, size_t n) {
     else name_of(c->addr, buf, n);
 }
 
+// ---- write watch on the last candidate (KarPur 2026-11-03)
+// When a bisection over memory hits ends with one word left, the page holding it is watched (plat_write_watch): every
+// guest write to the word names the lifted function that wrote it, the guest return address and two frames further
+// up, logged every 300 presents. That finds the code that sets the value, which a code patch can then change for good
+// (the word's address differs between runs). Host writes (our own poke thread, copies of the runtime) count apart.
+typedef struct { uint64_t fn, lr, up1, up2; volatile int64_t n; } Writer;
+#define MAX_WRITERS 16
+static Writer writers[MAX_WRITERS];
+static volatile int nwriters, writers_lock;
+static volatile int64_t w_host, w_page, w_lost;
+static volatile uint64_t watch_addr, watch_req;
+
+static void watch_write(uint64_t a, uintptr_t rip) {   // the writing thread, inside the exception handler
+    uint64_t w = watch_addr;
+    if (a + 8 <= w || a >= w + 8) { plat_inc64(&w_page); return; }
+    uint64_t fn = rt_lifted_function(rip);
+    Cpu *c = kern_cpu();
+    if (!fn && !c) { plat_inc64(&w_host); return; }
+    uint64_t lr = c ? c->x[30] : 0, up1 = 0, up2 = 0, fp = c ? c->x[29] : 0, fr[2];
+    if (fp && !(fp & 7) && plat_mem_read(fp, fr, 16)) {
+        up1 = fr[1];
+        if (fr[0] && !(fr[0] & 7) && plat_mem_read(fr[0], fr, 16)) up2 = fr[1];
+    }
+    while (__atomic_exchange_n(&writers_lock, 1, __ATOMIC_ACQUIRE)) {}
+    int i = 0;
+    while (i < nwriters && !(writers[i].fn == fn && writers[i].lr == lr)) i++;
+    if (i == nwriters && nwriters < MAX_WRITERS) writers[nwriters++] = (Writer){fn, lr, up1, up2, 0};
+    if (i < nwriters) writers[i].n++;
+    else plat_inc64(&w_lost);
+    __atomic_store_n(&writers_lock, 0, __ATOMIC_RELEASE);
+}
+
+static void watch_report(void) {
+    char a[96], b[96], c[96], d[96], nm[64];
+    name_of(watch_addr, nm, sizeof nm);
+    rt_log("value scan: writes to the watched word %s: %d writers in lifted code, %lld host writes, %lld other writes "
+           "in its page%s", nm, nwriters, (long long)w_host, (long long)w_page, w_lost ? " (writer table full)" : "");
+    for (int i = 0; i < nwriters; i++)
+        rt_log("value scan:   %lld x by f_%llx = %s, returns to %s, then %s, then %s", (long long)writers[i].n,
+               (unsigned long long)writers[i].fn, ldr_describe(writers[i].fn, a, sizeof a),
+               ldr_describe(writers[i].lr, b, sizeof b), ldr_describe(writers[i].up1, c, sizeof c),
+               ldr_describe(writers[i].up2, d, sizeof d));
+}
+
 static void bisect_log(const char *why) {
     int lo = blo, hi = bhi, mid = bmid();
     if (hi - lo <= 1) {
@@ -290,6 +334,7 @@ static void bisect_log(const char *why) {
             cand_name(&cands[lo], nm, sizeof nm);
             rt_log("value scan: bisect %s: one candidate left: %s%s%s (it stays poked)", why,
                    cands[lo].set >= 0 ? "" : kind_name[cands[lo].kind], cands[lo].set >= 0 ? "" : " at ", nm);
+            if (cands[lo].set < 0) __atomic_store_n(&watch_req, cands[lo].addr, __ATOMIC_RELEASE);   // armed at present
         } else rt_log("value scan: bisect %s: no candidates left", why);
         return;
     }
@@ -378,6 +423,17 @@ void value_scan_present(uint64_t frame) {
     if (npokes) poke_all();
     if (pb && frame == 900) patch_bisect_start();
     if (!on) return;
+    uint64_t req = __atomic_exchange_n(&watch_req, 0, __ATOMIC_ACQUIRE);
+    if (req) {
+        rt_lifted_function(0);   // builds its table here, not inside the exception handler
+        watch_addr = req;
+        char nm[64];
+        name_of(req, nm, sizeof nm);
+        int ok = plat_write_watch(req, watch_write);
+        rt_log("value scan: %s writes to %s (leave and enter the building again to catch the code that sets it)",
+               ok ? "watching" : "cannot watch (platform)", nm);
+    }
+    if (watch_addr && frame % 300 == 0) watch_report();
     if (!scan_frame && (on == 2 ? ikb_foreground() && ikb_down(KEY_F9) : frame == 900)) {
         scan_frame = frame;
         scan_all();

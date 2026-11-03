@@ -561,6 +561,48 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     AddVectoredExceptionHandler(1, fault_veh);
 }
 
+// ---- KarPur write watch (plat_write_watch): the page is read-only; a write to it faults, ww_fn learns who wrote, and
+// the writing instruction runs once more with the page writable and the trap flag set, whose single-step exception
+// protects the page again. Writes another thread makes in that short window are missed (it is a diagnostic).
+static volatile uint64_t ww_page;
+static void (*ww_fn)(uint64_t addr, uintptr_t rip);
+static _Thread_local int ww_step;
+
+static LONG CALLBACK ww_veh(EXCEPTION_POINTERS *ep) {
+    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    uint64_t pg = ww_page;
+    DWORD old;
+    if (er->ExceptionCode == EXCEPTION_SINGLE_STEP && ww_step) {
+        ww_step = 0;
+        if (pg) VirtualProtect((void *)(uintptr_t)pg, 4096, PAGE_READONLY, &old);
+        ep->ContextRecord->EFlags &= ~0x100u;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (!pg || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 ||
+        er->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;
+    uint64_t a = (uint64_t)er->ExceptionInformation[1];
+    if ((a & ~0xFFFull) != pg) return EXCEPTION_CONTINUE_SEARCH;
+    if (ww_fn) ww_fn(a, (uintptr_t)ep->ContextRecord->Rip);
+    VirtualProtect((void *)(uintptr_t)pg, 4096, PAGE_READWRITE, &old);
+    ep->ContextRecord->EFlags |= 0x100u;
+    ww_step = 1;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+int plat_write_watch(uint64_t page, void (*fn)(uint64_t addr, uintptr_t rip)) {
+    static int added;
+    DWORD old;
+    uint64_t prev = ww_page;
+    page &= ~0xFFFull;
+    if (prev && prev != page) VirtualProtect((void *)(uintptr_t)prev, 4096, PAGE_READWRITE, &old);
+    ww_fn = fn;
+    ww_page = page;
+    if (!page) return 1;
+    if (!added) added = AddVectoredExceptionHandler(1, ww_veh) != NULL;   // first: ahead of the thaw and crash handlers
+    return added && VirtualProtect((void *)(uintptr_t)page, 4096, PAGE_READONLY, &old);
+}
+
 static void (*crash_fn)(const PlatCrash *c);
 void (*plat_fault_extra)(char *buf, size_t n);
 

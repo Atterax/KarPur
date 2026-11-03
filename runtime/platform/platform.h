@@ -197,6 +197,10 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
+// KarPur, diagnostics: every write into the 4 KiB page at page faults; fn(address written, host instruction) runs on the
+// writing thread, then the write is single-stepped with the page writable and the page is protected again. One page at
+// a time (a new call moves the watch; 0 ends it); fn must not take locks or allocate. 0 when the platform cannot.
+int plat_write_watch(uint64_t page, void (*fn)(uint64_t addr, uintptr_t rip));
 // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);

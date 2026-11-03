@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Die 30.0-double-Stellen sind es nicht; Schreib-Wächter gebaut
+- `main+0x9dc94c` (in `0x9dc8fc`): Zeit über `GetSystemTick`/`ConvertToTimeSpan` in Sekunden (÷1e9), verglichen mit 30.0 (ein 30-s-Zeitlimit). `main+0x31a14b0`: `fmov d8, #30.0`, danach Vergleich. Keine Division, also nicht der Schritt. Der double 1/30 entsteht woanders (Laufzeit-Division oder Daten).
+- Neu: Schreib-Wächter. `plat_write_watch` (win32: Seite schreibgeschützt, Vectored Exception Handler meldet die Host-Instruktion, Einzelschritt mit Trap-Flag, danach wieder geschützt; Linux: nicht umgesetzt). `value_scan.c` setzt ihn automatisch auf das Wort, das nach einer Halbierung übrig bleibt, und loggt alle 300 Presents die schreibenden Funktionen (`rt_lifted_function`, neu in `main.c`), die Gast-Rücksprungadresse und zwei Rahmen darüber; Host-Schreibzugriffe (eigener Poke-Thread) zählen extra.
+- Test: wie zuletzt (`VALUE_SCAN=f9 POKE_SCAN=d64:0-100`); nach „one candidate left“ das Gebäude verlassen und wieder betreten, laufen, beenden; Log-Zeilen `writes to the watched word`.
+
 ### 2026-11-03: Gefunden: ein double 1/30 im Speicher ist der Bewegungsschritt drinnen
 - `POKE_SCAN=d64:0-100` (24 Treffer): F7, F6, F6, F6 → `double 1/30 at 0xde071f4d0`; mit nur dieser Stelle auf 1/60 **läuft die Figur im Gebäude flüssig** (Maintainer: nach dem ersten Schritt alles flüssig).
 - Die Gegenprobe vorher (`POKE=0x5e071f4d0`) schlug fehl, weil der gemappte Speicher in diesem Lauf woanders lag: `0x5e071f4d0` und `0xde071f4d0` unterscheiden sich um 0x800000000, die untere Hälfte ist gleich. Feste Adressen taugen also nicht.

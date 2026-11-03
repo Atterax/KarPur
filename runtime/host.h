@@ -202,6 +202,7 @@ extern const char rt_port_version[];                       // VERSION at the bui
 
 // ---- kernel (kernel.c)
 typedef struct RtThread RtThread;
+uint64_t rt_lifted_function(uintptr_t rip);              // main.c: guest address of the lifted function holding rip, 0
 Cpu *kern_cpu(void);                                       // current guest thread's Cpu, NULL on host threads
 uint32_t kern_main_thread(Cpu **cpu);                      // main thread object and Cpu for the calling host thread
                                                            // (main.npdm: 1 MiB stack at the top of the stack region,
