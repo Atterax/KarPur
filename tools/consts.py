@@ -221,7 +221,8 @@ def literals(mod):
 # half-words stay (1/30, 1/60 and 1/120 all end in 0x8889; 30, 60 and 120 in 0).
 PATCH_TO = {'float 1/30': (f32(1 / 60), 'fs'), 'float 30.0': (f32(60.0), 'fr'),
             'int 33333 us': (16667, 'us'), 'int 33334 us': (16667, 'us'),
-            'float 1/60': (f32(1 / 120), 'fh'), 'float 60.0': (f32(120.0), 'fx')}
+            'float 1/60': (f32(1 / 120), 'fh'), 'float 60.0': (f32(120.0), 'fx'),
+            'int 33333334 ns': (16666667, 'ns')}
 
 
 def patch_lines(mod, imm, kinds=None):
@@ -241,6 +242,17 @@ def patch_lines(mod, imm, kinds=None):
                 if imm8 is None:
                     continue
                 y = (x & ~(0xFF << 13)) | imm8 << 13
+            elif prefix == 'ns':
+                # 33333334 = 0x1fca056 takes a MOVZ of the low half and a MOVK of the top half; both change
+                # (16666667 = 0xfe502b). The site found is the MOVK; the MOVZ must be right before it, same register.
+                if (x & 0xFFE00000) not in (0x72A00000, 0xF2A00000):
+                    continue
+                z = int(m.words[s - 1])
+                if (z & 0x7FE00000) != 0x52800000 or (z & 31) != (x & 31) or ((z >> 5) & 0xFFFF) != 0xA056:
+                    continue
+                zoff = m.lo + (s - 1) * 4 - mod.base
+                pre = (zoff, z, (z & ~(0xFFFF << 5)) | (new & 0xFFFF) << 5)
+                y = (x & ~(0xFFFF << 5)) | (new >> 16) << 5
             else:
                 h = (x >> 21) & 3
                 if new >> (16 * (h + 1)) or (vname.startswith('int') and h):
@@ -252,6 +264,8 @@ def patch_lines(mod, imm, kinds=None):
                 continue
             names.append(name)
             out.append(f'set  {name} TOTK_{name.upper()} 0')
+            if prefix == 'ns':
+                out.append(f'site {name} {mod.name} {pre[0]:x} {pre[1]:08x} {pre[2]:08x}')
             out.append(f'site {name} {mod.name} {off:x} {x:08x} {y:08x}')
     return out, names
 
@@ -267,7 +281,7 @@ def main():
                     'float 1/30, float 30.0 and 33333 us (for gen.py --patches; keep it under build/, it holds '
                     'instruction words)')
     ap.add_argument('--kinds', default='', metavar='LIST',
-                    help='with --patch-file: only these set kinds, comma-separated (fs,fr,us,fh,fx; default all), '
+                    help='with --patch-file: only these set kinds, comma-separated (fs,fr,us,fh,fx,ns; default all), '
                     'e.g. fs,fr,us for the 30 fps -> 60 fps rate constants only')
     a = ap.parse_args()
     if not (a.exefs / 'main').is_file():

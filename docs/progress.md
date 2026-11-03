@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Bestätigt: Fortbewegung drinnen in festen 30-Hz-Schritten
+- `FPS_DT_NS=33333334` bei 60 fps: alles doppelt so schnell, aber **das Laufen im Gebäude ist flüssig**. Die Fortbewegung drinnen rechnet also feste 1/30-s-Schritte aus der Bildzeit (Akkumulator); bei 16,67 ms pro Bild abwechselnd 1 und 0 Schritte.
+- Kandidaten für den Schritt: `int 33333334 ns` als MOVZ/MOVK in `main+0x165d004` (+0x40) und `main+0x165d43c` (+0x6c), bisher nie getestet; außerdem die 1/60- und 60.0-Konstanten (fh/fx), die bei den Halbierungen fehlten.
+- Neu: `consts.py --kinds … ns` schreibt für 33333334 ns einen Satz `ns_<off>` (MOVZ und MOVK zusammen → 16666667); `PATCH_BISECT` nimmt `ns_`-Sätze mit. Test: Halbierung über `fh,fx,ns`, Kriterium „Laufen drinnen flüssig“ (bei normaler Bildzeit).
+
 ### 2026-11-03: interval_one ohne Wirkung; es ruckelt nur die Fortbewegung
 - `INTERVAL_ONE=1`: Figur ruckelt im Gebäude weiter, sonst alles normal.
 - Genauer: Es ruckelt **nur das Gehen/Laufen** (Fortbewegung in eine Richtung); Emotes und andere Animationen bleiben flüssig. Also die Position, nicht die Animation.
