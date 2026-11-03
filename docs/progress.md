@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Renderer ohne Stimmen; Verdacht Opus
+- Erweiterte Zählung: Renderer gestartet (Zustand 0), ~74 RequestUpdates/s während der Sequenz, aber **0 Stimmen in Benutzung**, keine Wave-Buffer. Der Video-Ton geht also gar nicht an den Renderer (der läuft nur mit, vielleicht als Takt).
+- `uncovered-imports.txt`: aus nn::codec fehlt nur der Konstruktor `HardwareOpusDecoder::HardwareOpusDecoder(int)`; die C-Funktionen (Initialize/Decode…) bedient `ov_media.c`. Im Log keine codec-Zeilen (`ov_media.c` loggte nur Fehler).
+- Neu: Opus-Initialisierung wird geloggt (erste 8), und `AUDIO_CENSUS` zählt Opus-Decodes, Samples, lautestes Sample und Fehler. Damit: Wird der Video-Ton über Opus entpackt, und kommt dabei etwas heraus?
+
 ### 2026-11-03: Video-Ton läuft über den Audio-Renderer, dort spielt keine Stimme
 - Zählung: Der ganze Spielton (Wwise o. Ä.) kommt über **AudioOut** (235 Puffer/5 s, PCM16 stereo). Während der 1:20-Bink-Sequenz liefert AudioOut fast nur Stille (lautestes Sample 0; einmal ~3800 = das hörbare Logo-Geräusch).
 - Der **Audio-Renderer** (beim Start geöffnet, 32 Stimmen) bekommt **nur während der Sequenz** RequestUpdates, meldet aber „up to 0 voices playing“. Der Video-Ton geht also an den Renderer, und unser Renderer spielt ihn nicht ab.

@@ -64,6 +64,10 @@ static void ov_work_size(Cpu *c) {
 static void ov_initialize(Cpu *c) {
     uint64_t guest = arg_x(c, 0), size = arg_x(c, 4);
     int rate = (int)arg_x(c, 1), channels = (int)arg_x(c, 2);
+    static int32_t logged;
+    if (__atomic_add_fetch(&logged, 1, __ATOMIC_RELAXED) <= 8)
+        rt_log("nn::codec: hardware Opus decoder initialised: %d Hz, %d channels, work %#llx bytes", rate, channels,
+               (unsigned long long)size);
     if (!guest || !valid_format(rate, channels) || size < OPUS_WORK_SIZE) { ret_x(c, CODEC_R_INVALID); return; }
     OpusDecoder *fresh = opus_new(rate, channels);
     plat_mutex_lock(&lock);
@@ -137,6 +141,34 @@ static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t
 // size_t out_size, const void *in, size_t in_size). The input is Nintendo's frame: an 8-byte big-endian header
 // {payload size, final range} and the Opus packet. A header range of 0 is not a recorded value (some encoders write 0
 // into every packet), so it is not checked. A range mismatch is logged once and the samples are kept.
+// KarPur TOTK_AUDIO_CENSUS=1: every 5 s the decodes, samples, loudest sample and errors (numbers only), to see whether a
+// silent scene's sound comes through here (docs/progress.md 2026-11-03).
+static void census(int got, const int16_t *out, int channels) {
+    static int on = -1, loud;
+    static uint64_t t0, calls, samples, errors;
+    static volatile int busy;
+    if (on < 0) on = rt_knob("AUDIO_CENSUS", "0");
+    if (!on) return;
+    while (__atomic_exchange_n(&busy, 1, __ATOMIC_ACQUIRE)) {}
+    calls++;
+    if (got < 0) errors++;
+    else {
+        samples += (uint64_t)got;
+        for (int i = 0; i < got * channels; i += 5) {
+            int a = out[i] < 0 ? -(int)out[i] : out[i];
+            if (a > loud) loud = a;
+        }
+    }
+    uint64_t now = kern_now_ns();
+    if (!t0) t0 = now;
+    if (now - t0 >= 5000000000ull) {
+        rt_log("audio census: opus: %llu decodes, %llu samples per channel, loudest sample %d, %llu errors in the last 5 s",
+               (unsigned long long)calls, (unsigned long long)samples, loud, (unsigned long long)errors);
+        t0 = now, calls = samples = errors = 0, loud = 0;
+    }
+    __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
+}
+
 static void ov_decode(Cpu *c) {
     static int32_t warned;
     uint64_t guest = arg_x(c, 0), out_size = arg_x(c, 4), in_size = arg_x(c, 6);
@@ -153,7 +185,9 @@ static void ov_decode(Cpu *c) {
     int got = opus_decode(d->dec, in + 8, (opus_int32)n, out, (int)capacity, 0);
     opus_uint32 final = 0;
     if (got >= 0) opus_decoder_ctl(d->dec, OPUS_GET_FINAL_RANGE(&final));
+    int channels = d->channels;
     release(d);
+    census(got, out, channels);
     if (got < 0) {
         rt_log("nn::codec: opus_decode: %s", opus_strerror(got));
         ret_x(c, CODEC_R_INVALID);
