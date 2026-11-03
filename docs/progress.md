@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto kommt per Puffer-Kopie; Wächter auf den Puffer
+- `WRITE_LOG=1440x864`: zwei Schreibzugriffe, beide **Puffer → Textur**: Bild 573 in eine BC1-Textur bei `0x5ef003600` aus Puffer `0x60d388200+0x97e00`, Bild 674 in die angezeigte bei `0x5ef463600` aus Puffer `0x61026b200+0x97e00` (0x97e00 = genau BC1 1440x864). Die Kopie funktioniert; die Daten im Puffer sind schon schwarz/leer.
+- Neu: `TOTK_WATCH_ADDR=0x…` setzt den Schreib-Wächter ab Present 60 auf die Seite an dieser Adresse (ohne VALUE_SCAN): Schreiber aus geliftetem Code (CPU, z. B. eine Kompression im Spielcode) vs. Host-Schreibzugriffe (von der GPU zurückgeschriebene Ergebnisse). `WRITE_LOG` meldet jetzt auch Rücklesungen Textur → Puffer.
+
 ### 2026-11-03: Ausweis-Foto: nie über eine Block-View gezeichnet; Schreib-Log
 - `DUMP=bc:1440x864`: kein Auslösen, also wird die BC1-Textur nie über eine Block-View gezeichnet; trotzdem `gpu_owned 1`. Es bleiben Kopie (Puffer → Textur, Textur → Textur), Löschen oder Shader-Speicherbild.
 - Neu: `TOTK_WRITE_LOG=WxH` loggt jeden GPU-Schreibzugriff auf Texturen dieser Größe (render, target clear, buffer copy mit Quelladresse und Größe, texture copy mit Quelltextur, texture clear, storage image) mit Bildnummer, bis 40 Zeilen.

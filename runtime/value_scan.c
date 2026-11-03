@@ -295,10 +295,11 @@ static Writer writers[MAX_WRITERS];
 static volatile int nwriters, writers_lock;
 static volatile int64_t w_host, w_page, w_lost;
 static volatile uint64_t watch_addr, watch_req;
+static uint64_t watch_len = 8;   // bytes of the watched range: the word, or a page (TOTK_WATCH_ADDR)
 
 static void watch_write(uint64_t a, uintptr_t rip, int write) {   // the accessing thread, inside the exception handler
     uint64_t w = watch_addr;
-    if (a + 8 <= w || a >= w + 8) { plat_inc64(&w_page); return; }
+    if (a + 8 <= w || a >= w + watch_len) { plat_inc64(&w_page); return; }
     uint64_t fn = rt_lifted_function(rip);
     Cpu *c = kern_cpu();
     if (!fn && !c) { plat_inc64(&w_host); return; }
@@ -426,7 +427,6 @@ void value_scan_present(uint64_t frame) {
     if (npokes < 0) pokes_init();
     if (npokes) poke_all();
     if (pb && frame == 900) patch_bisect_start();
-    if (!on) return;
     uint64_t req = __atomic_exchange_n(&watch_req, 0, __ATOMIC_ACQUIRE);
     if (req) {
         rt_lifted_function(0);   // builds its table here, not inside the exception handler
@@ -438,7 +438,26 @@ void value_scan_present(uint64_t frame) {
         rt_log("value scan: %s %s %s (leave and enter the building again to catch the code that sets it)",
                ok ? "watching" : "cannot watch (platform)", reads ? "reads and writes of" : "writes to", nm);
     }
+    // KarPur TOTK_WATCH_ADDR=0x...: writes into the 4 KiB page at that guest address, watched from present 60 on (tried
+    // again every 30 presents until the page is mapped); a buffer whose content arrives black (the trainer card
+    // photo's BC1 data, docs/progress.md 2026-11-03): writes from lifted code name the CPU code, host writes are the
+    // runtime's (GPU results copied back into guest memory).
+    static uint64_t fixed = 1;
+    if (fixed == 1) {
+        const char *e = cfg_get("TOTK_WATCH_ADDR");
+        fixed = e && *e ? strtoull(e, NULL, 0) : 0;
+    }
+    if (fixed && !watch_addr && frame >= 60 && frame % 30 == 0) {
+        rt_lifted_function(0);
+        watch_len = 4096;
+        watch_addr = fixed & ~0xFFFull;
+        RtMemoryInfo mi;
+        mem_query(watch_addr, &mi);
+        if ((mi.perm & 3) != 3 || !plat_write_watch(watch_addr, 0, watch_write)) watch_addr = 0;
+        else rt_log("value scan: watching writes to the page at %#llx (TOTK_WATCH_ADDR)", (unsigned long long)watch_addr);
+    }
     if (watch_addr && frame % 300 == 0) watch_report();
+    if (!on) return;
     if (!scan_frame && (on == 2 ? ikb_foreground() && ikb_down(KEY_F9) : frame == 900)) {
         scan_frame = frame;
         scan_all();
