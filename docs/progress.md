@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: HOT_COOL hält den heißen Satz klein, fps sinken trotzdem; Resizable-BAR-Idee
+- `HOT_COOL=300` (64 KiB, aus importiertem Speicher): „hot now“ bleibt bei ~370 Stücken (23 MiB), über 1800 abgekühlt; trotzdem sanken die fps nach einiger Zeit. 2000–3000 Bindungen pro Frame an heiße Stücke: Eine Bindung, die ein heißes Stück berührt, liest den ganzen Bereich über PCIe. Nicht getestet: `HOT_KB=4 HOT_COOL=300`.
+- Maintainer fragt nach DX12: hilft nicht (das Problem ist der getrennte Speicher, nicht die API), Umstieg wäre ein Neubau des Grafikteils samt Shader-Übersetzung nach DXIL. Langfristiges Ziel des Maintainers: ein nativer Port durch Reverse Engineering statt Tricks.
+- Idee mit Freigabe des Maintainers: Pools, die die CPU spät beschreibt, in VRAM halten, das die CPU direkt beschreibt (Resizable BAR), an der festen Gastadresse eingeblendet (`VK_EXT_map_memory_placed`). Erster Schritt: Bericht in `vk_device.c rebar_report` (Speichertypen device-local + host-visible mit Heap-Größe, Erweiterung und ihre Merkmale samt Mindest-Ausrichtung). Ändert nichts am Verhalten. Offene Fragen danach: CPU-Lesezugriffe auf VRAM sind sehr langsam (liest das Spiel diese Pools?), Write-Watch entfällt dort, Platzierung im reservierten Alias-Bereich (Windows-Platzhalter).
+
 ### 2026-11-03: Menü-Modelle hell; fps sinken mit der Zeit durch wachsende heiße Stücke; Test HOT_COOL
 - `VIEW_SRGB` (Standard): Pokédex und Umkleide jetzt richtig hell (Maintainer), Pokédex 60 fps.
 - fps im Wald mit den Baum-Einstellungen von heute (heiße Stücke aus importiertem Speicher): nicht stabil. Varianten des Maintainers: `HOT_KB=16` anfangs stabil ohne Flackern, nach langem Spielen 28 fps (GPU ~30 ms) und schwankende CPU-Last; `HOT_REFRESH=2 RACE_SUBS=1 HOT_LATE_SUBS=1`: 60 fps, aber Flackern.

@@ -204,6 +204,8 @@ typedef struct {
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
 } FeatureChain;
 
+static void rebar_report(int has_placed);
+
 static int create_device(void) {
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
@@ -257,6 +259,7 @@ static int create_device(void) {
         gpl_link = tail;
         CHAIN(gpl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT);
     }
+    int has_placed = has_ext(ep, ne, "VK_EXT_map_memory_placed");   // KarPur: reported after creation (rebar_report)
     free(ep);
 
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
@@ -338,7 +341,47 @@ static int create_device(void) {
         return 0;
     }
     vk_crumbs_init(&g_vk);
+    rebar_report(has_placed);
     return 1;
+}
+
+// KarPur: what the device offers for keeping guest pools in VRAM that the CPU writes directly (Resizable BAR):
+// device-local memory types that are also host-visible and their heap size (about 256 MiB without Resizable BAR, the
+// whole VRAM with it), and VK_EXT_map_memory_placed, which maps such memory at an address the caller chooses (the
+// guest pools sit at fixed addresses). Report only; nothing uses it yet (docs/progress.md 2026-11-03). The structures
+// are spelled out with their registry values so older Vulkan headers build it too.
+typedef struct { VkStructureType sType; void *pNext; VkBool32 placed, range_placed, unmap_reserve; } KpPlacedFeatures;
+typedef struct { VkStructureType sType; void *pNext; VkDeviceSize min_align; } KpPlacedProps;
+static void rebar_report(int has_placed) {
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_vk.phys, &mp);
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    VkDeviceSize best = 0;
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+        if ((f & want) != want) continue;
+        VkDeviceSize h = mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size;
+        if (h > best) best = h;
+        rt_log("vk: rebar: memory type %u: device-local, host-visible%s%s, heap %u of %.0f MiB", i,
+               f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ? ", coherent" : "",
+               f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? ", cached" : "", mp.memoryTypes[i].heapIndex, h / 1048576.0);
+    }
+    KpPlacedFeatures pf = {(VkStructureType)1000272000, NULL, 0, 0, 0};
+    KpPlacedProps pp = {(VkStructureType)1000272001, NULL, 0};
+    if (has_placed) {
+        VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &pf};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+    }
+    rt_log("vk: rebar: %s (largest device-local host-visible heap %.0f MiB); VK_EXT_map_memory_placed %s%s",
+           best >= (1ull << 30) ? "Resizable BAR looks on" : best ? "only a small BAR window (Resizable BAR off?)"
+                                                                 : "no device-local host-visible memory",
+           best / 1048576.0, has_placed ? "available" : "not offered by the driver",
+           has_placed ? "" : "");
+    if (has_placed)
+        rt_log("vk: rebar: placed mapping: memoryMapPlaced %u, memoryMapRangePlaced %u, memoryUnmapReserve %u, minimum "
+               "alignment %llu bytes", pf.placed, pf.range_placed, pf.unmap_reserve, (unsigned long long)pp.min_align);
 }
 
 static long g_errors_total;     // outlives the device so the probe can print it after vk_shutdown
