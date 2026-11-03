@@ -584,9 +584,9 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
     const char *p = romfs_path_relative(mount_name, path);
-    if (!p) return FS_R_PATH_NOT_FOUND;
+    if (!p) { fs_trace("rom MISSING (outside the mount)", path); return FS_R_PATH_NOT_FOUND; }
     uint64_t i = file_index(p);
-    if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
+    if (i == UINT64_MAX) { fs_trace("rom MISSING", path); return FS_R_PATH_NOT_FOUND; }
     uint32_t ov = overlay_slot(i);
     PlatFile *f = NULL;
     if (ov) {

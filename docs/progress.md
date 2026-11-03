@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Video-Ton: weder Opus noch Renderer-Stimmen; Bink-Strings
+- Reihenfolge der Zählzeilen: Während der Sequenz keine Opus-Decodes (die Opus-Decoder mit 8/12/16/24 kHz entstehen erst danach, Ausweis-Szene), Renderer ohne Stimmen, AudioOut still bis auf das Logo-Geräusch. Renderer-Antworten geprüft (Pools werden als angemeldet bestätigt, IAudioDevice meldet 2 Kanäle).
+- Bink ist in main eingebaut: Strings „Bink Snd“, „Bink IO“ (in `main+0x7a0`, BinkOpen), Thread-Namen „BinkBackgroundSound“, „BinkBackgroundIO“, „BinkSync%d“ (`main+0x18b1b18`), Shader `movie_for_bink`.
+- Nächster Schritt: `TOTK_TRACE=fs` (jetzt auch mit `rom MISSING` für nicht gefundene Pfade), um zu sehen, welche Dateien rund um die Sequenz geöffnet werden (die .bk2 und eventuelle Ton-Streams) und ob eine fehlt.
+
 ### 2026-11-03: Renderer ohne Stimmen; Verdacht Opus
 - Erweiterte Zählung: Renderer gestartet (Zustand 0), ~74 RequestUpdates/s während der Sequenz, aber **0 Stimmen in Benutzung**, keine Wave-Buffer. Der Video-Ton geht also gar nicht an den Renderer (der läuft nur mit, vielleicht als Takt).
 - `uncovered-imports.txt`: aus nn::codec fehlt nur der Konstruktor `HardwareOpusDecoder::HardwareOpusDecoder(int)`; die C-Funktionen (Initialize/Decode…) bedient `ov_media.c`. Im Log keine codec-Zeilen (`ov_media.c` loggte nur Fehler).
