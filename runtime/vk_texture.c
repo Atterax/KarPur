@@ -904,6 +904,37 @@ static int alias_copy(Tex *e, const Tex *src) {
     return 1;
 }
 
+// KarPur TOTK_ALIAS_LOG=1: a new texture that took no content from a GPU-written one, yet whose storage overlaps one
+// the GPU wrote, is logged (up to 60) with both shapes, formats and the offset between them, and why the alias was not
+// taken: for an image the game renders once and then reads through another descriptor (Violet's trainer card photo
+// stays black, docs/progress.md 2026-11-03). Addresses, sizes and format numbers only.
+static void alias_miss_log(const Tex *e) {
+    static int on = -1, n;
+    if (on < 0) on = rt_knob("ALIAS_LOG", "0");
+    if (!on || n >= 60) return;
+    uint64_t a = e->pub.addr, sz = e->t.L.size;
+    for (int i = owned_lower(a > max_owned ? a - max_owned : 0); i < nowned && owned[i]->pub.addr < a + sz; i++) {
+        const Tex *o = owned[i];
+        if (o == e || o->pub.addr + o->t.L.size <= a || !o->pub.gpu_owned) continue;
+        const VkTexImage *p = &e->pub, *q = &o->pub;
+        const char *why = o->pub.addr != a ? "other start address"
+                        : p->type != q->type ? "other type"
+                        : p->width != q->width || p->height != q->height || p->depth != q->depth ? "other size"
+                        : e->t.L.size != o->t.L.size ? "other storage size"
+                        : nvn_tex_is_linear(&e->t.d) != nvn_tex_is_linear(&o->t.d) ? "other layout (linear/block)"
+                        : !alias_compatible(e, o) ? "other block size, depth/stencil or multisampled"
+                        : !alias_has_gpu_content(o) ? "no GPU content newer than the storage"
+                        : "compatible (taken unless another was preferred)";
+        rt_log("vk: alias miss: new %ux%ux%u fmt %#x lv %u at %#llx+%#llx%s over GPU-written %ux%ux%u fmt %#x lv %u at "
+               "%#llx+%#llx%s, offset %+lld: %s", p->width, p->height, p->depth, e->t.d.format, p->levels,
+               (unsigned long long)a, (unsigned long long)sz, nvn_tex_is_linear(&e->t.d) ? " linear" : "", q->width,
+               q->height, q->depth, o->t.d.format, q->levels, (unsigned long long)o->pub.addr,
+               (unsigned long long)o->t.L.size, nvn_tex_is_linear(&o->t.d) ? " linear" : "",
+               (long long)(a - o->pub.addr), why);
+        if (++n >= 60) return;
+    }
+}
+
 static Tex *entry_of(const tex_t *t) {
     TexKey k;
     make_key(t, &k);
@@ -929,6 +960,7 @@ static Tex *entry_of(const tex_t *t) {
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
         if (tex_alias) {
+            if (!src) alias_miss_log(e);
             if (src && alias_copy(e, src)) {
                 n_alias_copied++;
                 if (e->pub.mirrored) {   // the content is src's GPU render, newer than the storage bytes

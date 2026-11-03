@@ -24,6 +24,11 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto: PIPE_SKIP und MEMORY=import ohne Wirkung; Alias-Fehlschläge loggen
+- `PIPE_SKIP=strict`: schwarz. `MEMORY=import`: schwarz. Also weder übersprungene Zeichenbefehle beim einmaligen Foto noch das Zurückschreiben der Spiegel.
+- Verdacht: Das Foto wird in ein Render-Ziel gezeichnet und über einen anderen Deskriptor gelesen (andere Startadresse, Größe, Format oder Layout). `TEX_ALIAS` übernimmt Inhalt nur bei gleicher Adresse und gleicher Form; sonst wird das neue Bild aus dem (leeren) Gastspeicher geladen.
+- Neu: `TOTK_ALIAS_LOG=1` (`vk_texture.c`): Ein neues Bild ohne übernommenen Inhalt, dessen Speicher ein von der GPU beschriebenes Bild überlappt, wird mit beiden Formen, Formaten, Versatz und Grund geloggt (bis 60 Zeilen).
+
 ### 2026-11-03: Video-Ton behoben
 - Mit beiden Absicherungen (Stimmen und Kanal-Ressourcen) ist der Ton der Bink-Sequenz **perfekt** (Maintainer). Ursache: `request_update` ordnete die Einträge über ihre id zu, und unbenutzte Einträge mit id 0 überschrieben in derselben Aktualisierung die benutzte Stimme bzw. ihren linken Kanal. TotK benutzte offenbar keine Stimme mit id 0 neben solchen Einträgen.
 - Nächstes Ziel: schwarzes Figurenbild auf dem Ausweis.
