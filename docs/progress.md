@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto: keine Alias- oder Kopier-Fehlschläge; Bild-Mitschnitt per F9
+- `ALIAS_LOG=1`: keine einzige Zeile. Auch keine Kopier-Warnungen („copy … skipped“) im Log.
+- `TOTK_DUMP=f9` (`vk_dump.c`): der Bild-Mitschnitt startet beim Druck auf F9 statt bei einer festen Bildnummer. Standardordner jetzt `game/framedump` (ignoriert; die PNGs zeigen das Spiel). `passes.txt` nennt je Pass die Ziele und die gebundenen Texturen mit Größe, Format, Adresse, Spiegel-Zustand und Upload-Zahl: damit ist zu sehen, woher die Textur des Ausweis-Fotos kommt (von der GPU gezeichnet oder vom CPU hochgeladen).
+
 ### 2026-11-03: Ausweis-Foto: PIPE_SKIP und MEMORY=import ohne Wirkung; Alias-Fehlschläge loggen
 - `PIPE_SKIP=strict`: schwarz. `MEMORY=import`: schwarz. Also weder übersprungene Zeichenbefehle beim einmaligen Foto noch das Zurückschreiben der Spiegel.
 - Verdacht: Das Foto wird in ein Render-Ziel gezeichnet und über einen anderen Deskriptor gelesen (andere Startadresse, Größe, Format oder Layout). `TEX_ALIAS` übernimmt Inhalt nur bei gleicher Adresse und gleicher Form; sonst wird das neue Bild aus dem (leeren) Gastspeicher geladen.

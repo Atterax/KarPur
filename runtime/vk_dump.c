@@ -2,7 +2,8 @@
 // VK_EXT_external_memory_host). Between presents frame-1 and frame, the replay's command buffers also copy, after each
 // render pass, its colour and depth targets and, after each dispatch, the storage images it writes into host buffers;
 // the completion thread turns them into 8-bit PNGs once the submission is done. 3D textures (LUTs, volumes) sampled or
-// written in the frame are copied once each, slices side by side. Files in TOTK_DUMP_DIR (default "dump"):
+// written in the frame are copied once each, slices side by side. Files in TOTK_DUMP_DIR (default "game/framedump",
+// ignored by git: the PNGs show the game; TOTK_DUMP=f9 dumps the frame after an F9 press instead of a frame number):
 //   pass_<seq>_t<i>_<w>x<h>_<vkformat>_<name>.png   colour target i (td: depth; img<slot>: storage image; lut<id>: 3D;
 //                                                    a BC target drawn through a block view: its blocks as that view)
 //   ..._tm.png                                       float formats: x/(1+x) of the same image (the plain one clamps)
@@ -31,6 +32,8 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "input_map.h"
+#include "input_wsys.h"
 #include "nvn_api.h"
 #include "vk.h"
 #include "vk_exec.h"
@@ -862,9 +865,12 @@ out:
 
 static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
+static int dump_on_key;   // TOTK_DUMP=f9: the frame after an F9 press in the game window (KarPur)
+
 void vk_dump_init(void) {
     const char *e = cfg_get("TOTK_DUMP");
-    if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
+    if (e && !strcmp(e, "f9")) dump_on_key = 1, dump_frame = UINT64_MAX;
+    if (!e || !*e || !(dump_frame || (dump_frame = strtoull(e, NULL, 10)))) return;
     const char *lf = cfg_get("TOTK_DUMP_LOG");
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
     const char *sr = cfg_get("TOTK_DUMP_SKIP_RUNS");
@@ -878,7 +884,7 @@ void vk_dump_init(void) {
         w[1] = *q == 'x' ? (uint32_t)strtoul(q + 1, &q, 10) : 0;
     }
     const char *d = cfg_get("TOTK_DUMP_DIR");
-    snprintf(dir, sizeof dir, "%s", d && *d ? d : "dump");
+    snprintf(dir, sizeof dir, "%s", d && *d ? d : "game/framedump");   // KarPur: under game/ (ignored): PNGs of the game
     make_dirs(dir);
     char path[600];
     snprintf(path, sizeof path, "%s/passes.txt", dir);
@@ -900,10 +906,16 @@ void vk_dump_init(void) {
         if (bd_size && !(bufs_f = fopen(path, "w"))) bd_size = 0;
     }
     vk_dump_armed = 1;
-    rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
+    if (dump_on_key) rt_log("vk_dump: press F9 in the game to dump the next frame to %s", dir);
+    else rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
 }
 
 void vk_dump_present(uint64_t frame) {
+    if (dump_on_key == 1 && vk_dump_armed && ikb_foreground() && ikb_down(KEY_F9)) {
+        dump_on_key = 2;
+        dump_frame = frame + 2;
+        rt_log("vk_dump: F9: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
+    }
     if (frame != dump_frame) return;
     plat_mutex_lock(&rec_lock);
     finished = 1;
