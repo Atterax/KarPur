@@ -24,6 +24,10 @@ Kurzes Protokoll: was erledigt ist, was als Nächstes kommt und was offen ist. N
 
 ## Protokoll
 
+### 2026-11-03: Ausweis-Foto: nie über eine Block-View gezeichnet; Schreib-Log
+- `DUMP=bc:1440x864`: kein Auslösen, also wird die BC1-Textur nie über eine Block-View gezeichnet; trotzdem `gpu_owned 1`. Es bleiben Kopie (Puffer → Textur, Textur → Textur), Löschen oder Shader-Speicherbild.
+- Neu: `TOTK_WRITE_LOG=WxH` loggt jeden GPU-Schreibzugriff auf Texturen dieser Größe (render, target clear, buffer copy mit Quelladresse und Größe, texture copy mit Quelltextur, texture clear, storage image) mit Bildnummer, bis 40 Zeilen.
+
 ### 2026-11-03: Ausweis-Foto ist eine BC1-Textur 1440x864, von der GPU geschrieben
 - `DUMP=f9` beim Ausweis (`passes.txt`, Frame 927): Die Ausweis-Passes (rgba8srgb 1920x1080) samplen u. a. **tex 577 BC1 (vk 133) 1440x864, 1 Level, mirrored 0, gpu_owned 1, uploads 0** an `0x5ef463600`, sonst nur kleine BC-UI-Texturen und den Font-Atlas. Kein Porträt-Render-Ziel in diesem Bild; die Figur ist in keinem PNG. Das Foto wird also einmal gerendert und mit einem Shader nach BC1 komprimiert (die Runtime kann BC-Texturen über Block-Views als Render-Ziel nehmen, `vk_exec.c`), danach nur noch gesampelt; es kommt schwarz an.
 - Neu: `TOTK_DUMP=bc[:WxH]` startet den Bild-Mitschnitt in dem Pass, in dem eine BC-Textur (≥256 breit oder genau WxH) zum ersten Mal über eine Block-View gezeichnet wird: zeigt, was die Kompression liest.

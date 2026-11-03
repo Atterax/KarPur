@@ -873,7 +873,9 @@ void vk_exec_pass_end(VkExec *ex) {
     if (ex->recorded != after_end) VK_HZ_SET(ex, VK_HZ_AFTER_PASS);   // copies of stand-ins after the pass: untracked
     uint64_t stamp = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     for (int i = 0; i < 8; i++)
-        if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
+        if (ex->color[i].image)
+            vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp),
+                vk_texture_write_note("render", ex->color[i].tex, 0, 0, NULL);
     if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
 }
 
@@ -968,6 +970,7 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
         vkCmdClearColorImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, &cv, 1, &r);
         ex->recorded++;
         vk_texture_gpu_written(t->tex);
+        vk_texture_write_note("target clear", t->tex, 0, 0, NULL);
         return;
     }
     VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = (uint32_t)i};

@@ -1074,6 +1074,27 @@ static void wb_cfg_init(void) {
     if (wb_limit != WB_SMALL_DEFAULT) rt_log("vk: fence write-back limit %llu bytes", (unsigned long long)wb_limit);
 }
 
+void vk_texture_write_note(const char *op, const tex_t *t, uint64_t a, uint64_t n, const tex_t *src) {
+    static int init, count;
+    static unsigned ww, wh;
+    if (!init) {
+        init = 1;
+        const char *e = cfg_get("TOTK_WRITE_LOG");
+        if (e && *e && sscanf(e, "%ux%u", &ww, &wh) == 2) rt_log("vk: logging GPU writes into %ux%u textures (TOTK_WRITE_LOG)", ww, wh);
+    }
+    if (!ww || !t || t->d.width != ww || t->d.height != wh || count >= 40) return;
+    count++;
+    if (src)
+        rt_log("vk: write log: %s into %ux%u fmt %#x at %#llx from %ux%u fmt %#x at %#llx (frame %llu)", op, t->d.width,
+               t->d.height, t->d.format, (unsigned long long)(uintptr_t)t->mem, src->d.width, src->d.height,
+               src->d.format, (unsigned long long)(uintptr_t)src->mem,
+               (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+    else
+        rt_log("vk: write log: %s into %ux%u fmt %#x at %#llx%s%llx+%#llx (frame %llu)", op, t->d.width, t->d.height,
+               t->d.format, (unsigned long long)(uintptr_t)t->mem, a ? " buffer " : " ", (unsigned long long)a,
+               (unsigned long long)n, (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+}
+
 void vk_texture_gpu_written(const tex_t *t) {
     if (!t || !t->mem) return;
     vk_exec_frame_written(t);
@@ -1540,6 +1561,7 @@ static int owned_dirty(uint64_t addr, uint64_t size, Tex **hit) {
 // tex_info). Its storage is not marked GPU-owned: only the write fence for ReadTexels.
 void vk_texture_storage_bound_locked(const VkTexImage *img) {
     Tex *e = (Tex *)img;   // pub is the first member
+    vk_texture_write_note("storage image (shader)", &e->t, 0, 0, NULL);
     uint64_t f = vk_exec_recording_fence();
     if (f > e->wr_fence) e->wr_fence = f;
 }
