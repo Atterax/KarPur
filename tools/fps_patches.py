@@ -37,7 +37,7 @@ Sets (switched with their TOTK_ variable):
   interval_one (off by default; TOTK_INTERVAL_ONE=1, test) main+0x2b7a874: `add w1, w20, #1` becomes `movz w1, #1`,
            the argument of a virtual call in the frame-mode function, as in a third-party 3.0.1 60 fps patch.
 
-  lua_mod  (off by default; TOTK_LUA_MOD=1) main+0xe37f94: the call (bl) of lua_pcallk (main+0xb5ddd0) that runs the
+  lua_mod  (on by default; TOTK_LUA_MOD=0 turns it off) main+0xe37f94: the call (bl) of lua_pcallk (main+0xb5ddd0) that runs the
            game's main script, right after main+0xe37dac loaded it with luaL_loadbufferx (bl main+0xe382a0 at
            main+0xe37f70), goes to a host function at patch page +0xfc0 (runtime/lua_mod.c), which makes the call and
            then loads and runs the runtime's own Lua in the same state. Checked: both calls are there, and
@@ -264,7 +264,7 @@ def main():
               names_string(m, base, LUA_F_PARSER, "attempt to load a %s chunk (mode is '%s')"))
     print(f'main+{LUA_RUN_SITE:#x}: bl lua_pcallk after luaL_loadbufferx: {"ok" if lua_ok else "MISMATCH"}')
     if lua_ok:
-        SITES.append(('lua_mod', 'TOTK_LUA_MOD', 0, LUA_RUN_SITE, m.word(base + LUA_RUN_SITE),
+        SITES.append(('lua_mod', 'TOTK_LUA_MOD', 1, LUA_RUN_SITE, m.word(base + LUA_RUN_SITE),
                       [f'@pagebl:{PAGE_LUA_HOST:x}']))
         words_of[LUA_RUN_SITE] = SITES[-1][5]
     else:

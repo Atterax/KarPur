@@ -393,3 +393,27 @@ cd C:\KarPur\repo
 ```
 
 Erwartete Ausgabe zwischen zwei `=====`-Linien: sechs Zeilen `font 0 standard: ... bytes` bis `font 5 nintendo-extension: ... bytes` und `written to ...\game\firmware\shared-fonts`. Die Dateien bleiben in `game\` und werden nie hochgeladen.
+
+## PC-Einstellungen im Hauptmenü einrichten (einmalig)
+
+Damit im Hauptmenü des Spiels (X) der Eintrag „PC-Einstellungen“ erscheint, braucht es eine Liste, die zu deinen Spieldateien passt. Sie bleibt unter `game/` und kommt nicht ins Repo. Gedacht für Violet 4.0.0.
+
+1. Liste erzeugen:
+
+   ```
+   .venv\Scripts\python tools\pc_menu.py
+   ```
+
+   Erwartete letzte Zeile: `done: …\game\ui_patch.txt`
+
+2. Meldet das Werkzeug, dass `game/dump` Dateien fehlen: Starte das Spiel einmal so, öffne das Hauptmenü (X) und Options, beende das Spiel und führe Schritt 1 noch einmal aus.
+
+   ```
+   .venv\Scripts\python tools\run_with.py DATA_WATCH=1
+   ```
+
+Ohne diese Liste startet das Spiel wie gewohnt, ohne den Eintrag und mit dem ganzen F1-Menü. Mit der Liste bleibt F1 zu; die Steuerung liegt dann unter PC-Einstellungen → Steuerung. Das ganze F1-Menü (zum Beispiel für die Fehlersuche) bekommst du für einen Lauf so:
+
+```
+.venv\Scripts\python tools\run_with.py MENU_LOCK=0
+```

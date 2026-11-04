@@ -196,6 +196,7 @@ void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, 
 int data_patch_wants_decodes(void);                         // the list has fields in Oodle-packed files
 int data_patch_open(void);                                 // fields of packed files not set yet
 void data_watch_init(void);                                // KarPur data_watch.c: from rt_patches_init
+int data_patch_ui_loaded(void);                            // data_patch.c: the UI list (game/ui_patch.txt) is in use
 void lua_mod_init(void);                                   // KarPur lua_mod.c: from rt_patches_init
 void lua_mod_command(const char *text, uint64_t n);        // lua_mod.c: a guest debug string; acts on KARPUR_CMD lines
 void frame_dt_init(void);                                  // KarPur frame_dt.c: from rt_patches_init

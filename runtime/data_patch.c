@@ -44,9 +44,10 @@
 //                      "\n" is a line break. "@<line> " before the text puts it in the space of that other (unused)
 //                      line of the same file instead, cut to fit. For the PC settings page in the game's options (docs/progress.md
 //                      2026-11-04), whose texts the game fetches by label only.
-//   TOTK_UI_PATCH=1    set the bytes of the game's UI files that tools/uilayout.py --hide lists (game/ui_patch.txt,
-//                      group "mod=<value>"): the pane flags of panes to hide, such as the main menu's
-//                      downloadable-content panel N_dlc_00 (docs/progress.md 2026-11-03). A path names another list.
+//   TOTK_UI_PATCH      the list of bytes and texts of the game's UI files that make the PC settings entry and page
+//                      (game/ui_patch.txt, written by tools/pc_menu.py; group "mod=<value>" and msgtext lines). Used when
+//                      the file is there, looked for from the working directory and from build/game; 0 turns it off,
+//                      a path names another list.
 //
 // The original values never leave the player's PC; the log names fields and offsets only.
 #include <stdint.h>
@@ -102,6 +103,12 @@ static float factor_of(const char *key) {
 static int by_offset(const void *a, const void *b) {
     uint64_t x = ((const Field *)a)->at, y = ((const Field *)b)->at;
     return x < y ? -1 : x > y;
+}
+
+static int ui_loaded;    // the UI list is in use
+int data_patch_ui_loaded(void) {
+    data_patch_init();
+    return ui_loaded;
 }
 
 static int find_on;      // TOTK_DATA_FIND
@@ -283,7 +290,7 @@ void data_patch_init(void) {
         rt_log("data find: looking for double 1/30 in RomFS reads and Oodle decodes; lines go to game/data_find.txt");
     }
     const char *ui = cfg_get("TOTK_UI_PATCH");
-    int uis = ui && *ui && strcmp(ui, "0");
+    int uis = !(ui && !strcmp(ui, "0"));
     if (view == 1.0f && spawn == 1.0f && count == 1.0f && !mods && !uis) return;
     int skipped = 0;
     if (view != 1.0f || spawn != 1.0f || count != 1.0f) {
@@ -299,10 +306,12 @@ void data_patch_init(void) {
         else rt_log("data patch: %d values of a mod from %s", n, path);
     }
     if (uis) {
-        const char *path = strcmp(ui, "1") ? ui : "game/ui_patch.txt";
+        const char *path = ui && *ui && strcmp(ui, "1") ? ui : "game/ui_patch.txt";
         int n = load_list(path, 1, 1, 1, 1, &skipped);
-        if (n < 0) rt_log("data patch: UI_PATCH set, but no list %s (tools/uilayout.py --hide writes it)", path);
-        else rt_log("data patch: %d UI bytes from %s", n, path);
+        if (n < 0 && path != ui) n = load_list(path = "../../game/ui_patch.txt", 1, 1, 1, 1, &skipped);
+        if (n < 0) rt_log("data patch: no UI list (tools/pc_menu.py writes game/ui_patch.txt): no PC settings page");
+        else rt_log("data patch: %d UI bytes and texts from %s", n, path);
+        ui_loaded = n > 0;
     }
     qsort(fields, (size_t)nfields, sizeof fields[0], by_offset);
     if (nfields) lo = fields[0].at, hi = fields[nfields - 1].at + 4;

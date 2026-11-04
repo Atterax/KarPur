@@ -1,5 +1,5 @@
 -- KarPur: the "PC settings" entry in the game's main menu (X menu) and its page, run in the game's Lua state by
--- runtime/lua_mod.c (TOTK_LUA_MOD=1 TOTK_LUA_MOD_FILE=C:\KarPur\repo\runtime\lua\menu_mod.lua). docs/progress.md
+-- runtime/lua_mod.c, which has this file built in (TOTK_LUA_MOD_FILE names a file to try instead). docs/progress.md
 -- 2026-11-03/04.
 --
 -- The menu object (class C2F32EE4ECA8A9B15, menu_probe.lua) keeps its buttons in Haxe arrays of seven (0-based,

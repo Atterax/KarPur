@@ -3,7 +3,7 @@
 // Violet's UI logic is Haxe compiled to Lua 5.4 (script/lua/bin/release/main/main.blua). main+0xe37dac opens the
 // standard libraries, loads that script with luaL_loadbufferx and runs it with lua_pcallk; with the set on, that one
 // call (main+0xe37f94) comes here (patch page +0xfc0). The game's call runs first, unchanged; then, once, the runtime
-// loads its own Lua (runtime/lua/karpur.lua, built in; TOTK_LUA_MOD_FILE names a file to load instead, for trying
+// loads its own Lua (runtime/lua/menu_mod.lua, built in; TOTK_LUA_MOD_FILE names a file to load instead, for trying
 // changes without a rebuild) into the same state with the game's luaL_loadbufferx and runs it with the game's
 // lua_pcallk, so it sees every class the game's script defined. Its return value or error message goes to the log,
 // and the stack top is put back as it was, so the game's code after the call finds its stack unchanged.
@@ -42,7 +42,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc23-extensions"
 static const char builtin[] = {
-#embed "lua/karpur.lua"
+#embed "lua/menu_mod.lua"
 };
 #pragma clang diagnostic pop
 
@@ -128,7 +128,10 @@ static void host_run_main(Cpu *c) {
     plat_mutex_unlock(&lock);
     rt_log("lua mod: the game's main script ran (run %d, state %d%s, lua_pcallk %llu)", k, idx,
            seen ? ", seen before" : "", (unsigned long long)r);
-    if (!r && !seen) {
+    // The built-in script needs the texts and the button of the patch list (tools/pc_menu.py): without it the game
+    // stays as it ships, the downloadable-content button included.
+    const char *file = cfg_get("TOTK_LUA_MOD_FILE");
+    if (!r && !seen && ((file && *file) || data_patch_ui_loaded())) {
         static PlatMutex run_lock = PLAT_MUTEX_INIT;   // the message buffer is shared
         plat_mutex_lock(&run_lock);
         run_mod(c, a[0]);
@@ -230,10 +233,8 @@ void lua_mod_command(const char *text, uint64_t n) {
     while (len && (cmd[len - 1] == '\n' || cmd[len - 1] == '\r' || cmd[len - 1] == ' ' || !cmd[len - 1])) len--;
     if (len == 13 && !memcmp(cmd, "pc_page_ready", 13)) {
         // The F1 menu is locked only once the page that replaces it is in place: the page's script runs and its texts
-        // and button come from TOTK_UI_PATCH. Any other start keeps F1, so the settings stay reachable.
-        const char *ui = cfg_get("TOTK_UI_PATCH");
-        int patched = ui && *ui && strcmp(ui, "0");
-        int lock = patched && rt_knob("MENU_LOCK", "1");
+        // and button come from the patch list. Any other start keeps F1, so the settings stay reachable.
+        int lock = data_patch_ui_loaded() && rt_knob("MENU_LOCK", "1");
         if (lock) menu_lock();
         rt_log("lua mod: PC settings page ready; F1 menu %s", lock ? "locked (TOTK_MENU_LOCK=0 keeps it)" : "stays");
     } else if (len == 13 && !memcmp(cmd, "open_controls", 13)) {
