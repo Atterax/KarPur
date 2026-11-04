@@ -140,9 +140,10 @@ static void host_run_main(Cpu *c) {
     c->x[0] = r;
 }
 
-// The settings the PC settings page (runtime/lua/menu_mod.lua) may change: live ones of the F1 menu.
+// The settings the PC settings page (runtime/lua/menu_mod.lua) may change: live ones of the F1 menu, and POPULATION,
+// which takes effect at the next start.
 static const char *const pc_keys[] = {"FULLSCREEN", "WINDOW_SIZE", "FPS_LIMIT", "VK_PRESENT", "UPSCALER", "SHARPNESS",
-                                      "PERF_OVERLAY"};
+                                      "PERF_OVERLAY", "POPULATION"};
 
 static int pc_key(const char *k, size_t n) {
     for (size_t i = 0; i < sizeof pc_keys / sizeof *pc_keys; i++)

@@ -80,7 +80,11 @@ static void dump(Want *w, const uint8_t *data, uint64_t n) {
 static void host_oodle(Cpu *c) {
     uint64_t a[8];
     memcpy(a, c->x, sizeof a);
-    uint64_t r = rt_call(c, guest_decoder, 8, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+    uint64_t r = 0;
+    if (a[0] + a[1] <= RT_ADDRESS_LIMIT && a[2] + a[3] <= RT_ADDRESS_LIMIT)
+        r = data_patch_replace((const uint8_t *)(uintptr_t)a[0], a[1], (uint8_t *)(uintptr_t)a[2], a[3]);
+    if (r) c->x[0] = r;   // what the decoder would return; rt_call leaves its result there
+    else r = rt_call(c, guest_decoder, 8, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
     uint64_t n = __atomic_add_fetch(&S.calls, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&S.out, r, __ATOMIC_RELAXED);
     if (!r) __atomic_add_fetch(&S.failed, 1, __ATOMIC_RELAXED);
@@ -89,14 +93,6 @@ static void host_oodle(Cpu *c) {
                "%llu bytes)", (unsigned long long)n, S.out / 1048576.0, (unsigned long long)S.matched,
                (unsigned long long)S.failed, (unsigned long long)a[1], (unsigned long long)r);
     if (!r || r > RT_ADDRESS_LIMIT || a[0] + a[1] > RT_ADDRESS_LIMIT || a[2] + r > RT_ADDRESS_LIMIT) return;
-    data_patch_decoded((const uint8_t *)(uintptr_t)a[0], a[1], (uint8_t *)(uintptr_t)a[2], r);
-    // With the redirect on, trees flicker after the world loads until the next loading screen (docs/progress.md
-    // 2026-11-02; cause not found). The fields are set once, when their files load at the start, so once all are set
-    // the decoder calls go direct again: the generated code reads rt_patch_on at every call.
-    if (!dumping && !data_patch_open() && rt_patch_enabled(watch_set)) {
-        rt_patch_disable(watch_set);
-        rt_log("data watch: every wanted field is set; the Oodle decoder is called directly again");
-    }
     const uint8_t *src = (const uint8_t *)(uintptr_t)a[0];
     uint64_t print;
     for (int i = 0; i < nwant; i++) {
@@ -108,6 +104,15 @@ static void host_oodle(Cpu *c) {
         if (print != w->print || __atomic_exchange_n(&w->done, 1, __ATOMIC_RELAXED)) continue;
         __atomic_add_fetch(&S.matched, 1, __ATOMIC_RELAXED);
         dump(w, (const uint8_t *)(uintptr_t)a[2], r);
+    }
+    // After the dumps, so a dump is the game's own file: tools/pc_menu.py and mod_report.py compare with it.
+    data_patch_decoded((const uint8_t *)(uintptr_t)a[0], a[1], (uint8_t *)(uintptr_t)a[2], r);
+    // With the redirect on, trees flicker after the world loads until the next loading screen (docs/progress.md
+    // 2026-11-02; cause not found). The fields are set once, when their files load at the start, so once all are set
+    // the decoder calls go direct again: the generated code reads rt_patch_on at every call.
+    if (!dumping && !data_patch_open() && rt_patch_enabled(watch_set)) {
+        rt_patch_disable(watch_set);
+        rt_log("data watch: every wanted field is set; the Oodle decoder is called directly again");
     }
 }
 

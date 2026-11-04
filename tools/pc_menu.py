@@ -57,7 +57,9 @@ def main():
     data = archive.read_bytes()
     for at, want, _ in KEYS:
         if abs(struct.unpack_from('<f', data, at)[0] - want) > 0.01:
-            sys.exit(f'error: {archive.name} differs from Violet 4.0.0 at {at:#x}: nothing written')
+            sys.exit(f'error: {archive.name} differs from Violet 4.0.0 at {at:#x}: nothing written. Either the dump '
+                     'holds patched values (an older build wrote it so: delete it and start the game with DATA_WATCH=1, '
+                     'open the main menu) or this is another game version.')
     if OUT.is_file():
         OUT.replace(OUT.with_name(OUT.name + '.bak'))
     OUT.write_text('# made by tools/pc_menu.py; UI bytes and texts set by runtime/data_patch.c\n', encoding='utf-8')

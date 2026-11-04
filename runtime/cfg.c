@@ -40,8 +40,8 @@ static const char *const known[] = {
     "FLIGHT_THUMBS", "FOV", "FOV_PATCH", "FPS60", "FPS_DT_NS", "FPS_DT_SNAP", "FPS_LIMIT", "FREEZE_IDLE", "FREE_CORES", "FULLSCREEN", "GAME_BARRIER", "GPL", "HOT_COOL", "HOT_KB", "HOT_LATE_SUBS", "HOT_SAFE", "HOT_REFRESH", "GPL_DRAW_BUILD", "GPU",
     "GPU_INDEX", "GPU_NAME", "HIGHFPS_FIX", "HOSTCALLS", "IND_BASE", "INDOOR_FIX", "INPUT", "INTERVAL_ONE", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD", "LUA_MOD", "LUA_MOD_FILE",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD", "LOD_BIAS", "LOD_GUARD", "MEMORY", "MENU_LANG", "MENU_LOCK", "MIRROR_DEMOTE", "MIRROR_DEMOTE_MAX", "MIRROR_HOT", "MIRROR_LATE", "MIRROR_RACE", "MENU_TEST",
-    "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MOD_DRY", "MOD_VALUES", "MOTION", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
-    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PATCH_BISECT", "PATCH_OUTPUT", "PATCH_SCENE", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POKE", "POKE_SCAN",
+    "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MOD_DRY", "MOD_FILES", "MOD_VALUES", "MOTION", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PATCH_BISECT", "PATCH_OUTPUT", "PATCH_SCENE", "PERF_OVERLAY", "PERF_SLOW_MS", "POPULATION", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT", "POKE", "POKE_SCAN",
     "PRESENT_INTERVAL", "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PUSH_SKIP", "PUSH_STAGE", "RACE_SUBS", "RDOC", "RDOC_DIR", "RDOC_DLL", "UI_PATCH", "READBACK_GUARD", "READBACK_LOG", "READBACK_WATCH", "READ_MARK", "REALTIME", "REC_END", "REEXEC",
     "RENDER_SCALE", "REPLAY_ASYNC",
@@ -62,7 +62,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"SHARPNESS", "display"}, {"ASPECT", "display"}, {"LOD", "display"}, {"LOD_BIAS", "display"}, {"ANISO", "display"}, {"FOV", "display"}, {"COLOR_PRESET", "display"},
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"},
-    {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
+    {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"}, {"POPULATION", "display"},
     {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
@@ -111,7 +111,7 @@ static const CfgMeta metas[] = {
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
-    {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
+    {"ASSUME_FOCUS", "1", "0|1", LIVE}, {"POPULATION", "switch", "switch|switch2|enhanced|extreme", RESTART},   // read on every focus change (ov_system.c)
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE},
     {"MOTION", "1", "0|1", LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},

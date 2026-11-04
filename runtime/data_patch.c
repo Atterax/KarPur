@@ -32,6 +32,17 @@
 //                      docs/progress.md 2026-11-03). Their accumulators take the frame time, so the speed stays right
 //                      at any frame rate. The value is taken once, at the first file: scripts keep it in their own
 //                      constants, so a new frame limit reaches them only after a restart.
+//   TOTK_MOD_FILES=1   replace whole files of a mod, also ones of another size (game/mod_files.txt, written by
+//                      tools/mod_files.py; a path names another list). A romfs line raises the file's unpacked size in
+//                      its pack's table of contents, so the game reserves room; a line
+//                      modfile <packed> <unpacked> <fnv1a64> <path>  gives the game the file at path instead of
+//                      decoding those packed bytes (data_watch.c host_oodle, data_patch_replace).
+//   TOTK_POPULATION    how many wild Pokémon at once, read at start: switch (default, the game's 15), switch2 (40),
+//                      enhanced (80), extreme (120); the values below in world/data/system/object_generation_range.
+//                      switch2 has the values of the fan mod Pokemon Compass by Aria Seri and Kas Seri (v2.1.1.1), taken
+//                      alone; with them about 35 Pokémon were in sight, houses whole and the frame rate stable
+//                      (maintainer's test, docs/progress.md 2026-11-04). The higher levels change only the count. Earlier
+//                      tests of such values lost houses, before the memory model changed.
 // type f64 is a 64-bit double, u8 a byte.
 //   msgtext <packed> <unpacked> <fnv1a64> <line> <tag> <text>
 //                      a line of a message file (.dat, tools/msgpatch.py --relocate) gets a new text of any length:
@@ -105,6 +116,27 @@ static int by_offset(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+#define MAX_MOD_FILES 64
+typedef struct {
+    uint64_t packed, unpacked, print;   // the original file: its packed bytes
+    uint8_t *data;                      // the mod's file
+    uint64_t n;
+    int used;
+} ModFile;
+static ModFile mod_files[MAX_MOD_FILES];
+static int nmod_files, mod_file_failed;
+
+// object_generation_range_array.bin of Violet 4.0.0: its packed and unpacked size and fingerprint, so another file or
+// game version is left alone; then offset, type and value of each field.
+static const struct { uint32_t at; char type; double value; const char *name; } population[] = {
+    {0xd4, 'f', 20, "wild Pokemon: nearest they appear"},
+    {0xd8, 'f', 60, "wild Pokemon: farthest they appear"},
+    {0xdc, 'f', 80, "wild Pokemon: nearest they go"},
+    {0xe0, 'f', 80, "wild Pokemon: farthest they go"},
+    {0xe4, 'i', 0, "wild Pokemon: how many at once"},   // the level's count
+    {0x3c, 'i', 5, "values[8]: how many at once"},
+};
+
 static int ui_loaded;    // the UI list is in use
 int data_patch_ui_loaded(void) {
     data_patch_init();
@@ -120,11 +152,11 @@ static int step_wanted(void) {
     return step_on;
 }
 
-int data_patch_wants_decodes(void) { return ndecoded > 0 || ntexts > 0 || find_on || step_wanted(); }
+int data_patch_wants_decodes(void) { return ndecoded > 0 || ntexts > 0 || nmod_files > 0 || find_on || step_wanted(); }
 
 // Fields of packed files not set yet (data_watch.c turns its decoder redirect off at 0).
 int data_patch_open(void) {
-    if (find_on || step_wanted()) return 1;   // the search and the step replacement want every decode
+    if (find_on || step_wanted() || nmod_files) return 1;   // the search, the step and mod files want every decode
     int n = 0;
     for (int i = 0; i < ndecoded; i++) n += !__atomic_load_n(&decoded[i].done, __ATOMIC_RELAXED);
     for (int i = 0; i < ntexts; i++) n += !__atomic_load_n(&texts[i].done, __ATOMIC_RELAXED);
@@ -150,6 +182,23 @@ static uint32_t to_utf16(const char *s, uint16_t *out, uint32_t cap) {
     }
     out[n++] = 0;
     return n;
+}
+
+// "modfile <packed> <unpacked> <fnv1a64> <path>"; 1 taken, 0 not such a line or no such file.
+static int load_mod_file(const char *line) {
+    unsigned long long packed, unpacked, print;
+    int at = 0;
+    if (sscanf(line, "modfile %llu %llu %llx %n", &packed, &unpacked, &print, &at) != 3 || !at) return 0;
+    uint64_t size = 0;
+    uint8_t *data = (uint8_t *)plat_file_read(line + at, &size);
+    if (!data || !size || nmod_files >= MAX_MOD_FILES) {
+        rt_log("data patch: mod file not used: %s", line + at);
+        free(data);
+        mod_file_failed = 1;
+        return 1;
+    }
+    mod_files[nmod_files++] = (ModFile){packed, unpacked, print, data, size, 0};
+    return 1;
 }
 
 // "msgtext <packed> <unpacked> <fnv1a64> <line> <tag> <text>"; 1 taken, 0 not such a line.
@@ -242,9 +291,15 @@ static int load_list(const char *path, float view, float spawn, float count, int
         char *nl = memchr(line, '\n', (size_t)(end - line));
         if (!nl) nl = end;
         *nl = 0;
+        if (nl > line && nl[-1] == 13) nl[-1] = 0;   // Python on Windows writes these lists with CR LF
         unsigned long long at, packed, unpacked, print;
         char type[8], group[40];
         Field f = {0};
+        if (line[0] == 'm' && load_mod_file(line)) {
+            taken++;
+            line = nl + 1;
+            continue;
+        }
         if (line[0] == 'm' && load_text(line)) {
             taken++;
             line = nl + 1;
@@ -291,7 +346,21 @@ void data_patch_init(void) {
     }
     const char *ui = cfg_get("TOTK_UI_PATCH");
     int uis = !(ui && !strcmp(ui, "0"));
-    if (view == 1.0f && spawn == 1.0f && count == 1.0f && !mods && !uis) return;
+    const char *level = cfg_value("TOTK_POPULATION");
+    int wild = !strcmp(level, "switch2") ? 40 : !strcmp(level, "enhanced") ? 80 : !strcmp(level, "extreme") ? 120 : 0;
+    if (wild) {
+        for (size_t i = 0; i < sizeof population / sizeof *population; i++) {
+            Field f = {.at = population[i].at, .packed = 157, .unpacked = 312, .print = 0x8a61deb07c34472bull,
+                       .type = population[i].type, .absolute = 1, .value = population[i].value};
+            if (!f.value) f.value = wild;
+            snprintf(f.name, sizeof f.name, "%s", population[i].name);
+            decoded[ndecoded++] = f;
+        }
+        rt_log("data patch: population %s, up to %d wild Pokemon at once", level, wild);
+    }
+    const char *mod_list = cfg_get("TOTK_MOD_FILES");
+    int mfs = mod_list && *mod_list && strcmp(mod_list, "0");
+    if (view == 1.0f && spawn == 1.0f && count == 1.0f && !mods && !uis && !mfs) return;
     int skipped = 0;
     if (view != 1.0f || spawn != 1.0f || count != 1.0f) {
         const char *path = cfg_get("TOTK_DATA_PATCH_LIST");
@@ -312,6 +381,23 @@ void data_patch_init(void) {
         if (n < 0) rt_log("data patch: no UI list (tools/pc_menu.py writes game/ui_patch.txt): no PC settings page");
         else rt_log("data patch: %d UI bytes and texts from %s", n, path);
         ui_loaded = n > 0;
+    }
+    const char *mf = cfg_get("TOTK_MOD_FILES");
+    if (mf && *mf && strcmp(mf, "0")) {
+        const char *path = strcmp(mf, "1") ? mf : "game/mod_files.txt";
+        int n = load_list(path, 1, 1, 1, 1, &skipped);
+        if (n < 0) rt_log("data patch: MOD_FILES set, but no list %s (tools/mod_files.py writes it)", path);
+        else rt_log("data patch: %d mod files to replace, from %s", nmod_files, path);
+        // A raised size without its file makes the decoder fail and the game wait for ever: all of the list or nothing.
+        if (mod_file_failed) {
+            int kept = 0;
+            for (int i = 0; i < nfields; i++)
+                if (strncmp(fields[i].name, "modsize:", 8)) fields[kept++] = fields[i];
+            nfields = kept;
+            for (int i = 0; i < nmod_files; i++) free(mod_files[i].data);
+            nmod_files = 0;
+            rt_log("data patch: a mod file could not be read: no mod file is replaced");
+        }
     }
     qsort(fields, (size_t)nfields, sizeof fields[0], by_offset);
     if (nfields) lo = fields[0].at, hi = fields[nfields - 1].at + 4;
@@ -427,6 +513,27 @@ void data_patch_read(uint64_t off, void *buf, uint64_t n) {
         if (k <= 64) rt_log("data patch: %s at romfs %#llx %s%g", f->name, (unsigned long long)f->at,
                             f->absolute ? "= " : "x", f->absolute ? f->value : f->factor);
     }
+}
+
+// The game asks its Oodle decoder for out_n bytes at out from packed_n bytes at packed (data_watch.c host_oodle): when
+// those bytes are a mod's file, writes the mod's file there and returns its size; else 0, and the decoder runs.
+uint64_t data_patch_replace(const uint8_t *packed, uint64_t packed_n, uint8_t *out, uint64_t out_n) {
+    for (int i = 0; i < nmod_files; i++) {
+        ModFile *m = &mod_files[i];
+        uint64_t head = m->packed < 4096 ? m->packed : 4096;
+        if ((out_n != m->n && out_n != m->unpacked) || packed_n < head || fnv1a64(packed, head) != m->print) continue;
+        int first = !__atomic_exchange_n(&m->used, 1, __ATOMIC_RELAXED);
+        if (out_n < m->n) {   // the size in the pack's table was not read from there: the file would not fit
+            if (first) rt_log("data patch: the game reserves %llu bytes for a mod file of %llu: original kept",
+                              (unsigned long long)out_n, (unsigned long long)m->n);
+            return 0;
+        }
+        memcpy(out, m->data, m->n);
+        if (first) rt_log("data patch: mod file used: %llu bytes instead of %llu", (unsigned long long)m->n,
+                          (unsigned long long)m->unpacked);
+        return m->n;
+    }
+    return 0;
 }
 
 // The game's Oodle decoder unpacked n bytes to out from packed_n bytes at packed (data_watch.c host_oodle).

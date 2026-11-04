@@ -194,7 +194,8 @@ void data_patch_init(void);                                // KarPur data_patch.
 void data_patch_read(uint64_t off, void *buf, uint64_t n);  // KarPur data_patch.c: after each RomFS image read
 void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, uint64_t n);   // after an Oodle decode
 int data_patch_wants_decodes(void);                         // the list has fields in Oodle-packed files
-int data_patch_open(void);                                 // fields of packed files not set yet
+int data_patch_open(void);
+uint64_t data_patch_replace(const uint8_t *packed, uint64_t packed_n, uint8_t *out, uint64_t out_n);   // a mod file for this decode, or 0                                 // fields of packed files not set yet
 void data_watch_init(void);                                // KarPur data_watch.c: from rt_patches_init
 int data_patch_ui_loaded(void);                            // data_patch.c: the UI list (game/ui_patch.txt) is in use
 void lua_mod_init(void);                                   // KarPur lua_mod.c: from rt_patches_init
