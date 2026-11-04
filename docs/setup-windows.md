@@ -1,5 +1,7 @@
 # Einrichtung unter Windows
 
+English version: [setup-windows.en.md](setup-windows.en.md).
+
 Schritt-für-Schritt-Anleitung, ganz ohne Vorkenntnisse. Wenn irgendwo etwas anders aussieht als beschrieben oder eine Fehlermeldung kommt: **Text kopieren und schicken**, nicht raten.
 
 ## 1. Terminal öffnen

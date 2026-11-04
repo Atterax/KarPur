@@ -39,7 +39,7 @@
 
 ## Getting started
 
-You build everything yourself from your own copy of the game: [docs/setup-windows.md](docs/setup-windows.md) goes through it step by step, including the one-time step that makes PC Settings appear in the main menu. Without that step the game still runs, with the older full settings menu on F1. That menu stays available for troubleshooting with:
+You build everything yourself from your own copy of the game: [docs/setup-windows.en.md](docs/setup-windows.en.md) ([Deutsch](docs/setup-windows.md)) goes through it step by step, including the one-time step that makes PC Settings appear in the main menu. Without that step the game still runs, with the older full settings menu on F1. That menu stays available for troubleshooting with:
 
 ```
 .venv\Scripts\python tools\run_with.py MENU_LOCK=0
