@@ -19,6 +19,9 @@ void opt_begin(const char *id, float scale);
 void opt_end(void);
 // The height the next pages leave free under their panes (the menu's bottom row).
 void opt_reserve_bottom(float h);
+// The rows in the game's look (the Controls page, ui/menu.cpp layout_controls): the selected one yellow with dark
+// writing, the others without a frame. Set around a page.
+void opt_game_look(bool on);
 // The next page's first row takes the controller's cursor (opening the menu, switching tabs).
 void opt_focus_first(void);
 // The row of key (or button id) takes the cursor, scrolled into view, when it is next drawn.

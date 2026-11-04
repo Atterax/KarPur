@@ -122,6 +122,8 @@ static int limit_parse(void) {
     return 60;
 }
 
+int frame_limit_hz(void) { return limit_parse(); }
+
 static void frame_limit_live(void) {
     unsigned v = cfg_version();
     if (limit_read && v == limit_seen) return;

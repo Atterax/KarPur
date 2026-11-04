@@ -25,12 +25,28 @@
 //                      "mod=0.016666666666666666"); TOTK_MOD_VALUES=game/data_find.txt then applies them. Violet's
 //                      indoor walking steps by a double 1/30 that two Lua-like interpreter opcodes read (main+0x4135c,
 //                      main+0x422e4; docs/progress.md 2026-11-03), so the constant should sit in a script file.
-//   TOTK_SCRIPT_STEP=1 (default; 0 turns it off) replaces every double 1/30 in what the game reads and unpacks with 1/60
-//                      as it loads, so the scripts step their fixed 1/30 s updates (indoor walking) at 60 Hz: with the
-//                      13 found in 4.0.0 set to 1/60 walking indoors ran smooth at 60 fps and nothing else changed
-//                      (maintainer's test, docs/progress.md 2026-11-03). Their accumulators take the frame time, so the
-//                      speed stays right at any frame rate.
-// type f64 is a 64-bit double.
+//   TOTK_SCRIPT_STEP=1 (default; 0 turns it off) replaces every double 1/30 in what the game reads and unpacks with one
+//                      frame at the frame limit (1/60 at 60 fps, 1/120 at 120) as it loads, so the scripts step their
+//                      fixed 1/30 s updates (indoor walking) once per frame: with the 13 found in 4.0.0 set to 1/60
+//                      walking indoors ran smooth at 60 fps and nothing else changed (maintainer's test,
+//                      docs/progress.md 2026-11-03). Their accumulators take the frame time, so the speed stays right
+//                      at any frame rate. The value is taken once, at the first file: scripts keep it in their own
+//                      constants, so a new frame limit reaches them only after a restart.
+// type f64 is a 64-bit double, u8 a byte.
+//   msgtext <packed> <unpacked> <fnv1a64> <line> <tag> <text>
+//                      a line of a message file (.dat, tools/msgpatch.py --relocate) gets a new text of any length:
+//                      the runtime writes it, encrypted like the game's (UTF-16, each unit XOR a key that starts at
+//                      0x7C89 + 0x2983 * line and turns left by 3 bits), to spare memory above the heap
+//                      (memory.c mem_spare_near: in the alias region, where Violet keeps its memory) and points the
+//                      line's offset and length there; the file's section length grows to cover it, since the game
+//                      reads no line beyond it. The game reads the offset as signed, so the text lies less than
+//                      2 GiB after the file (maintainer's tests, docs/progress.md 2026-11-04). The text is UTF-8;
+//                      "\n" is a line break. "@<line> " before the text puts it in the space of that other (unused)
+//                      line of the same file instead, cut to fit. For the PC settings page in the game's options (docs/progress.md
+//                      2026-11-04), whose texts the game fetches by label only.
+//   TOTK_UI_PATCH=1    set the bytes of the game's UI files that tools/uilayout.py --hide lists (game/ui_patch.txt,
+//                      group "mod=<value>"): the pane flags of panes to hide, such as the main menu's
+//                      downloadable-content panel N_dlc_00 (docs/progress.md 2026-11-03). A path names another list.
 //
 // The original values never leave the player's PC; the log names fields and offsets only.
 #include <stdint.h>
@@ -42,12 +58,14 @@
 #include "host.h"
 #include "platform/platform.h"
 
+double gfx_window_refresh_hz(void);   // ui/menu.h, which is for the menu's C++ side too
+
 #define MAX_FIELDS 1024
 
 typedef struct {
     uint64_t at;   // byte offset in romfs.bin, or in the unpacked file (decoded)
     uint64_t packed, unpacked, print;   // decoded: which file
-    char type;     // 'f' f32, 'i' i32, 'u' u32, 'h' i16, 'H' u16, 'd' f64
+    char type;     // 'f' f32, 'i' i32, 'u' u32, 'h' i16, 'H' u16, 'd' f64, 'b' u8
     float factor;
     int done;          // decoded: set at least once
     int absolute;      // set value instead of multiplying (a mod's value, group "mod=<value>")
@@ -59,6 +77,19 @@ static Field fields[MAX_FIELDS];   // romfs fields, sorted by offset
 static int nfields;
 static Field decoded[MAX_FIELDS];  // fields of Oodle-packed files
 static int ndecoded;
+
+#define MAX_TEXTS 1024
+typedef struct {
+    uint64_t packed, unpacked, print;   // which file
+    uint32_t line;
+    int donor;         // >= 0: the text goes in the space of that line of the file (cut to fit), not spare memory
+    int done;
+    char tag[64];
+    uint16_t *units;   // the text in UTF-16 with its terminator, not encrypted
+    uint32_t nunits;
+} MsgText;
+static MsgText texts[MAX_TEXTS];
+static int ntexts;
 static uint64_t lo = UINT64_MAX, hi;
 static uint64_t applied;
 
@@ -82,14 +113,109 @@ static int step_wanted(void) {
     return step_on;
 }
 
-int data_patch_wants_decodes(void) { return ndecoded > 0 || find_on || step_wanted(); }
+int data_patch_wants_decodes(void) { return ndecoded > 0 || ntexts > 0 || find_on || step_wanted(); }
 
 // Fields of packed files not set yet (data_watch.c turns its decoder redirect off at 0).
 int data_patch_open(void) {
     if (find_on || step_wanted()) return 1;   // the search and the step replacement want every decode
     int n = 0;
     for (int i = 0; i < ndecoded; i++) n += !__atomic_load_n(&decoded[i].done, __ATOMIC_RELAXED);
+    for (int i = 0; i < ntexts; i++) n += !__atomic_load_n(&texts[i].done, __ATOMIC_RELAXED);
     return n;
+}
+
+// UTF-8 text (with "\n" for a line break) to UTF-16 units and a terminator; characters beyond the BMP become '?'.
+static uint32_t to_utf16(const char *s, uint16_t *out, uint32_t cap) {
+    uint32_t n = 0;
+    const uint8_t *p = (const uint8_t *)s;
+    while (*p && n + 1 < cap) {
+        uint32_t c = *p++;
+        if (c == '\\' && *p == 'n') { p++; c = '\n'; }
+        else if (c >= 0xF0) { c = '?'; while ((*p & 0xC0) == 0x80) p++; }
+        else if (c >= 0xE0 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80) {
+            c = (c & 0x0F) << 12 | (p[0] & 0x3F) << 6 | (p[1] & 0x3F);
+            p += 2;
+        } else if (c >= 0xC0 && (p[0] & 0xC0) == 0x80) {
+            c = (c & 0x1F) << 6 | (p[0] & 0x3F);
+            p++;
+        } else if (c >= 0x80) c = '?';
+        out[n++] = (uint16_t)c;
+    }
+    out[n++] = 0;
+    return n;
+}
+
+// "msgtext <packed> <unpacked> <fnv1a64> <line> <tag> <text>"; 1 taken, 0 not such a line.
+static int load_text(const char *line) {
+    unsigned long long packed, unpacked, print;
+    unsigned idx;
+    char tag[64];
+    int at = 0;
+    if (sscanf(line, "msgtext %llu %llu %llx %u %63s %n", &packed, &unpacked, &print, &idx, tag, &at) != 5 || !at)
+        return 0;
+    if (ntexts >= MAX_TEXTS) return 0;
+    int donor = -1, skip = 0;
+    if (line[at] == '@' && sscanf(line + at, "@%d %n", &donor, &skip) == 1) at += skip;
+    uint16_t buf[1024];
+    uint32_t n = to_utf16(line + at, buf, 1024);
+    MsgText *t = &texts[ntexts];
+    t->donor = donor;
+    t->units = malloc(n * sizeof buf[0]);
+    if (!t->units) return 0;
+    memcpy(t->units, buf, n * sizeof buf[0]);
+    t->nunits = n, t->packed = packed, t->unpacked = unpacked, t->print = print, t->line = idx;
+    snprintf(t->tag, sizeof t->tag, "%s", tag);
+    ntexts++;
+    return 1;
+}
+
+// A message file just unpacked to out (n bytes): header u16 languages (1), u16 lines, u32 section length, u32 key (0),
+// u32 section offset; at the section, u32 length, then per line u32 offset (from the section), u16 units, u16 flags.
+static void apply_text(MsgText *t, uint8_t *out, uint64_t n) {
+    uint16_t langs, lines;
+    uint32_t key0, sec;
+    if (n < 16) return;
+    memcpy(&langs, out, 2), memcpy(&lines, out + 2, 2), memcpy(&key0, out + 8, 4), memcpy(&sec, out + 12, 4);
+    if (langs != 1 || key0 || t->line >= lines || (uint64_t)sec + 4 + 8ull * lines > n) {
+        rt_log("data patch: %s: not a message file with line %u (%u languages, %u lines)", t->tag, t->line, langs, lines);
+        return;
+    }
+    uint64_t base = (uintptr_t)out + sec;
+    uint16_t *dst;
+    if (t->donor >= 0) {
+        if ((uint32_t)t->donor >= lines) return;
+        uint32_t doff;
+        uint16_t dlen;
+        memcpy(&doff, out + sec + 4 + 8ull * t->donor, 4), memcpy(&dlen, out + sec + 4 + 8ull * t->donor + 4, 2);
+        if ((uint64_t)sec + doff + 2ull * dlen > n || !dlen) return;
+        if (t->nunits > dlen) t->units[dlen - 1] = 0, t->nunits = dlen;   // cut to the donor's space
+        dst = (uint16_t *)(out + sec + doff);
+    } else {
+        dst = mem_spare_near(base, t->nunits * 2ull);
+    }
+    uint64_t dist = (uintptr_t)dst - base;
+    if (!dst || (uintptr_t)dst < base || dist > 0x7FFFFFFFull || t->nunits > 0xFFFF) {
+        rt_log("data patch: %s: no spare memory within 2 GiB after the file at %p", t->tag, (void *)out);
+        return;
+    }
+    uint16_t key = (uint16_t)(0x7C89 + 0x2983 * t->line);
+    for (uint32_t i = 0; i < t->nunits; i++) {
+        dst[i] = t->units[i] ^ key;
+        key = (uint16_t)(key << 3 | key >> 13);
+    }
+    uint32_t off = (uint32_t)dist;
+    uint16_t len = (uint16_t)t->nunits;
+    uint8_t *entry = out + sec + 4 + 8ull * t->line;
+    memcpy(entry, &off, 4), memcpy(entry + 4, &len, 2);
+    if (t->donor < 0) {
+        // The game reads a line only when it lies within the section length (in the header at +4 and at the
+        // section's start): a text in spare memory read back empty until that length was raised to cover it.
+        uint32_t need = off + 2u * len, have;
+        memcpy(&have, out + sec, 4);
+        if (need > have) memcpy(out + sec, &need, 4), memcpy(out + 4, &need, 4);
+    }
+    rt_log("data patch: %s: line %u now %u units at %s (+%#x from its section)", t->tag, t->line, t->nunits - 1,
+           t->donor >= 0 ? "the space of another line" : "spare memory", off);
 }
 
 static uint64_t fnv1a64(const uint8_t *p, uint64_t n) {
@@ -112,6 +238,11 @@ static int load_list(const char *path, float view, float spawn, float count, int
         unsigned long long at, packed, unpacked, print;
         char type[8], group[40];
         Field f = {0};
+        if (line[0] == 'm' && load_text(line)) {
+            taken++;
+            line = nl + 1;
+            continue;
+        }
         int romfs = line[0] != '#' && sscanf(line, "romfs %llx %7s %39s %63s", &at, type, group, f.name) == 4;
         int oodle = !romfs && line[0] != '#' && sscanf(line, "oodle %llu %llu %llx %llx %7s %39s %63s", &packed,
                                                        &unpacked, &print, &at, type, group, f.name) == 7;
@@ -119,7 +250,8 @@ static int load_list(const char *path, float view, float spawn, float count, int
             f.at = at;
             if (oodle) f.packed = packed, f.unpacked = unpacked, f.print = print;
             f.type = !strcmp(type, "f32") ? 'f' : !strcmp(type, "i32") ? 'i' : !strcmp(type, "u32") ? 'u'
-                   : !strcmp(type, "i16") ? 'h' : !strcmp(type, "u16") ? 'H' : !strcmp(type, "f64") ? 'd' : 0;
+                   : !strcmp(type, "i16") ? 'h' : !strcmp(type, "u16") ? 'H' : !strcmp(type, "f64") ? 'd'
+                   : !strcmp(type, "u8") ? 'b' : 0;
             if (!strncmp(group, "mod=", 4)) {
                 f.absolute = mods, f.value = strtod(group + 4, NULL), f.factor = mods ? 0.0f : 1.0f;
             } else {
@@ -150,7 +282,9 @@ void data_patch_init(void) {
         if (fp) fputs("# double 1/30 found by TOTK_DATA_FIND (karpur); apply with TOTK_MOD_VALUES=game/data_find.txt\n", fp), fclose(fp);
         rt_log("data find: looking for double 1/30 in RomFS reads and Oodle decodes; lines go to game/data_find.txt");
     }
-    if (view == 1.0f && spawn == 1.0f && count == 1.0f && !mods) return;
+    const char *ui = cfg_get("TOTK_UI_PATCH");
+    int uis = ui && *ui && strcmp(ui, "0");
+    if (view == 1.0f && spawn == 1.0f && count == 1.0f && !mods && !uis) return;
     int skipped = 0;
     if (view != 1.0f || spawn != 1.0f || count != 1.0f) {
         const char *path = cfg_get("TOTK_DATA_PATCH_LIST");
@@ -163,6 +297,12 @@ void data_patch_init(void) {
         int n = load_list(path, 1, 1, 1, 1, &skipped);
         if (n < 0) rt_log("data patch: MOD_VALUES set, but no list %s (tools/mod_report.py --apply writes it)", path);
         else rt_log("data patch: %d values of a mod from %s", n, path);
+    }
+    if (uis) {
+        const char *path = strcmp(ui, "1") ? ui : "game/ui_patch.txt";
+        int n = load_list(path, 1, 1, 1, 1, &skipped);
+        if (n < 0) rt_log("data patch: UI_PATCH set, but no list %s (tools/uilayout.py --hide writes it)", path);
+        else rt_log("data patch: %d UI bytes from %s", n, path);
     }
     qsort(fields, (size_t)nfields, sizeof fields[0], by_offset);
     if (nfields) lo = fields[0].at, hi = fields[nfields - 1].at + 4;
@@ -180,6 +320,7 @@ static void scale(Field *f, uint8_t *p) {
         case 'h': { int16_t v = (int16_t)f->value; memcpy(p, &v, 2); break; }
         case 'H': { uint16_t v = (uint16_t)f->value; memcpy(p, &v, 2); break; }
         case 'd': { double v = f->value; memcpy(p, &v, 8); break; }
+        case 'b': *p = (uint8_t)f->value; break;
         }
         return;
     }
@@ -193,7 +334,9 @@ static void scale(Field *f, uint8_t *p) {
     }
 }
 
-static uint64_t width(const Field *f) { return f->type == 'h' || f->type == 'H' ? 2 : f->type == 'd' ? 8 : 4; }
+static uint64_t width(const Field *f) {
+    return f->type == 'b' ? 1 : f->type == 'h' || f->type == 'H' ? 2 : f->type == 'd' ? 8 : 4;
+}
 
 // ---- TOTK_DATA_FIND: double 1/30 in the data the game reads
 #define FIND_MAX 256
@@ -220,9 +363,21 @@ static void find_note(int romfs, uint64_t a, uint64_t b, uint64_t c, uint64_t d)
     if (k <= 64) rt_log("data find: double 1/30 %s (#%d)", romfs ? "in a stored RomFS file" : "in an Oodle-packed file", k);
 }
 
+// One frame at the frame limit, in seconds, for this whole run; the limit in Hz goes to *hz.
+static double script_step(int *hz) {
+    static int rate;
+    if (!rate) {
+        int r = frame_limit_hz();
+        // the monitor's rate (TOTK_FPS_LIMIT=display) when the window has measured it, else the usual limit
+        if (!r) r = (int)(gfx_window_refresh_hz() + 0.5);
+        __atomic_store_n(&rate, r < 30 ? 60 : r > 360 ? 360 : r, __ATOMIC_RELAXED);
+    }
+    *hz = rate;
+    return 1.0 / rate;
+}
+
 static void find_in(int romfs, uint8_t *p, uint64_t n, uint64_t base, uint64_t unpacked, uint64_t print,
                     uint64_t packed) {
-    static const double d160 = 1.0 / 60.0;
     for (uint64_t i = 0; i + 8 <= n; i++) {
         if (p[i + 7] != 0x3F || p[i + 6] != 0xA1) continue;
         uint64_t v;
@@ -233,11 +388,13 @@ static void find_in(int romfs, uint8_t *p, uint64_t n, uint64_t base, uint64_t u
             else find_note(0, unpacked, print, i, packed);
         }
         if (step_on > 0) {
-            memcpy(p + i, &d160, 8);
+            int hz;
+            double step = script_step(&hz);
+            memcpy(p + i, &step, 8);
             int64_t k = plat_inc64(&steps_set);
             if (k <= 16 || !(k & (k - 1)))
-                rt_log("script step: double 1/30 #%lld in %s set to 1/60 (TOTK_SCRIPT_STEP=0 keeps it)", (long long)k,
-                       romfs ? "a stored RomFS file" : "an Oodle-packed file");
+                rt_log("script step: double 1/30 #%lld in %s set to 1/%d (TOTK_SCRIPT_STEP=0 keeps it)", (long long)k,
+                       romfs ? "a stored RomFS file" : "an Oodle-packed file", hz);
         }
     }
 }
@@ -287,5 +444,14 @@ void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, 
         uint64_t k = __atomic_add_fetch(&applied, 1, __ATOMIC_RELAXED);
         if (k <= 64) rt_log("data patch: %s in a packed file (+%#llx) %s%g", f->name, (unsigned long long)f->at,
                             f->absolute ? "= " : "x", f->absolute ? f->value : f->factor);
+    }
+    for (int i = 0; i < ntexts; i++) {
+        MsgText *t = &texts[i];
+        uint64_t head = t->packed < 4096 ? t->packed : 4096;
+        if (t->unpacked != n || packed_n < head) continue;
+        if (print_head != head) print = fnv1a64(packed, head), print_head = head;
+        if (print != t->print) continue;
+        if (!dry) apply_text(t, out, n);
+        __atomic_store_n(&t->done, 1, __ATOMIC_RELAXED);
     }
 }

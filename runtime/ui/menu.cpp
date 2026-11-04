@@ -89,8 +89,11 @@ static void set_open(int open) { change_open(open); }
 
 static int g_failed_flag();
 extern "C" int menu_is_open(void) { return g_open.load(std::memory_order_relaxed); }
+static std::atomic<int> g_locked;
+extern "C" void menu_lock(void) { g_locked.store(1); }
 extern "C" void menu_toggle(void) {
-    if (!g_failed_flag()) change_open(-1);
+    if (g_failed_flag() || (g_locked.load() && !menu_is_open())) return;
+    change_open(-1);
 }
 
 // ---- events from the window adapter, queued while the menu is open; the present path hands them to ImGui
@@ -654,8 +657,8 @@ static void tab_controls(float scale) {
 
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_DE};
+    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 4, UI_MENU_MENU_LANG_DESC);
     opt_end();
 }
 
@@ -821,11 +824,79 @@ static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN, UI_MENU_TAB_GA
                                               UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU, UI_MENU_TAB_ADVANCED};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
+static std::atomic<int> g_tab_wanted{-1};   // menu_open_controls, from another thread
+extern "C" void menu_open_controls(void) {
+    if (g_failed_flag()) return;
+    g_tab_wanted.store(TAB_CONTROLS);
+    set_open(1);
+}
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
+
+// ---- the Controls page: what is left of the menu once the PC settings page in the game's options has taken over the
+// other settings (menu_lock). It covers the screen in the look of the game's own option pages: a purple bar with the
+// title on top and one with the way back below, the rows on dark blue. TOTK_MENU_LOCK=0 keeps the whole menu.
+static void layout_controls(uint32_t w, uint32_t h, float scale) {
+    const float bar = floorf(84 * scale), foot = floorf(72 * scale), fw = (float)w, fh = (float)h;
+    const ImU32 purple = IM_COL32(122, 40, 176, 255), yellow = IM_COL32(238, 194, 10, 255), white = IM_COL32(255, 255, 255, 255);
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(fw, fh), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(64 * scale, 0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.26f, 1));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.16f, 0.16f, 0.34f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(1, 1, 1, 0.75f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(1, 1, 1, 0.9f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(0.93f, 0.76f, 0.04f, 1));
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.93f, 0.76f, 0.04f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.48f, 0.16f, 0.69f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.56f, 0.22f, 0.78f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.93f, 0.76f, 0.04f, 1));
+    ImGui::Begin("##controls_page", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                                 ImGuiWindowFlags_NoSavedSettings);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    float fs = ImGui::GetFontSize();
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(fw, bar), purple);
+    dl->AddRectFilled(ImVec2(0, 0), ImVec2(fw, 4 * scale), yellow);
+    dl->AddRectFilled(ImVec2(0, fh - foot), ImVec2(fw, fh), purple);
+    dl->AddRectFilled(ImVec2(0, fh - 4 * scale), ImVec2(fw, fh), yellow);
+    dl->AddText(font, fs * 1.6f, ImVec2(64 * scale, (bar - fs * 1.6f) * 0.5f + 2 * scale), white,
+                menu_text(UI_MENU_TAB_CONTROLS));
+    ImGui::SetCursorPosY(bar + 24 * scale);
+    if (g_tab_wanted.exchange(-1) >= 0) opt_focus_first();
+    g_tab = TAB_CONTROLS;
+    g_modal = false;
+    opt_game_look(true);
+    opt_reserve_bottom(foot + 24 * scale);
+    tab_controls(scale);
+    opt_game_look(false);
+
+    // the way back, right in the lower bar: the button's sign and the word, both click
+    if (!cfg_last_save_ok())   // stays until a save succeeds; the settings hold for the session
+        dl->AddText(ImVec2(64 * scale, fh - foot + (foot - fs) * 0.5f), IM_COL32(255, 200, 170, 255), menu_text(UI_MENU_SAVE_FAILED));
+    const char *back = menu_text(UI_MENU_CONTINUE);
+    float tw = ImGui::CalcTextSize(back).x, rad = fs * 0.62f, cy = fh - foot * 0.5f, x = fw - 64 * scale - tw;
+    float cx = x - rad - fs * 0.45f;
+    dl->AddCircleFilled(ImVec2(cx, cy), rad, white);
+    // centred on the letter's own outline: the line height of the font has room above it
+    const ImFontGlyph *b = font->FindGlyph('B');
+    float k = fs / font->FontSize, text_y = cy - (b->Y0 + b->Y1) * 0.5f * k;
+    dl->AddText(ImVec2(cx - (b->X0 + b->X1) * 0.5f * k, text_y), IM_COL32(122, 40, 176, 255), "B");
+    dl->AddText(ImVec2(x, text_y), white, back);
+    ImGui::SetCursorScreenPos(ImVec2(cx - rad, fh - foot));
+    if (ImGui::InvisibleButton("##back", ImVec2(fw - 64 * scale - (cx - rad), foot))) set_open(0);
+    if (!binds_modal() && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+        set_open(0);
+    ImGui::End();
+    ImGui::PopStyleColor(10);
+    ImGui::PopStyleVar(2);
+}
 
 // ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
 // B on the gamepad and Esc close it.
 static void layout_menu(uint32_t w, uint32_t h, float scale) {
+    if (g_locked.load()) return layout_controls(w, h, scale);
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, 120));
     float ww = fminf(w * 0.88f, 1400 * scale), wh = fminf(h * 0.86f, 820 * scale);
     ImGui::SetNextWindowPos(ImVec2(w * 0.5f, h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -845,6 +916,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
              : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
                                                                                                          : 0;
     if (step) g_tab_request = (g_tab + step + TAB_COUNT) % TAB_COUNT;
+    if (int wanted = g_tab_wanted.exchange(-1); wanted >= 0) g_tab_request = wanted;
     if (g_tab_request >= 0) g_focus_page = g_tab_request;   // the new page's first row takes the cursor
 
     const ImGuiStyle &st = ImGui::GetStyle();

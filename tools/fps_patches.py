@@ -37,6 +37,12 @@ Sets (switched with their TOTK_ variable):
   interval_one (off by default; TOTK_INTERVAL_ONE=1, test) main+0x2b7a874: `add w1, w20, #1` becomes `movz w1, #1`,
            the argument of a virtual call in the frame-mode function, as in a third-party 3.0.1 60 fps patch.
 
+  lua_mod  (off by default; TOTK_LUA_MOD=1) main+0xe37f94: the call (bl) of lua_pcallk (main+0xb5ddd0) that runs the
+           game's main script, right after main+0xe37dac loaded it with luaL_loadbufferx (bl main+0xe382a0 at
+           main+0xe37f70), goes to a host function at patch page +0xfc0 (runtime/lua_mod.c), which makes the call and
+           then loads and runs the runtime's own Lua in the same state. Checked: both calls are there, and
+           main+0xe382a0 calls lua_load (main+0x232e0), whose parser function references "attempt to load a %s chunk".
+
 Tried and dropped: the 30 fps frame time and vsync count in main+0x2b79f60 (no effect on the interval or the speed).
 
 tools/lift.py uses build/fps_patches.txt by itself when the file exists.
@@ -143,9 +149,31 @@ SITES = [
     # call in the frame-mode function main+0x2b79f60; the third-party 3.0.1 60 fps patch sets w1 = 1 at this offset
     ('interval_one', 'TOTK_INTERVAL_ONE', 0, 0x2b7a874, 0x11000000 | 1 << 10 | 20 << 5 | 1, [movz_w(1, 1, 0)]),
 ]
-OPTIONAL = {'lod_bias', 'data_watch', 'step_ten', 'indoor_fix', 'dynres_full', 'interval_one'}
+OPTIONAL = {'lod_bias', 'data_watch', 'step_ten', 'indoor_fix', 'dynres_full', 'interval_one', 'lua_mod'}
 OODLE_DECOMPRESS = 0xcc8750   # main offset of OodleLZ_Decompress in 4.0.0 (calls.py --string oodle, 2026-11-02)
 PAGE_OODLE_HOST = 0xfd0       # patch page offset of the host wrapper (runtime/data_watch.c)
+# Lua (docs/progress.md 2026-11-03, calls.py --string / --refs on 4.0.0)
+LUA_RUN_SITE = 0xe37f94       # bl lua_pcallk that runs the main script
+LUA_LOAD_SITE = 0xe37f70      # bl luaL_loadbufferx that loads it, just before
+LUA_PCALLK = 0xb5ddd0
+LUA_LOADBUFFERX = 0xe382a0
+LUA_LOAD = 0x232e0
+LUA_F_PARSER = 0x28580        # references "attempt to load a %s chunk (mode is '%s')"
+PAGE_LUA_HOST = 0xfc0         # patch page offset of the host function (runtime/lua_mod.c)
+
+
+def bl_target(m, a):
+    """Target of the bl at a, or None."""
+    w = m.word(a)
+    if (w & 0xFC000000) != 0x94000000:
+        return None
+    off = w & 0x03FFFFFF
+    return a + 4 * (off - 0x4000000 if off & 0x2000000 else off)
+
+
+def calls_in(m, func, target, span=0x400):
+    """True when a bl in the first span bytes of func goes to target."""
+    return any(bl_target(m, func + k) == target for k in range(0, span, 4) if m.in_text(func + k))
 
 
 def names_string(m, base, func, text, span=0x600):
@@ -229,6 +257,18 @@ def main():
     else:
         print(f'main+{OODLE_DECOMPRESS:#x}: does not reference "OodleLZ_Decompress": set data_watch left out')
         dropped.add('data_watch')
+    # lua_mod: the call that runs the main script
+    lua_ok = (bl_target(m, base + LUA_RUN_SITE) == base + LUA_PCALLK and
+              bl_target(m, base + LUA_LOAD_SITE) == base + LUA_LOADBUFFERX and
+              calls_in(m, base + LUA_LOADBUFFERX, base + LUA_LOAD, 0x40) and
+              names_string(m, base, LUA_F_PARSER, "attempt to load a %s chunk (mode is '%s')"))
+    print(f'main+{LUA_RUN_SITE:#x}: bl lua_pcallk after luaL_loadbufferx: {"ok" if lua_ok else "MISMATCH"}')
+    if lua_ok:
+        SITES.append(('lua_mod', 'TOTK_LUA_MOD', 0, LUA_RUN_SITE, m.word(base + LUA_RUN_SITE),
+                      [f'@pagebl:{PAGE_LUA_HOST:x}']))
+        words_of[LUA_RUN_SITE] = SITES[-1][5]
+    else:
+        dropped.add('lua_mod')
     if bad:
         sys.exit(f'{bad} sites differ from what this table expects (another game version?): nothing written')
     for name in sorted(dropped):

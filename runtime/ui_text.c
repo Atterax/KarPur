@@ -1,6 +1,6 @@
 // Catalog of the text the host shows the player (ui_text.h). One array per catalog language, indexed by UiTextId: a new
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
-// The software keyboard has every language; the menu has English and Russian.
+// The software keyboard has every language; the menu has English and Russian, and German for its Controls page.
 #include <stdatomic.h>
 #include <string.h>
 
@@ -119,7 +119,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Master volume of the game.",
 
-    [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
+    [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Uses the controller's motion sensor.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the controller vibrates.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
@@ -162,13 +162,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_BIND_LSTICK_DOWN] = "Move back",
     [UI_BIND_RSTICK_LEFT] = "Camera left", [UI_BIND_RSTICK_UP] = "Camera up", [UI_BIND_RSTICK_RIGHT] = "Camera right",
     [UI_BIND_RSTICK_DOWN] = "Camera down",
-    [UI_BIND_DESC_A] = "Interact, pick up, talk.", [UI_BIND_DESC_B] = "Run, cancel, go back.",
-    [UI_BIND_DESC_X] = "Jump.", [UI_BIND_DESC_Y] = "Attack.", [UI_BIND_DESC_LCLICK] = "Crouch.",
-    [UI_BIND_DESC_RCLICK] = "First-person view.", [UI_BIND_DESC_L] = "Abilities.",
-    [UI_BIND_DESC_R] = "Throw a weapon.", [UI_BIND_DESC_ZL] = "Shield, lock on.", [UI_BIND_DESC_ZR] = "Bow.",
-    [UI_BIND_DESC_PLUS] = "Menu, inventory.", [UI_BIND_DESC_MINUS] = "Map.",
-    [UI_BIND_DESC_DPAD] = "Quick-select.",
-    [UI_BIND_DESC_MOVE] = "Moves Link like the left stick. The controller's left stick always works too.",
+    [UI_BIND_DESC_A] = "The Switch's A button.", [UI_BIND_DESC_B] = "The Switch's B button.",
+    [UI_BIND_DESC_X] = "The Switch's X button.", [UI_BIND_DESC_Y] = "The Switch's Y button.", [UI_BIND_DESC_LCLICK] = "The left stick, pressed.",
+    [UI_BIND_DESC_RCLICK] = "The right stick, pressed.", [UI_BIND_DESC_L] = "The Switch's L button.",
+    [UI_BIND_DESC_R] = "The Switch's R button.", [UI_BIND_DESC_ZL] = "The Switch's ZL button.", [UI_BIND_DESC_ZR] = "The Switch's ZR button.",
+    [UI_BIND_DESC_PLUS] = "The Switch's Plus button.", [UI_BIND_DESC_MINUS] = "The Switch's Minus button.",
+    [UI_BIND_DESC_DPAD] = "The Switch's D-pad.",
+    [UI_BIND_DESC_MOVE] = "Moves the character like the left stick. The controller's left stick always works too.",
     [UI_BIND_DESC_CAMERA] = "Turns the camera like the right stick. The mouse and the controller's right stick always "
                             "work too.",
     [UI_KEY_SPACE] = "Space", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Left Shift", [UI_KEY_LCTRL] = "Left Ctrl",
@@ -563,7 +563,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
 SWKBD_ONLY(text_ja, "文字入力", "名前を入力してください", "ウマ", "OK", "キャンセル", "コントローラー: A = OK、B = キャンセル");
 SWKBD_ONLY(text_fr, "Saisie de texte", "Entrez un nom", "Cheval", "OK", "Annuler", "Manette : A = OK, B = Annuler");
-SWKBD_ONLY(text_de, "Texteingabe", "Gib einen Namen ein", "Pferd", "OK", "Abbrechen", "Controller: A = OK, B = Abbrechen");
 SWKBD_ONLY(text_it, "Inserimento testo", "Inserisci un nome", "Cavallo", "OK", "Annulla", "Controller: A = OK, B = Annulla");
 SWKBD_ONLY(text_es, "Introducir texto", "Introduce un nombre", "Caballo", "Aceptar", "Cancelar",
            "Mando: A = Aceptar, B = Cancelar");
@@ -572,6 +571,88 @@ SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancel
 SWKBD_ONLY(text_zh_hans, "文字输入", "请输入名字", "马儿", "确定", "取消", "手柄：A 确定，B 取消");
 SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
 SWKBD_ONLY(text_ko, "문자 입력", "이름을 입력하세요", "말", "확인", "취소", "컨트롤러: A 확인, B 취소");
+
+// German: what the Controls page shows (ui/menu.cpp layout_controls); the rest of the menu falls back to English.
+static const char *const text_de[UI_TEXT_COUNT] = {
+    SWKBD("Texteingabe", "Gib einen Namen ein", "Pferd", "OK", "Abbrechen", "Controller: A = OK, B = Abbrechen"),
+    [UI_MENU_TAB_CONTROLS] = "Steuerung", [UI_MENU_CONTINUE] = "Zurück", [UI_MENU_QUIT] = "Spiel beenden",
+    [UI_MENU_ON] = "An", [UI_MENU_OFF] = "Aus", [UI_MENU_AUTO] = "Automatisch", [UI_MENU_DEFAULT_MARK] = "Standard",
+    [UI_MENU_AFTER_RESTART] = "nach Neustart", [UI_MENU_SET_BY_ENV] = "durch Umgebungsvariable gesetzt",
+    [UI_MENU_SAVE_FAILED] = "Einstellungen konnten nicht gespeichert werden",
+
+    [UI_MENU_MOTION] = "Bewegungssteuerung", [UI_MENU_MOTION_DESC] = "Nutzt den Bewegungssensor des Controllers.",
+    [UI_MENU_RUMBLE_STRENGTH] = "Vibrationsstärke", [UI_MENU_RUMBLE_STRENGTH_DESC] = "Wie stark der Controller vibriert.",
+    [UI_MENU_RUMBLE_CURVE] = "Vibrationskurve",
+    [UI_MENU_RUMBLE_CURVE_DESC] = "Niedrigere Werte machen schwache Vibration stärker.",
+    [UI_MENU_RUMBLE_TRIGGERS] = "Trigger-Vibration (Xbox)",
+    [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Lässt auch die Trigger eines Xbox-Controllers vibrieren.",
+    [UI_MENU_PAD_LAYOUT] = "Tastenlayout",
+    [UI_MENU_PAD_LAYOUT_DESC] = "Welche Taste A ist. Nintendo: die rechte, wie auf der Switch. Xbox: die untere, wie auf "
+                                "einem Xbox-Controller beschriftet (Kreuz auf einem PlayStation-Controller). Automatisch "
+                                "wählt Nintendo für Controller mit Nintendo-Beschriftung und sonst Xbox. Xbox-Symbole: A "
+                                "ist die rechte wie bei Nintendo, und das Spiel zeigt die Xbox-Beschriftung (B für A, A "
+                                "für B, Y für X, X für Y); die Symbole ändern sich nach einem Neustart. Die Buchstaben "
+                                "gehören zu den Dateien des Spiels: Eine umbelegte Taste behält auf dem Bildschirm "
+                                "ihren alten Buchstaben.",
+    [UI_MENU_PAD_LAYOUT_AUTO] = "Automatisch", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A rechts)",
+    [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A unten)", [UI_MENU_PAD_LAYOUT_XBOX_PROMPTS] = "Xbox-Symbole (A rechts)",
+    [UI_MENU_PAD_LAYOUT_IN_USE] = "aktiv: %s",
+    [UI_MENU_PAD_LAYOUT_PROMPTS_MISSING] = "Symbol-Dateien fehlen: Einrichtung erneut ausführen",
+    [UI_MENU_PAD_LAYOUT_PROMPTS_RESTART] = "Symbole ändern sich nach Neustart",
+    [UI_MENU_STICK_DEADZONE] = "Stick-Totzone",
+    [UI_MENU_STICK_DEADZONE_DESC] = "Wie weit ein Controller-Stick bewegt werden muss, bevor das Spiel reagiert. Erhöhe "
+                                    "den Wert, wenn sich Figur oder Kamera von allein bewegen.",
+    [UI_MENU_MOUSE_SENS] = "Mausempfindlichkeit", [UI_MENU_MOUSE_SENS_DESC] = "Wie schnell die Maus die Kamera dreht.",
+
+    [UI_BINDS_HELP] = "Wähle ein Feld und drücke A oder Enter, dann die Taste, Maustaste oder Controller-Taste. Entf oder "
+                      "X leert ein Feld. Eine belegte Taste wandert hierher; eine Controller-Taste tauscht mit der, die "
+                      "sie ersetzt.",
+    [UI_BINDS_COL_KEY1] = "Taste 1", [UI_BINDS_COL_KEY2] = "Taste 2", [UI_BINDS_COL_PAD] = "Controller",
+    [UI_BINDS_GROUP_BUTTONS] = "Tasten", [UI_BINDS_GROUP_MOVE] = "Bewegung", [UI_BINDS_GROUP_CAMERA] = "Kamera",
+    [UI_BINDS_PRESS_KEY] = "Drücke eine Taste oder Maustaste für %s",
+    [UI_BINDS_PRESS_PAD] = "Drücke eine Controller-Taste für %s",
+    [UI_BINDS_CANCEL_HINT] = "Esc bricht ab, oder warte %d s",
+    [UI_BINDS_TAKEN] = "%s wurde von %s übernommen", [UI_BINDS_SWAPPED] = "%s getauscht mit %s",
+    [UI_BINDS_RESET] = "Alle Tasten zurücksetzen",
+    [UI_BINDS_RESET_DESC] = "Zurück zu den Standardtasten. Das Tastenlayout oben gilt dann wieder: Umbelegte "
+                            "Controller-Tasten bleiben bis zu diesem Zurücksetzen, wo du sie hingelegt hast.",
+    [UI_BIND_A] = "A", [UI_BIND_B] = "B", [UI_BIND_X] = "X", [UI_BIND_Y] = "Y",
+    [UI_BIND_LCLICK] = "Linker Stick drücken", [UI_BIND_RCLICK] = "Rechter Stick drücken", [UI_BIND_L] = "L",
+    [UI_BIND_R] = "R", [UI_BIND_ZL] = "ZL", [UI_BIND_ZR] = "ZR", [UI_BIND_PLUS] = "Plus", [UI_BIND_MINUS] = "Minus",
+    [UI_BIND_LEFT] = "Steuerkreuz links", [UI_BIND_UP] = "Steuerkreuz oben", [UI_BIND_RIGHT] = "Steuerkreuz rechts",
+    [UI_BIND_DOWN] = "Steuerkreuz unten",
+    [UI_BIND_LSTICK_LEFT] = "Nach links", [UI_BIND_LSTICK_UP] = "Nach vorn", [UI_BIND_LSTICK_RIGHT] = "Nach rechts",
+    [UI_BIND_LSTICK_DOWN] = "Nach hinten",
+    [UI_BIND_RSTICK_LEFT] = "Kamera links", [UI_BIND_RSTICK_UP] = "Kamera hoch", [UI_BIND_RSTICK_RIGHT] = "Kamera rechts",
+    [UI_BIND_RSTICK_DOWN] = "Kamera runter",
+    [UI_BIND_DESC_A] = "Die A-Taste der Switch.", [UI_BIND_DESC_B] = "Die B-Taste der Switch.",
+    [UI_BIND_DESC_X] = "Die X-Taste der Switch.", [UI_BIND_DESC_Y] = "Die Y-Taste der Switch.",
+    [UI_BIND_DESC_LCLICK] = "Der linke Stick, gedrückt.", [UI_BIND_DESC_RCLICK] = "Der rechte Stick, gedrückt.",
+    [UI_BIND_DESC_L] = "Die L-Taste der Switch.", [UI_BIND_DESC_R] = "Die R-Taste der Switch.",
+    [UI_BIND_DESC_ZL] = "Die ZL-Taste der Switch.", [UI_BIND_DESC_ZR] = "Die ZR-Taste der Switch.",
+    [UI_BIND_DESC_PLUS] = "Die Plus-Taste der Switch.", [UI_BIND_DESC_MINUS] = "Die Minus-Taste der Switch.",
+    [UI_BIND_DESC_DPAD] = "Das Steuerkreuz der Switch.",
+    [UI_BIND_DESC_MOVE] = "Bewegt die Figur wie der linke Stick. Der linke Stick des Controllers funktioniert immer auch.",
+    [UI_BIND_DESC_CAMERA] = "Dreht die Kamera wie der rechte Stick. Die Maus und der rechte Stick des Controllers "
+                            "funktionieren immer auch.",
+    [UI_KEY_SPACE] = "Leertaste", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Umschalt links", [UI_KEY_LCTRL] = "Strg links",
+    [UI_KEY_UP] = "Pfeil hoch", [UI_KEY_DOWN] = "Pfeil runter", [UI_KEY_LEFT] = "Pfeil links",
+    [UI_KEY_RIGHT] = "Pfeil rechts",
+    [UI_KEY_MOUSE_L] = "Linke Maustaste", [UI_KEY_MOUSE_R] = "Rechte Maustaste", [UI_KEY_MOUSE_M] = "Mittlere Maustaste",
+    [UI_KEY_MOUSE_X1] = "Maustaste 4", [UI_KEY_MOUSE_X2] = "Maustaste 5",
+    [UI_KEY_ENTER] = "Enter", [UI_KEY_BACKSPACE] = "Rücktaste", [UI_KEY_RSHIFT] = "Umschalt rechts",
+    [UI_KEY_RCTRL] = "Strg rechts", [UI_KEY_LALT] = "Alt", [UI_KEY_CAPSLOCK] = "Feststelltaste", [UI_KEY_INSERT] = "Einfg",
+    [UI_KEY_DELETE] = "Entf", [UI_KEY_HOME] = "Pos1", [UI_KEY_END] = "Ende", [UI_KEY_PAGEUP] = "Bild hoch",
+    [UI_KEY_PAGEDOWN] = "Bild runter", [UI_KEY_NUM_FMT] = "Num %s",
+    [UI_PAD_SOUTH] = "Untere Taste", [UI_PAD_EAST] = "Rechte Taste", [UI_PAD_WEST] = "Linke Taste",
+    [UI_PAD_NORTH] = "Obere Taste", [UI_PAD_LSTICK] = "Linker Stick", [UI_PAD_RSTICK] = "Rechter Stick",
+    [UI_PAD_L] = "Linke Schultertaste", [UI_PAD_R] = "Rechte Schultertaste", [UI_PAD_START] = "Start", [UI_PAD_BACK] = "Back",
+    [UI_PAD_DPAD_LEFT] = "Steuerkreuz links", [UI_PAD_DPAD_UP] = "Steuerkreuz oben", [UI_PAD_DPAD_RIGHT] = "Steuerkreuz rechts",
+    [UI_PAD_DPAD_DOWN] = "Steuerkreuz unten", [UI_PAD_ZL] = "Linker Trigger", [UI_PAD_ZR] = "Rechter Trigger",
+    [UI_PAD_LPADDLE1] = "Linke Rücktaste", [UI_PAD_RPADDLE1] = "Rechte Rücktaste",
+    [UI_PAD_LPADDLE2] = "Linke Rücktaste 2", [UI_PAD_RPADDLE2] = "Rechte Rücktaste 2",
+    [UI_PAD_CROSS] = "Kreuz", [UI_PAD_CIRCLE] = "Kreis", [UI_PAD_SQUARE] = "Quadrat", [UI_PAD_TRIANGLE] = "Dreieck",
+};
 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
@@ -607,13 +688,15 @@ const char *ui_text_in(const char *lang, UiTextId id) {
 
 const char *ui_text(UiTextId id) { return ui_text_in(ui_text_lang(ov_language()), id); }
 
-// The menu language, re-read when cfg_version changes. TOTK_MENU_LANG "ru" or "en"; anything else (unset included)
-// follows the system UI language: Russian for "ru", "ru-RU", ..., else English.
+// The menu language, re-read when cfg_version changes. TOTK_MENU_LANG "ru", "de" or "en"; anything else (unset
+// included) follows the system UI language: Russian for "ru", "ru-RU", ..., German for "de", "de-DE", ..., else English.
 static const char *resolve_menu_lang(void) {
     const char *v = cfg_value("TOTK_MENU_LANG");
     if (v && !strcmp(v, "ru")) return "ru";
+    if (v && !strcmp(v, "de")) return "de";
     if (v && !strcmp(v, "en")) return "en";
     const char *sys = plat_ui_language();
+    if (sys && (!strcmp(sys, "de") || !strncmp(sys, "de-", 3))) return "de";
     return sys && (!strcmp(sys, "ru") || !strncmp(sys, "ru-", 3)) ? "ru" : "en";
 }
 

@@ -24,6 +24,11 @@ extern "C" {
 // ---- state, any thread
 int menu_is_open(void);
 void menu_toggle(void);                   // F1 / Esc on the keyboard, Minus+Plus on the pad
+void menu_lock(void);                     // menu_toggle no longer opens the menu and only the Controls page is left:
+                                          // the PC settings page in the game's options has taken over (lua_mod.c);
+                                          // TOTK_MENU_LOCK=0 keeps the whole menu. Esc still releases the cursor.
+void menu_open_controls(void);            // opens the Controls page, locked or not: the PC settings page's "Controls"
+                                          // row (lua_mod.c open_controls)
 void menu_perf_cycle(void);               // F10: the performance overlay off, fps, full
 
 // ---- events from the window adapter, used only while the menu is open. key: an ImGuiKey; coordinates in pixels of the

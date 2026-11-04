@@ -234,6 +234,7 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         if (n) {
             fflush(stdout);
             rt_log_raw((const char *)(uintptr_t)x[0], n);
+            lua_mod_command((const char *)(uintptr_t)x[0], n);   // KarPur: KARPUR_CMD lines from the runtime's Lua
         }
         x[0] = R_OK;
         return;

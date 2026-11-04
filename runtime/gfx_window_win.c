@@ -223,6 +223,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             input_cursor_suspend(1);
             toggle_fullscreen(h);
             input_cursor_suspend(0);
+            rt_log("gfx: fullscreen from the setting, at the window's first activation");
         }
         return 0;
     case WM_SIZE:
@@ -296,7 +297,7 @@ static void window_main(void *arg) {
     // The window opens behind the user's windows without taking focus: it shows the game's blank loading frames for a
     // while, and must not cover what the player works on meanwhile. The game still counts itself in focus until the
     // first WM_ACTIVATEAPP, so loading goes on, and keyboard input waits for the foreground (input_win.c). Its taskbar
-    // button flashes until it is brought up, and TOTK_FULLSCREEN waits for that first activation.
+    // button flashes until it is brought up, and TOTK_FULLSCREEN waits for that first activation, which it asks for.
     // TOTK_BACKGROUND_WINDOW=1 (test runs): no flashing, never fullscreen at start, and F11 keeps the window's place.
     int background = g_background = cfg_get("TOTK_BACKGROUND_WINDOW") && atoi(cfg_get("TOTK_BACKGROUND_WINDOW"));
     g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"KarPur", WND_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, ow, oh, NULL,
@@ -318,6 +319,9 @@ static void window_main(void *arg) {
             FLASHWINFO fw = {.cbSize = sizeof fw, .hwnd = g_hwnd, .dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG};
             FlashWindowEx(&fw);
             g_fs_pending = cfg_fullscreen();
+            // Fullscreen is what the player chose to see, so that window comes to the front at once instead of waiting
+            // behind the others for a click. Windows may refuse this (another program in front): the wait above stays.
+            if (g_fs_pending) SetForegroundWindow(g_hwnd);
         }
         note_applied();
         refresh_rate_update(g_hwnd, 1);

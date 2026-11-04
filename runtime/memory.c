@@ -738,6 +738,60 @@ void *mem_kernel_alloc(uint64_t size, uint64_t align) {
     return p;
 }
 
+// ---- KarPur: spare memory the runtime writes for the game to read, within 2 GiB after a given address, so a 32-bit
+// offset from a file the game unpacked reaches it (data_patch.c msgtext: message lines the runtime writes). Violet
+// keeps its heap at 0 and takes all its memory with MapPhysicalMemory, at addresses spread over the 64 GiB alias
+// region, so the file sits there: the first 64 KiB run of unmapped alias pages above it is taken. The game reads the
+// offset as signed: a run near the top of the 4 GiB window (offset 0xfffedff0) gave an empty text, so the window is
+// the 2 GiB after the address.
+// Its pages count as mapped in alias_pages, so QueryMemory reports them taken and the game's address choice passes
+// them by, but not in alias_bytes, so the game's pool keeps its full size. Within a run, bump allocation; never freed.
+// Above the heap's cap (the end of the stack and heap block) is the place for a file in the heap.
+#define SPARE_RUN 0x10000ull
+static uint64_t srun, sbump;   // current run in the alias region and the next free byte in it
+static uint64_t hbump, hcommitted;
+
+static int within(uint64_t a, uint64_t size, uint64_t after) {
+    return a > after && a + size - after <= 0x7FFFFFFFull;
+}
+
+void *mem_spare_near(uint64_t after, uint64_t size) {
+    if (!L.pool) rt_fatal("mem_spare_near before mem_init");
+    if (!size || size > SPARE_RUN) return NULL;
+    void *p = NULL;
+    plat_mutex_lock(&lock);
+    uint64_t a = align_up(sbump, 16);
+    if (srun && a + size <= srun + SPARE_RUN && within(a, size, after)) {
+        sbump = a + size;
+        p = (void *)(uintptr_t)a;
+    } else if (inside(after, 1, L.alias)) {
+        uint64_t top = after + 0x7FFFFFFFull - SPARE_RUN;
+        if (top > L.alias.base + L.alias.size - SPARE_RUN) top = L.alias.base + L.alias.size - SPARE_RUN;
+        uint64_t pages = SPARE_RUN / PAGE;
+        for (uint64_t r = align_up(after + 1, SPARE_RUN); r <= top && !p; r += SPARE_RUN) {
+            uint64_t first = (r - L.alias.base) / PAGE, i = 0;
+            while (i < pages && !alias_pages[first + i]) i++;
+            if (i < pages) continue;
+            commit(r, SPARE_RUN, "spare memory");
+            memset(alias_pages + first, 1, pages);
+            srun = r, sbump = r + size;
+            p = (void *)(uintptr_t)r;
+        }
+    } else {
+        uint64_t lo = L.heap.base + L.heap.size, hi = L.aslr.base + LOW_SIZE;
+        a = align_up(hbump ? hbump : lo, 16);
+        if (a + size <= hi && within(a, size, after)) {
+            uint64_t need = align_up(a + size, SPARE_RUN);
+            if (!hcommitted) hcommitted = lo;
+            if (need > hcommitted) commit(hcommitted, need - hcommitted, "spare memory"), hcommitted = need;
+            hbump = a + size;
+            p = (void *)(uintptr_t)a;
+        }
+    }
+    plat_mutex_unlock(&lock);
+    return p;
+}
+
 void mem_kernel_free(void *p, uint64_t size) {
     if (!p) return;
     uint64_t a = (uintptr_t)p;

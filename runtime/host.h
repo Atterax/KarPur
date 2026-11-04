@@ -177,6 +177,9 @@ void rbw_cpu_synced(uint64_t fence);                       // readback_watch.c: 
 void rbw_present(uint64_t frame);                          // readback_watch.c: summary every 600 presents
 void rbw_exit(void);                                       // readback_watch.c: summary at the end of the run
 void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse after thread exit
+void *mem_spare_near(uint64_t after, uint64_t size);       // KarPur: guest-visible memory the game never uses, within
+                                                           // 2 GiB after `after` (size <= 64 KiB); NULL if none;
+                                                           // never freed
 
 // ---- modules (loader.c)
 typedef struct {
@@ -193,6 +196,8 @@ void data_patch_decoded(const uint8_t *packed, uint64_t packed_n, uint8_t *out, 
 int data_patch_wants_decodes(void);                         // the list has fields in Oodle-packed files
 int data_patch_open(void);                                 // fields of packed files not set yet
 void data_watch_init(void);                                // KarPur data_watch.c: from rt_patches_init
+void lua_mod_init(void);                                   // KarPur lua_mod.c: from rt_patches_init
+void lua_mod_command(const char *text, uint64_t n);        // lua_mod.c: a guest debug string; acts on KARPUR_CMD lines
 void frame_dt_init(void);                                  // KarPur frame_dt.c: from rt_patches_init
 void frame_dt_present(void);                               // KarPur frame_dt.c: before each present
 void coverage_present(uint64_t frame);                     // KarPur coverage.c: TOTK_COVERAGE, before each present
@@ -300,6 +305,8 @@ void rt_patch_switch(int set, int on);                     // at run time (live 
 void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
+int frame_limit_hz(void);                                  // TOTK_FPS_LIMIT as set now: 30..360, 0 for the monitor's
+                                                           // rate; only reads the setting, usable before the patches
 uint64_t frame_step_cap_ns(void);                          // with the real-time step: the shortest frame in ns
 double frame_step_limit_hz(void);                         // the frame rate the limit gives (overlay); 0 unknown
 int64_t frame_step_world_us(void);                         // game time since the loaded save's first frame, -1 before
