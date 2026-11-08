@@ -13,7 +13,9 @@ static class Feedback
 {
     const string NewIssue = "https://github.com/Grunttanamo/KarPur/issues/new";
     public const int ReportLimit = 5000;
-    const int UrlLimit = 7800;   // GitHub refuses much longer request URLs
+    // GitHub takes up to ~8000 characters, but Windows' shell did not open longer links than ~2000 at all (the button did
+    // nothing, 2026-11-08): beyond that the report goes to the clipboard
+    const int UrlLimit = 2000;
 
     public record System_(string Cpu, string Gpu, string Ram, string Windows);
 
@@ -112,7 +114,13 @@ static class Feedback
             Clipboard.SetText(f["report"]);
             withReport = url + "&report=" + Uri.EscapeDataString("(The report is on the clipboard: paste it here with Ctrl+V.)");
         }
-        Process.Start(new ProcessStartInfo(withReport) { UseShellExecute = true });
+        try { Process.Start(new ProcessStartInfo(withReport) { UseShellExecute = true }); }
+        catch
+        {   // no browser for links: the issue page alone, the report on the clipboard
+            Clipboard.SetText(f["report"]);
+            Process.Start(new ProcessStartInfo("explorer.exe", "\"" + NewIssue + "?template=feedback.yml\"") { UseShellExecute = true });
+            return false;
+        }
         return fits;
     }
 }

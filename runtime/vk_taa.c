@@ -79,6 +79,8 @@ static struct {
     uint32_t sw, sh;                     // the scene size of the last resolve
     uint32_t phases;                     // jitter phases: 8 x (output / render)^2
     int upscaled;                        // this frame's resolve went to a larger output
+    volatile int shown_kind;             // the last frame's: 0 no resolve, 1 DLAA, 2 DLSS to a larger picture (the overlay)
+    volatile uint32_t shown_w, shown_h, shown_ow, shown_oh;
     uint64_t index, resolves;
     float sign_x, sign_y, bias;
     int logged;
@@ -143,6 +145,8 @@ static float halton(uint32_t i, uint32_t b) {
 int vk_taa_frame(void) {
     if (!vk_taa_on()) return 0;
     int up = T.resolved && T.upscaled;
+    T.shown_kind = !T.resolved ? 0 : T.ow != T.w || T.oh != T.h ? 2 : 1;
+    T.shown_w = T.w, T.shown_h = T.h, T.shown_ow = T.ow, T.shown_oh = T.oh;
     if (T.have_cur) memcpy(T.prev, T.cur, sizeof T.prev);
     T.have_prev = T.have_cur;
     T.jitter_on = T.resolved;
@@ -450,6 +454,13 @@ void vk_taa_after_draw(VkExec *ex, uint32_t fs) {
 // every submission)
 
 void vk_taa_present_arm(int up) { T.present_up = up; }
+
+int vk_taa_describe(char *buf, size_t cap) {
+    int k = T.shown_kind;
+    if (k == 2) snprintf(buf, cap, "NVIDIA DLSS %ux%u > %ux%u", T.shown_w, T.shown_h, T.shown_ow, T.shown_oh);
+    else if (k == 1) snprintf(buf, cap, "NVIDIA DLAA");
+    return k;
+}
 
 int vk_taa_compose(VkCommandBuffer cb, unsigned slot, VkImage shown, VkFormat fmt, int w, int h, VkImage *out, int *ow, int *oh) {
     int up = T.present_up;

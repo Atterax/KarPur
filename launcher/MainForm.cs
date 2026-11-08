@@ -26,7 +26,8 @@ class MainForm : Form
     // Settings
     readonly CheckBox fullscreen = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
     readonly ComboBox windowSize = Combo(), fpsLimit = Combo(), present = Combo(), upscaler = Combo(), overlay = Combo(),
-                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssOut = Combo(), dlssModel = Combo(), frameGen = Combo();
+                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssModel = Combo(), frameGen = Combo();
+    readonly Dictionary<Control, Label> rowLabels = new();
     readonly Button addStreamline = Theme.Button("Add Streamline files", glyph: Theme.GlyphFolder);
     readonly Label fgNote = Theme.Label("", 9.5f, muted: true);
     readonly Button addDlss = Theme.Button("Add nvngx_dlss.dll", glyph: Theme.GlyphFolder);
@@ -63,11 +64,12 @@ class MainForm : Form
           ("120", "120 (experimental)"), ("144", "144 (experimental)"), ("display", "Display refresh rate (experimental)") };
     static readonly (string, string)[] Presents =
         { ("mailbox", "Smooth, no tearing (mailbox)"), ("fifo", "V-Sync (fifo)"), ("immediate", "Off, lowest latency (immediate)") };
-    static readonly (string, string)[] Upscalers = { ("fsr", "AMD FSR"), ("bilinear", "Bilinear") };
+    // The picture's way to the window: FSR 1 or bilinear scaling of the game's 1080p image, or NVIDIA DLSS resolving the
+    // 3D scene at the window's size (or at 4K, scaled down to the window: supersampling). DLSS turns DLAA on with it.
+    static readonly (string, string)[] Upscalers =
+        { ("fsr", "AMD FSR 1"), ("bilinear", "Bilinear"), ("dlss", "NVIDIA DLSS (to the window size)"),
+          ("dlss4k", "NVIDIA DLSS 4K (supersampling)") };
     static readonly (string, string)[] AntiAliasings = { ("0", "Game's own"), ("1", "NVIDIA DLAA (RTX)") };
-    static readonly (string, string)[] DlssOuts =
-        { ("game", "Game resolution (1080p)"), ("window", "Window size (DLSS upscaling)"), ("2560x1440", "2560 x 1440"),
-          ("3840x2160", "3840 x 2160 (4K)") };
     static readonly (string, string)[] FrameGens =
         { ("0", "Off"), ("2", "2x (DLSS Frame Generation)"), ("3", "3x (RTX 50)"), ("4", "4x (RTX 50)") };
     static readonly (string, string)[] DlssModels =
@@ -114,10 +116,26 @@ class MainForm : Form
         frameGen.SelectedIndexChanged += (_, _) =>
         {
             // frame generation runs on DLAA's picture at the window's size: both follow when it is switched on
-            if (!loadingGame && Value(frameGen) != "0") { Select(antiAliasing, "1", "0"); Select(dlssOut, "window", "game"); }
+            if (!loadingGame && Value(frameGen) != "0") { Select(antiAliasing, "1", "0"); Select(upscaler, "dlss", "fsr"); }
             FgStatus();
         };
-        antiAliasing.SelectedIndexChanged += (_, _) => DlssStatus();
+        antiAliasing.SelectedIndexChanged += (_, _) =>
+        {
+            // without DLAA there is no DLSS upscaling and no frame generation
+            if (!loadingGame && Value(antiAliasing) == "0")
+            {
+                if (Value(upscaler).StartsWith("dlss")) Select(upscaler, "fsr", "fsr");
+                Select(frameGen, "0", "0");
+            }
+            DlssStatus();
+            UpdateRows();
+        };
+        upscaler.SelectedIndexChanged += (_, _) =>
+        {
+            if (!loadingGame && Value(upscaler).StartsWith("dlss")) Select(antiAliasing, "1", "0");
+            if (!loadingGame && !Value(upscaler).StartsWith("dlss")) Select(frameGen, "0", "0");   // frame generation needs DLSS's window-sized picture
+            UpdateRows();
+        };
         colour.SelectedIndexChanged += (_, _) => { ApplyColour(); if (!loading) SaveSettings(); };
         checkUpdate.Click += async (_, _) => await CheckUpdate();
         installUpdate.Click += async (_, _) => await InstallUpdate();
@@ -179,6 +197,7 @@ class MainForm : Form
     void AddPage(string name, Control page)
     {
         page.Dock = DockStyle.Fill;
+        if (page is ScrollableControl sc) sc.AutoScroll = true;   // pages taller than the window scroll
         page.Visible = false;
         content.Controls.Add(page);
         pages[name] = (pages[name].Nav, page);
@@ -280,7 +299,6 @@ class MainForm : Form
         Fill(present, Presents);
         Fill(upscaler, Upscalers);
         Fill(antiAliasing, AntiAliasings);
-        Fill(dlssOut, DlssOuts);
         Fill(dlssModel, DlssModels);
         Fill(frameGen, FrameGens);
         Fill(overlay, Overlays);
@@ -294,16 +312,18 @@ class MainForm : Form
         SettingRow(grid, "Window size", windowSize);
         SettingRow(grid, "FPS limit", fpsLimit);
         SettingRow(grid, "Frame sync", present);
-        SettingRow(grid, "Upscaling", upscaler);
-        SettingRow(grid, "Sharpness", sharp);
         var aa = new FlowLayoutPanel { AutoSize = true, BackColor = Theme.Card, Margin = new Padding(0), WrapContents = false };
         antiAliasing.Margin = new Padding(0, 3, 10, 0);
         addDlss.Margin = new Padding(0);
         aa.Controls.Add(antiAliasing);
         aa.Controls.Add(addDlss);
         SettingRow(grid, "Anti-aliasing", aa);
-        SettingRow(grid, "DLSS output", dlssOut);
-        SettingRow(grid, "DLSS model", dlssModel);
+        dlssNote.MaximumSize = new Size(560, 0);
+        dlssNote.AutoSize = true;
+        SettingRow(grid, "", dlssNote);
+        SettingRow(grid, "Upscaling", upscaler);
+        rowLabels[sharp] = SettingRow(grid, "Sharpness", sharp);
+        rowLabels[dlssModel] = SettingRow(grid, "DLSS model", dlssModel);
         var fg = new FlowLayoutPanel { AutoSize = true, BackColor = Theme.Card, Margin = new Padding(0), WrapContents = false };
         frameGen.Margin = new Padding(0, 3, 10, 0);
         addStreamline.Margin = new Padding(0);
@@ -313,9 +333,6 @@ class MainForm : Form
         fgNote.MaximumSize = new Size(560, 0);
         fgNote.AutoSize = true;
         SettingRow(grid, "", fgNote);
-        dlssNote.MaximumSize = new Size(560, 0);
-        dlssNote.AutoSize = true;
-        SettingRow(grid, "", dlssNote);
         SettingRow(grid, "Performance overlay", overlay);
         SettingRow(grid, "Wild Pokémon", population);
         var look = Grid(2);
@@ -335,7 +352,7 @@ class MainForm : Form
         return page;
     }
 
-    static void SettingRow(TableLayoutPanel grid, string label, Control c)
+    static Label SettingRow(TableLayoutPanel grid, string label, Control c)
     {
         int row = grid.RowCount++;
         var l = Theme.Label(label);
@@ -344,6 +361,21 @@ class MainForm : Form
         c.Margin = new Padding(0, 5, 0, 5);
         grid.Controls.Add(l, 0, row);
         grid.Controls.Add(c, 1, row);
+        return l;
+    }
+
+    void ShowRow(Control c, bool on)   // a setting row that only applies to some choices
+    {
+        c.Visible = on;
+        if (rowLabels.TryGetValue(c, out var l)) l.Visible = on;
+    }
+
+    // Sharpness belongs to FSR 1's RCAS; the DLSS model to DLAA / DLSS
+    void UpdateRows()
+    {
+        string up = Value(upscaler);
+        ShowRow(sharpness.Parent!, up == "fsr");
+        ShowRow(dlssModel, Value(antiAliasing) == "1" || up.StartsWith("dlss"));
     }
 
     static void Fill(ComboBox c, (string Value, string Name)[] items)
@@ -625,17 +657,18 @@ class MainForm : Form
         Select(windowSize, built ? ini.Get("window_size") : null, "1920x1080");
         Select(fpsLimit, built ? ini.Get("fps_limit") : null, "60");
         Select(present, built ? ini.Get("vk_present") : null, "mailbox");
-        Select(upscaler, built ? ini.Get("upscaler") : null, "fsr");
-        Select(antiAliasing, built ? ini.Get("dlaa") : null, "0");
-        Select(dlssOut, built ? ini.Get("dlss_out") : null, "game");
-        Select(dlssModel, built ? ini.Get("dlaa_preset") : null, "5");
         loadingGame = true;
+        Select(antiAliasing, built ? ini.Get("dlaa") : null, "0");
+        string dlssOut = built ? ini.Get("dlss_out") ?? "game" : "game";
+        Select(upscaler, dlssOut == "window" ? "dlss" : dlssOut == "3840x2160" ? "dlss4k" : built ? ini.Get("upscaler") : null, "fsr");
+        Select(dlssModel, built ? ini.Get("dlaa_preset") : null, "5");
         Select(frameGen, built ? ini.Get("framegen") : null, "0");
         loadingGame = false;
+        UpdateRows();
         Select(overlay, built ? ini.Get("perf_overlay") : null, "off");
         Select(population, built ? ini.Get("population") : null, "switch");
         sharpness.Value = int.TryParse(built ? ini.Get("sharpness") : null, out int s) ? Math.Clamp(s, 0, 100) : 80;
-        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssOut, dlssModel, frameGen, addStreamline, overlay, population, sharpness, saveSettings })
+        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssModel, frameGen, addStreamline, overlay, population, sharpness, saveSettings })
             c.Enabled = built;
         settingsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
         DlssStatus();
@@ -761,9 +794,10 @@ class MainForm : Form
             ini.Set("display", "window_size", Value(windowSize));
             ini.Set("frame rate", "fps_limit", Value(fpsLimit));
             ini.Set("display", "vk_present", Value(present));
-            ini.Set("display", "upscaler", Value(upscaler));
+            string up = Value(upscaler);
+            ini.Set("display", "upscaler", up.StartsWith("dlss") ? "fsr" : up);   // (the present's scaler when DLSS is off)
             ini.Set("display", "dlaa", Value(antiAliasing));
-            ini.Set("display", "dlss_out", Value(dlssOut));
+            ini.Set("display", "dlss_out", up == "dlss" ? "window" : up == "dlss4k" ? "3840x2160" : "game");
             ini.Set("display", "dlaa_preset", Value(dlssModel));
             ini.Set("display", "framegen", Value(frameGen));
             ini.Set("display", "sharpness", sharpness.Value.ToString());

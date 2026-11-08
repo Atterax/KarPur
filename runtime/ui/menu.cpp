@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern "C" int vk_taa_describe(char *buf, size_t cap);   // vk_taa.c: the overlay's words for DLAA / DLSS
 #include "../vk_slfg.h"
 #include "imgui.h"
 #include "imgui_internal.h"   // SetFocusID, NavCursorVisible
@@ -1098,11 +1099,19 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
-    if (t->scaler == 2) {
+    char taa[64];
+    int taa_kind = vk_taa_describe(taa, sizeof taa);   // KarPur: DLAA / DLSS (vk_taa.c)
+    if (taa_kind == 2) {   // DLSS made the picture at the window's size: the present shows it 1:1
+        snprintf(v[3], sizeof v[3], "%s", taa);
+    } else if (t->scaler == 2) {
         int s = cfg_int("TOTK_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
         snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
+    }
+    if (taa_kind == 1) {   // DLAA at the game's size; the present's own scaling as before
+        size_t n = strlen(v[3]);
+        snprintf(v[3] + n, sizeof v[3] - n, ", %s", taa);
     }
     double hz = frame_step_limit_hz();
     snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));

@@ -19,4 +19,6 @@ int vk_taa_frame(void);                 // at each present (replay order): 1 whe
 // command buffer, the composite of the presented image (w x h) with DLSS's picture: 1 and *out (ow x oh, RGBA8 UNORM,
 // GENERAL) to show in its place
 void vk_taa_present_arm(int up);
+// The overlay's words for the last frame: 0 nothing; 1 DLAA ("NVIDIA DLAA"); 2 DLSS to a larger picture (its sizes)
+int vk_taa_describe(char *buf, size_t cap);
 int vk_taa_compose(VkCommandBuffer cb, unsigned slot, VkImage shown, VkFormat fmt, int w, int h, VkImage *out, int *ow, int *oh);
