@@ -26,7 +26,7 @@ class MainForm : Form
     // Settings
     readonly CheckBox fullscreen = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
     readonly ComboBox windowSize = Combo(), fpsLimit = Combo(), present = Combo(), upscaler = Combo(), overlay = Combo(),
-                      population = Combo(), colour = Combo(), antiAliasing = Combo();
+                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssOut = Combo();
     readonly Button addDlss = Theme.Button("Add nvngx_dlss.dll", glyph: Theme.GlyphFolder);
     readonly Label dlssNote = Theme.Label("", 9.5f, muted: true);
     readonly TrackBar sharpness = new() { Minimum = 0, Maximum = 100, TickFrequency = 10, Width = 280, BackColor = Theme.Card };
@@ -63,6 +63,9 @@ class MainForm : Form
         { ("mailbox", "Smooth, no tearing (mailbox)"), ("fifo", "V-Sync (fifo)"), ("immediate", "Off, lowest latency (immediate)") };
     static readonly (string, string)[] Upscalers = { ("fsr", "AMD FSR"), ("bilinear", "Bilinear") };
     static readonly (string, string)[] AntiAliasings = { ("0", "Game's own"), ("1", "NVIDIA DLAA (RTX)") };
+    static readonly (string, string)[] DlssOuts =
+        { ("game", "Game resolution (1080p)"), ("window", "Window size (DLSS upscaling)"), ("2560x1440", "2560 x 1440"),
+          ("3840x2160", "3840 x 2160 (4K)") };
     static readonly (string, string)[] Overlays = { ("off", "Off"), ("fps", "FPS only"), ("full", "Full") };
     static readonly (string, string)[] Populations =
         { ("switch", "Switch (15, default)"), ("switch2", "Switch 2 (40)"), ("enhanced", "Enhanced (80)"),
@@ -264,6 +267,7 @@ class MainForm : Form
         Fill(present, Presents);
         Fill(upscaler, Upscalers);
         Fill(antiAliasing, AntiAliasings);
+        Fill(dlssOut, DlssOuts);
         Fill(overlay, Overlays);
         Fill(population, Populations);
         Fill(colour, Colours);
@@ -283,6 +287,7 @@ class MainForm : Form
         aa.Controls.Add(antiAliasing);
         aa.Controls.Add(addDlss);
         SettingRow(grid, "Anti-aliasing", aa);
+        SettingRow(grid, "DLSS output", dlssOut);
         dlssNote.MaximumSize = new Size(560, 0);
         dlssNote.AutoSize = true;
         SettingRow(grid, "", dlssNote);
@@ -597,10 +602,11 @@ class MainForm : Form
         Select(present, built ? ini.Get("vk_present") : null, "mailbox");
         Select(upscaler, built ? ini.Get("upscaler") : null, "fsr");
         Select(antiAliasing, built ? ini.Get("dlaa") : null, "0");
+        Select(dlssOut, built ? ini.Get("dlss_out") : null, "game");
         Select(overlay, built ? ini.Get("perf_overlay") : null, "off");
         Select(population, built ? ini.Get("population") : null, "switch");
         sharpness.Value = int.TryParse(built ? ini.Get("sharpness") : null, out int s) ? Math.Clamp(s, 0, 100) : 80;
-        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, overlay, population, sharpness, saveSettings })
+        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssOut, overlay, population, sharpness, saveSettings })
             c.Enabled = built;
         settingsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
         DlssStatus();
@@ -617,7 +623,8 @@ class MainForm : Form
         string dll = DlssPath();
         if (File.Exists(dll))
             dlssNote.Text = $"nvngx_dlss.dll {FileVersionInfo.GetVersionInfo(dll).FileVersion?.Replace(',', '.')} is in place. "
-                          + "DLAA smooths edges on NVIDIA RTX cards (about 1 ms per frame).";
+                          + "DLAA smooths edges on NVIDIA RTX cards (about 1 ms per frame); with a DLSS output above "
+                          + "1080p, DLSS also sharpens the 3D world to that size (the HUD stays at 1080p).";
         else
             dlssNote.Text = Value(antiAliasing) == "1"
                 ? "DLAA needs NVIDIA's nvngx_dlss.dll, which KarPur cannot ship: add your own copy (games with DLSS have it). "
@@ -664,6 +671,7 @@ class MainForm : Form
             ini.Set("display", "vk_present", Value(present));
             ini.Set("display", "upscaler", Value(upscaler));
             ini.Set("display", "dlaa", Value(antiAliasing));
+            ini.Set("display", "dlss_out", Value(dlssOut));
             ini.Set("display", "sharpness", sharpness.Value.ToString());
             ini.Set("display", "perf_overlay", Value(overlay));
             ini.Set("display", "population", Value(population));

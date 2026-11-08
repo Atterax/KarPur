@@ -29,7 +29,10 @@ typedef int NgxResult;  // NVSDK_NGX_Result: 1 success, 0xBAD00000 | n failures
 #define NGX_OK(r) (((unsigned)(r) & 0xFFF00000u) != 0xBAD00000u)
 #define NGX_VERSION_API 0x15
 #define NGX_FEATURE_SUPERSAMPLING 1
+#define NGX_PERFQ_MAXPERF 0
+#define NGX_PERFQ_BALANCED 1
 #define NGX_PERFQ_MAXQUALITY 2
+#define NGX_PERFQ_ULTRAPERF 3
 #define NGX_PERFQ_DLAA 5
 // NVSDK_NGX_DLSS_Feature_Flags: motion vectors at the render size; reversed depth (near at 1) as vk_taa.c finds it from
 // the projection; the picture is tone-mapped already (no IsHDR, no auto exposure).
@@ -76,7 +79,7 @@ static struct {
     int tried, up, loaded, available, failed;
     NgxParam *params;
     NgxHandle *feat;
-    uint32_t fw, fh;
+    uint32_t fw, fh, fow, foh;
 } N;
 
 typedef void (*SetI)(NgxParam *, const char *, int);
@@ -237,7 +240,7 @@ int vk_dlaa_record(VkDevice dev, VkCommandBuffer cmd, const VkTaaFrame *f) {
     if (!N.params && !NGX_OK(N.alloc_params(&N.params))) return fail("parameter allocation", 0);
     NgxParam *p = N.params;
     int reset = f->reset;
-    if (N.feat && (N.fw != f->w || N.fh != f->h)) {   // another size: a new feature
+    if (N.feat && (N.fw != f->w || N.fh != f->h || N.fow != f->ow || N.foh != f->oh)) {   // another size: a new feature
         vk_queue_lock();   // vkDeviceWaitIdle needs the queue externally synchronized
         vkDeviceWaitIdle(dev);
         vk_queue_unlock();
@@ -262,17 +265,22 @@ int vk_dlaa_record(VkDevice dev, VkCommandBuffer cmd, const VkTaaFrame *f) {
             char k[64];
             for (int i = 0; i < 6; i++) snprintf(k, sizeof k, "DLSS.Hint.Render.Preset.%s", q[i]), p_setu(p, k, pr);
         }
-        // DLAA's quality value; an older DLSS (before it had one) gets Max Quality at the same size
-        p_seti(p, "PerfQualityValue", NGX_PERFQ_DLAA);
+        // the quality value for the render / output ratio: DLAA at the same size (an older DLSS, before it had one, gets
+        // Max Quality); upscaling: the mode whose ratio is the nearest at or below (Quality 0.667, Balanced 0.58,
+        // Performance 0.5, Ultra Performance 0.333)
+        float ratio = (float)f->w / (float)f->ow;
+        int q = ratio > 0.99f ? NGX_PERFQ_DLAA : ratio >= 0.66f ? NGX_PERFQ_MAXQUALITY : ratio >= 0.58f ? NGX_PERFQ_BALANCED
+              : ratio >= 0.5f ? NGX_PERFQ_MAXPERF : NGX_PERFQ_ULTRAPERF;
+        p_seti(p, "PerfQualityValue", q);
         NgxResult r = N.create(cmd, NGX_FEATURE_SUPERSAMPLING, p, &N.feat);
         if (!NGX_OK(r) || !N.feat) {
             N.feat = NULL;
             p_seti(p, "PerfQualityValue", NGX_PERFQ_MAXQUALITY);
             r = N.create(cmd, NGX_FEATURE_SUPERSAMPLING, p, &N.feat);
             if (!NGX_OK(r) || !N.feat) { N.feat = NULL; return fail("DLSS feature creation", r); }
-            rt_log("dlaa: this DLSS has no DLAA quality value: Max Quality at the scene's size");
+            rt_log("dlaa: DLSS refused quality value %d: Max Quality", q);
         }
-        N.fw = f->w, N.fh = f->h;
+        N.fw = f->w, N.fh = f->h, N.fow = f->ow, N.foh = f->oh;
         reset = 1;
         rt_log("dlaa: DLSS feature created at %ux%u -> %ux%u", f->w, f->h, f->ow, f->oh);
     }

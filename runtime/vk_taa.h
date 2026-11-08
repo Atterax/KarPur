@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "vk_exec.h"
+#include "vk.h"
 
 int vk_taa_on(void);                    // DLAA wanted and available
 // A G-buffer draw (4+ colour targets, depth): the scene camera this frame (c5 +0 and the projection at c5 +0x80, both
@@ -13,4 +14,9 @@ void vk_taa_note_scene(const VkExec *ex, const float vp[16], const float proj[16
 void vk_taa_viewport(const VkExec *ex, float *x, float *y);
 // After a draw was recorded with fragment shader fs (its first 4 input id bytes): the tone mapping draw resolves
 void vk_taa_after_draw(VkExec *ex, uint32_t fs);
-void vk_taa_frame(void);                // at each present
+int vk_taa_frame(void);                 // at each present (replay order): 1 when this frame's resolve was upscaled
+// The present thread: arm the next present's composite (vk_taa_frame's answer for its frame), then, in the present's
+// command buffer, the composite of the presented image (w x h) with DLSS's picture: 1 and *out (ow x oh, RGBA8 UNORM,
+// GENERAL) to show in its place
+void vk_taa_present_arm(int up);
+int vk_taa_compose(VkCommandBuffer cb, unsigned slot, VkImage shown, VkFormat fmt, int w, int h, VkImage *out, int *ow, int *oh);

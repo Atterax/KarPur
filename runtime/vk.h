@@ -117,6 +117,7 @@ void vk_queue_unlock(void);
 // The rectangle {x, y, w, h} of a dw x dh swapchain image a cw x ch picture is presented in (gfx_present.c,
 // TOTK_ASPECT); the rest is black.
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]);
+void gfx_present_extent(uint32_t *w, uint32_t *h);   // the swapchain's size (0 before it exists)
 void vk_present_capture(int on);
 int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 

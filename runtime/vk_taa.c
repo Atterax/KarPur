@@ -12,17 +12,23 @@
 //   are made from the depth (shaders/taa_mv.comp: this frame's camera inverted, the last frame's applied), DLSS
 //   resolves into a second RGBA8 image, and that is copied back. A camera cut (the view axis turning more than ~18
 //   degrees) or a frame without a camera starts the history again.
+// - DLSS upscaling (TOTK_DLSS_OUT=window or <w>x<h>, default game): DLSS resolves to the window's size (fitted to 16:9)
+//   instead. That picture is scaled down into the game's image, so the game's frame goes on at its own size, and kept
+//   with the scaled-down copy (base); at the present, shaders/taa_compose.comp takes the DLSS picture wherever the
+//   presented image still equals base and the presented image (scaled up) near the HUD the game drew over it.
 // Everything is recorded at the replay's position (vk_exec_inline_begin): DLSS records into the command buffer itself,
 // so the recorder thread is drained first and what the replay had bound is forgotten afterwards.
 #include "vk_taa.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
+#include "taa_compose_spv.h"
 #include "taa_mv_spv.h"
 #include "vk.h"
 #include "vk_dlaa.h"
@@ -33,12 +39,24 @@ static struct {
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
     VkPipeline mv_pipe;
-    VkSampler sampler;
-    VkImage img[3];                      // 0 the picture (RGBA8), 1 motion vectors (RG16F), 2 DLSS's output (RGBA8)
-    VmaAllocation alloc[3];
-    VkImageView view[3];
-    uint32_t w, h;                       // their size
+    VkSampler sampler, linear;
+    VkDescriptorSetLayout cdsl;          // the composite at the present
+    VkPipelineLayout clayout;
+    VkPipeline compose_pipe;
+    // at w x h: 0 the picture (RGBA8), 1 motion vectors (RG16F), 3 base: the DLSS picture scaled to the game's size;
+    // at ow x oh: 2 DLSS's output, 4 the composite (RGBA8)
+    VkImage img[5];
+    VmaAllocation alloc[5];
+    VkImageView view[5];
+    uint32_t w, h, ow, oh;               // their sizes
     int fresh;                           // the images were just made (UNDEFINED layout)
+    VkImageView shown_view[8];           // the presented image's view per present slot (destroyed when the slot comes again)
+    VkBuffer stats[8];                   // the composite's measurements per present slot (host-visible)
+    VmaAllocation stats_alloc[8];
+    uint32_t *stats_map[8];
+    uint64_t sum[5], composes;           // summed over the composites since the last log line
+    VkImageView hud_view;                // the game's image (the tone mapping draw's target) as raw RGBA8 bytes
+    int present_up;                      // the present thread's next present composes (vk_taa_present_arm)
 
     uint32_t at;                         // fragment shader of the tone mapping draw
     int depth_inv;                       // reversed depth (near at 1): from the projection, TOTK_DLAA_DEPTH_INV overrides
@@ -56,6 +74,8 @@ static struct {
     float jx, jy;
     int jitter_on;
     uint32_t sw, sh;                     // the scene size of the last resolve
+    uint32_t phases;                     // jitter phases: 8 x (output / render)^2
+    int upscaled;                        // this frame's resolve went to a larger output
     uint64_t index, resolves;
     float sign_x, sign_y, bias;
     int logged;
@@ -116,15 +136,35 @@ static float halton(uint32_t i, uint32_t b) {
     return r;
 }
 
-void vk_taa_frame(void) {
-    if (!vk_taa_on()) return;
+int vk_taa_frame(void) {
+    if (!vk_taa_on()) return 0;
+    int up = T.resolved && T.upscaled;
     if (T.have_cur) memcpy(T.prev, T.cur, sizeof T.prev);
     T.have_prev = T.have_cur;
     T.jitter_on = T.resolved;
     T.index++;
-    uint32_t i = (uint32_t)(T.index % 8) + 1;
+    uint32_t i = (uint32_t)(T.index % (T.phases ? T.phases : 8)) + 1;
     T.jx = halton(i, 2) - 0.5f + T.bias, T.jy = halton(i, 3) - 0.5f + T.bias;
-    T.have_cur = T.resolved = 0;
+    T.have_cur = T.resolved = T.upscaled = 0;
+    return up;
+}
+
+// The DLSS output size for a w x h scene: TOTK_DLSS_OUT = game (the scene's size: DLAA), window (the window's
+// picture, as the present fits it), or <w>x<h>; at most 3 times the scene per side. Read every frame (window resizes).
+static void out_size(uint32_t w, uint32_t h, uint32_t *ow, uint32_t *oh) {
+    *ow = w, *oh = h;
+    const char *e = cfg_value("TOTK_DLSS_OUT");
+    unsigned x = 0, y = 0;
+    if (!strcmp(e, "window")) {
+        uint32_t sw = 0, sh = 0;
+        gfx_present_extent(&sw, &sh);
+        if (!sw || !sh) return;
+        int to[4];
+        gfx_fit_rect((int)w, (int)h, (int)sw, (int)sh, to);
+        x = (unsigned)to[2], y = (unsigned)to[3];
+    } else if (sscanf(e, "%ux%u", &x, &y) != 2) return;
+    if (x <= w || y <= h || x > 3 * w || y > 3 * h) return;
+    *ow = x, *oh = y;
 }
 
 // ---- resources
@@ -164,30 +204,64 @@ static int init(VkCtx *c) {
     VkResult r = vkCreateComputePipelines(c->device, VK_NULL_HANDLE, 1, &ci, NULL, &T.mv_pipe);
     vkDestroyShaderModule(c->device, m, NULL);
     if (r != VK_SUCCESS) { T.mv_pipe = VK_NULL_HANDLE; return 0; }
+    // the composite: shown (linear), base, hi, the output
+    si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+    if (vkCreateSampler(c->device, &si, NULL, &T.linear) != VK_SUCCESS) return 0;
+    static const VkDescriptorType ct[6] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+    VkDescriptorSetLayoutBinding cb[6];
+    for (int i = 0; i < 6; i++)
+        cb[i] = (VkDescriptorSetLayoutBinding){.binding = (uint32_t)i, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                                               .descriptorType = ct[i]};
+    dci.bindingCount = 6, dci.pBindings = cb;
+    for (int i = 0; i < 8; i++) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 32,
+                                 .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(c->vma, &bi, &ai, &T.stats[i], &T.stats_alloc[i], &info) != VK_SUCCESS) return 0;
+        T.stats_map[i] = info.pMappedData;
+        memset(T.stats_map[i], 0, 32);
+    }
+    if (vkCreateDescriptorSetLayout(c->device, &dci, NULL, &T.cdsl) != VK_SUCCESS) return 0;
+    VkPushConstantRange cpr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+    VkPipelineLayoutCreateInfo cli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                      .pSetLayouts = &T.cdsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &cpr};
+    if (vkCreatePipelineLayout(c->device, &cli, NULL, &T.clayout) != VK_SUCCESS) return 0;
+    mi.codeSize = sizeof taa_compose_spv, mi.pCode = taa_compose_spv;
+    if (vkCreateShaderModule(c->device, &mi, NULL, &m) != VK_SUCCESS) return 0;
+    ci.stage.module = m, ci.layout = T.clayout;
+    r = vkCreateComputePipelines(c->device, VK_NULL_HANDLE, 1, &ci, NULL, &T.compose_pipe);
+    vkDestroyShaderModule(c->device, m, NULL);
+    if (r != VK_SUCCESS) { T.compose_pipe = VK_NULL_HANDLE; return 0; }
     return T.ok = 1;
 }
 
 static void free_images(VkCtx *c) {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 5; i++) {
         if (T.view[i]) vkDestroyImageView(c->device, T.view[i], NULL);
         if (T.img[i]) vmaDestroyImage(c->vma, T.img[i], T.alloc[i]);
         T.view[i] = VK_NULL_HANDLE, T.img[i] = VK_NULL_HANDLE;
     }
-    T.w = T.h = 0;
+    T.w = T.h = T.ow = T.oh = 0;
 }
 
-static int ensure_images(VkCtx *c, uint32_t w, uint32_t h) {
-    if (T.img[0] && T.w == w && T.h == h) return 1;
+static int ensure_images(VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
+    if (T.img[0] && T.w == w && T.h == h && T.ow == ow && T.oh == oh) return 1;
     if (T.img[0]) {   // a new size: earlier submissions may still use the old images
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
         vk_queue_unlock();
         free_images(c);
     }
-    static const VkFormat fmt[3] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM};
-    for (int i = 0; i < 3; i++) {
+    static const VkFormat fmt[5] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM,
+                                    VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+    for (int i = 0; i < 5; i++) {
+        int big = i == 2 || i == 4;
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                                .format = fmt[i], .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .format = fmt[i], .extent = {big ? ow : w, big ? oh : h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
@@ -206,7 +280,7 @@ static int ensure_images(VkCtx *c, uint32_t w, uint32_t h) {
             return 0;
         }
     }
-    T.w = w, T.h = h, T.fresh = 1;
+    T.w = w, T.h = h, T.ow = ow, T.oh = oh, T.fresh = 1;
     return 1;
 }
 
@@ -221,8 +295,8 @@ static void full_barrier(VkCommandBuffer cb) {
 }
 
 static void to_general(VkCommandBuffer cb) {   // our new images: UNDEFINED -> GENERAL
-    VkImageMemoryBarrier2 b[3];
-    for (int i = 0; i < 3; i++)
+    VkImageMemoryBarrier2 b[5];
+    for (int i = 0; i < 5; i++)
         b[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -231,7 +305,7 @@ static void to_general(VkCommandBuffer cb) {   // our new images: UNDEFINED -> G
                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = T.img[i],
                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 3, .pImageMemoryBarriers = b};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 5, .pImageMemoryBarriers = b};
     vkCmdPipelineBarrier2(cb, &d);
 }
 
@@ -294,7 +368,9 @@ void vk_taa_after_draw(VkExec *ex, uint32_t fs) {
     }
     VkCtx *c = vk_ctx();
     if (!T.init) init(c);
-    if (!T.ok || !ensure_images(c, w, h)) return;
+    uint32_t ow, oh;
+    out_size(w, h, &ow, &oh);
+    if (!T.ok || !ensure_images(c, w, h, ow, oh)) return;
     VkImageView dv = vk_exec_target_view(T.depth, T.depth_format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1, 0);
     if (!dv) return;
     int reset = !T.have_prev || camera_cut(T.cur, T.prev);
@@ -324,19 +400,98 @@ void vk_taa_after_draw(VkExec *ex, uint32_t fs) {
     VkTaaFrame f = {.color = T.img[0], .depth = T.depth_image, .mv = T.img[1], .out = T.img[2],
                     .color_view = T.view[0], .depth_view = dv, .mv_view = T.view[1], .out_view = T.view[2],
                     .color_format = VK_FORMAT_R8G8B8A8_UNORM, .depth_format = T.depth_format,
-                    .out_format = VK_FORMAT_R8G8B8A8_UNORM, .w = w, .h = h, .ow = w, .oh = h,
+                    .out_format = VK_FORMAT_R8G8B8A8_UNORM, .w = w, .h = h, .ow = ow, .oh = oh,
                     .jx = (T.jitter_on ? T.jx : 0) * T.sign_x, .jy = (T.jitter_on ? T.jy : 0) * T.sign_y, .dt_ms = 16.7f,
                     .reset = reset, .depth_inv = T.depth_inv > 0};
     rec_drain();   // DLSS records into cb itself: the recorder has made every call queued before
     int ok = vk_dlaa_record(c->device, cb, &f);
     full_barrier(cb);
-    if (ok) copy_image(cb, T.img[2], ct->image, w, h);
+    int up = ow != w || oh != h;
+    if (ok && !up) copy_image(cb, T.img[2], ct->image, w, h);
+    if (ok && up) {   // scaled down for the game's frame (base), kept for the composite at the present
+        VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int)ow, (int)oh, 1}},
+                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int)w, (int)h, 1}}};
+        vkCmdBlitImage(cb, T.img[2], VK_IMAGE_LAYOUT_GENERAL, T.img[3], VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_LINEAR);
+        full_barrier(cb);
+        copy_image(cb, T.img[3], ct->image, w, h);
+    }
     full_barrier(cb);
     vk_exec_draw_new_cb();   // DLSS and the motion vector pass bound pipelines and sets of their own
     VK_HZ_SET(ex, VK_HZ_OP);
     vk_exec_inline_end(reopen);
     if (!ok) return;
-    T.resolved = 1, T.sw = w, T.sh = h, T.resolves++;
+    if (up) T.hud_view = vk_exec_target_view(ct->img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1, 0);
+    T.resolved = 1, T.upscaled = up && T.hud_view, T.sw = w, T.sh = h, T.resolves++;
+    float ratio = (float)ow / (float)w;
+    T.phases = (uint32_t)ceilf(8.0f * ratio * ratio);
     if (T.resolves == 1 || T.resolves % 3600 == 0)
-        rt_log("dlaa: %llu frames resolved (%ux%u, jitter %s)", (unsigned long long)T.resolves, w, h, T.jitter_on ? "on" : "not yet");
+        rt_log("dlaa: %llu frames resolved (%ux%u -> %ux%u, jitter %s)", (unsigned long long)T.resolves, w, h, ow, oh,
+               T.jitter_on ? "on" : "not yet");
+}
+
+// ---- the composite at the present (present thread; the replay is not recording then: vk_present_drain comes before
+// every submission)
+
+void vk_taa_present_arm(int up) { T.present_up = up; }
+
+int vk_taa_compose(VkCommandBuffer cb, unsigned slot, VkImage shown, VkFormat fmt, int w, int h, VkImage *out, int *ow, int *oh) {
+    int up = T.present_up;
+    T.present_up = 0;
+    if (!up || !T.ok || !T.img[4] || !T.hud_view || (uint32_t)w != T.w || (uint32_t)h != T.h) return 0;
+    VkCtx *c = vk_ctx();
+    slot %= 8;
+    if (T.shown_view[slot]) vkDestroyImageView(c->device, T.shown_view[slot], NULL);
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = shown,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if (vkCreateImageView(c->device, &vi, NULL, &T.shown_view[slot]) != VK_SUCCESS) {
+        T.shown_view[slot] = VK_NULL_HANDLE;
+        return 0;
+    }
+    // the measurements of this slot's last composite (its fence was waited for): summed, logged every 600 composites
+    uint32_t *st = T.stats_map[slot];
+    if (st[0]) {
+        for (int i = 0; i < 5; i++) T.sum[i] += st[i];
+        if (++T.composes % 600 == 0 && T.sum[0]) {
+            rt_log("dlaa: composite: shown against the game's image, mean difference in 1/1000: as is %.1f, sRGB-decoded "
+                   "%.1f, sRGB-encoded %.1f; %.1f%% counted as HUD",
+                   (double)T.sum[1] / (double)T.sum[0], (double)T.sum[2] / (double)T.sum[0], (double)T.sum[3] / (double)T.sum[0],
+                   100.0 * (double)T.sum[4] / (double)T.sum[0]);
+            memset(T.sum, 0, sizeof T.sum);
+        }
+    }
+    vkCmdFillBuffer(cb, T.stats[slot], 0, 32, 0);
+    full_barrier(cb);
+    VkDescriptorImageInfo ii[5] = {{T.linear, T.shown_view[slot], VK_IMAGE_LAYOUT_GENERAL},
+                                   {T.sampler, T.view[3], VK_IMAGE_LAYOUT_GENERAL},
+                                   {T.sampler, T.view[2], VK_IMAGE_LAYOUT_GENERAL},
+                                   {VK_NULL_HANDLE, T.view[4], VK_IMAGE_LAYOUT_GENERAL},
+                                   {T.sampler, T.hud_view, VK_IMAGE_LAYOUT_GENERAL}};
+    VkDescriptorBufferInfo sbi = {T.stats[slot], 0, 32};
+    VkWriteDescriptorSet wr[6];
+    for (int i = 0; i < 6; i++)
+        wr[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = (uint32_t)i,
+                                       .descriptorCount = 1, .pImageInfo = i < 5 ? &ii[i] : NULL,
+                                       .pBufferInfo = i == 5 ? &sbi : NULL,
+                                       .descriptorType = i == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                                       : i == 5 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                                                                : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
+    // TOTK_DLSS_HUD_DIFF: the difference (in 1/255) that counts as HUD; default 3 (a copy through sRGB rounds by 1)
+    static float eps = -1;
+    if (eps < 0) { const char *e = cfg_get("TOTK_DLSS_HUD_DIFF"); eps = (e && *e ? (float)atof(e) : 3.0f) / 255.0f; }
+    // TOTK_DLSS_CONVERT: 1 (default) decodes, 2 encodes, 0 keeps DLSS's picture, as the copy into the presented image
+    // converts: Violet's last draw reads the game's image sRGB-decoded (test CA: shown against it decoded differs by
+    // 0.7 / 1000, as is by 160-220 / 1000)
+    static int conv = -1;
+    if (conv < 0) { const char *e = cfg_get("TOTK_DLSS_CONVERT"); conv = e && *e ? atoi(e) : 1; }
+    float pc[8] = {(float)T.ow, (float)T.oh, (float)T.w, (float)T.h, eps, rt_knob("DLSS_DEBUG", "0") ? 1.0f : 0.0f, 0, (float)conv};
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, T.compose_pipe);
+    rec_push(T.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, T.clayout, 0, 6, wr);
+    vkCmdPushConstants(cb, T.clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+    vkCmdDispatch(cb, (T.ow + 7) / 8, (T.oh + 7) / 8, 1);
+    full_barrier(cb);
+    *out = T.img[4], *ow = (int)T.ow, *oh = (int)T.oh;
+    static int logged;
+    if (!logged++) rt_log("dlaa: the present shows DLSS's %ux%u picture with the game's HUD over it", T.ow, T.oh);
+    return 1;
 }

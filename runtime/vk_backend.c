@@ -33,7 +33,7 @@
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4], taa_up; uint64_t frame, at, queued, value; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -59,6 +59,7 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
+        vk_taa_present_arm(j.taa_up);   // KarPur DLSS upscaling: this present composes (vk_taa.c)
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
@@ -102,7 +103,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     static volatile int32_t n_skipped;
     vk_exec_frame_log(t, frame);
     vk_cam_probe_frame(t, frame);
-    vk_taa_frame();   // KarPur TOTK_DLAA: the next frame's jitter, this frame's camera kept
+    int taa_up = vk_taa_frame();   // KarPur TOTK_DLAA: the next frame's jitter, this frame's camera kept
     vk_mem_census(frame);
     if (vk_dump_armed) vk_dump_present(frame);
     __atomic_store_n(&gfx_counters.validation_errors, (uint64_t)vk_validation_errors_total(), __ATOMIC_RELAXED);
@@ -118,7 +119,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         return;
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
-                    .at = at_ns, .queued = queued, .value = value};
+                    .at = at_ns, .queued = queued, .value = value, .taa_up = taa_up};
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];

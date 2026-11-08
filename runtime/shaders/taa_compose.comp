@@ -1,0 +1,52 @@
+// KarPur DLSS upscaling (vk_taa.c): the presented picture at the DLSS output size. DLSS resolved the scene before the
+// HUD was drawn, at the output size (hi); the game's frame went on at its own size with that picture scaled down (base)
+// and the HUD drawn over it (hud: the game's image as the HUD left it, read as raw bytes like base), and its last draw
+// copied that into the presented image (shown). Where hud still equals base (no HUD near), the pixel comes from hi;
+// near the HUD from shown, scaled up bilinearly. The 3x3 neighbourhood of game pixels makes the HUD's edges and the
+// scaling's reach part of the HUD.
+// Test BZ found shown unlike base everywhere, so the copy into shown changes the bytes: stats measures how (the mean
+// difference of shown against hud as it is, decoded from sRGB, and encoded to sRGB) on a sparse grid; vk_taa.c logs it.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D shown;   // linear filter
+layout(set = 0, binding = 1) uniform sampler2D base;    // nearest
+layout(set = 0, binding = 2) uniform sampler2D hi;      // nearest
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D outp;
+layout(set = 0, binding = 4) uniform sampler2D hud;     // nearest
+layout(set = 0, binding = 5) buffer S { uint n[8]; } stats;
+// sz: output width, height, game width, height; k.x: the difference (0..1 per channel) that counts as HUD; k.y: 1 tints
+// the HUD part red (TOTK_DLSS_DEBUG=1); k.z: 1 converts hi the way the copy into shown converts (k.w: 1 decode, 2 encode)
+layout(push_constant) uniform P { vec4 sz; vec4 k; } u;
+
+vec3 decode(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+vec3 encode(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(u.sz.x) || p.y >= int(u.sz.y)) return;
+    vec2 uv = (vec2(p) + 0.5) / u.sz.xy;
+    ivec2 g = ivec2(uv * u.sz.zw);
+    ivec2 gmax = ivec2(u.sz.zw) - 1;
+    float d = 0.0;
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++) {
+            ivec2 q = clamp(g + ivec2(x, y), ivec2(0), gmax);
+            vec3 e = abs(texelFetch(hud, q, 0).rgb - texelFetch(base, q, 0).rgb);
+            d = max(d, max(e.r, max(e.g, e.b)));
+        }
+    vec3 h = texelFetch(hi, p, 0).rgb;
+    if (u.k.w == 1.0) h = decode(h);
+    else if (u.k.w == 2.0) h = encode(h);
+    vec4 c = d > u.k.x ? vec4(texture(shown, uv).rgb, 1.0) : vec4(h, 1.0);
+    if (u.k.y > 0.5 && d > u.k.x) c.rgb = mix(c.rgb, vec3(1.0, 0.0, 0.0), 0.5);
+    imageStore(outp, p, c);
+    if ((p.x & 31) == 0 && (p.y & 31) == 0) {   // the stats, in 1/1000
+        vec3 s = texelFetch(shown, g, 0).rgb, a = texelFetch(hud, g, 0).rgb;
+        vec3 e0 = abs(s - a), e1 = abs(s - decode(a)), e2 = abs(s - encode(a));
+        atomicAdd(stats.n[0], 1u);
+        atomicAdd(stats.n[1], uint((e0.r + e0.g + e0.b) * 333.3));
+        atomicAdd(stats.n[2], uint((e1.r + e1.g + e1.b) * 333.3));
+        atomicAdd(stats.n[3], uint((e2.r + e2.g + e2.b) * 333.3));
+        atomicAdd(stats.n[4], d > u.k.x ? 1u : 0u);
+    }
+}

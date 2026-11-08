@@ -25,6 +25,7 @@
 #include "nvn_api.h"
 #include "ui/menu.h"
 #include "vk.h"
+#include "vk_taa.h"
 #include "platform/platform.h"
 
 #define FRAMES 2
@@ -582,6 +583,16 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     vkBeginCommandBuffer(cb, &bi);
     uint64_t crumb = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     vk_crumb(cb, VK_CRUMB_PRESENT, crumb);
+    {   // KarPur DLSS upscaling (vk_taa.c): DLSS's picture with the game's HUD over it takes the game image's place
+        VkImage up;
+        int uw, uh;
+        if (general && vk_taa_compose(cb, slot, src, fmt, w, h, &up, &uw, &uh)) {
+            src = up, fmt = VK_FORMAT_R8G8B8A8_UNORM;
+            if (cx == 0 && cy == 0 && cw == w && ch == h) cw = uw, ch = uh;
+            else cx = cx * uw / w, cy = cy * uh / h, cw = cw * uw / w, ch = ch * uh / h;
+            w = uw, h = uh;
+        }
+    }
     VkImage dst = g_sc_img[idx];
     sync_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -702,6 +713,8 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
     present_image(src, layout, fmt, w, h, crop, 1);
 }
+
+void gfx_present_extent(uint32_t *w, uint32_t *h) { *w = g_sc_ext.width, *h = g_sc_ext.height; }   // racy read: a hint
 
 void vk_present_flip(void) {
     plat_rmutex_lock(&g_pl);
