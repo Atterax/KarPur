@@ -77,6 +77,9 @@ static void dump(Want *w, const uint8_t *data, uint64_t n) {
     rt_log("data watch: %s %s (%llu bytes)", ok ? "dumped" : "could not write", path, (unsigned long long)n);
 }
 
+void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]);
+int shader_census_wanted(void);
+
 static void host_oodle(Cpu *c) {
     uint64_t a[8];
     memcpy(a, c->x, sizeof a);
@@ -85,6 +88,8 @@ static void host_oodle(Cpu *c) {
         r = data_patch_replace((const uint8_t *)(uintptr_t)a[0], a[1], (uint8_t *)(uintptr_t)a[2], a[3]);
     if (r) c->x[0] = r;   // what the decoder would return; rt_call leaves its result there
     else r = rt_call(c, guest_decoder, 8, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
+    // KarPur TOTK_SHADER_CENSUS: after the game's first decode, the census unpacks every Oodle file itself (shader_census.c)
+    if (shader_census_wanted()) shader_census_run(c, guest_decoder, a);
     uint64_t n = __atomic_add_fetch(&S.calls, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&S.out, r, __ATOMIC_RELAXED);
     if (!r) __atomic_add_fetch(&S.failed, 1, __ATOMIC_RELAXED);
@@ -124,6 +129,10 @@ void data_watch_init(void) {
     guest_decoder = ldr_module(0)->base + OODLE_DECOMPRESS;
     // Distance fields in Oodle-packed files are changed after the decode, so a list with such fields turns the set on.
     data_patch_init();
+    if (!rt_patch_enabled(set) && shader_census_wanted()) {   // the census needs the decoder's hook
+        rt_patch_enable(set);
+        rt_log("data watch: set data_watch on for the shader census (TOTK_SHADER_CENSUS)");
+    }
     if (!rt_patch_enabled(set) && data_patch_wants_decodes()) {
         rt_patch_enable(set);
         rt_log("data watch: set data_watch on for the distance fields in packed files (VIEW_DIST / SPAWN_DIST)");

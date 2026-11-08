@@ -1,0 +1,297 @@
+// KarPur: where Violet keeps its shader programs (TOTK_SHADER_CENSUS=1, a diagnostic run that ends the process).
+//
+// Purpose (docs/progress.md, shader pre-build): building every shader after the install needs the shader code from the
+// player's own game files. The code is inside Oodle-packed files of arc/data.trpfs (tools/shader_where.py found none of
+// the recorded programs in the unpacked RomFS), and Oodle is unpacked only by the game's own decoder. So the census runs
+// inside the game: at the game's first decode (data_watch.c, the decoder's hook) it unpacks every Oodle-packed file of
+// data.trpfs with the game's OodleLZ_Decompress itself, on that thread and with the arguments of that call (the six
+// arguments on the guest stack stay where they are: rt_call leaves sp alone), into a buffer of its own below
+// RT_ADDRESS_LIMIT, where guest addresses are host addresses. Each unpacked file is searched for the programs the
+// runtime recorded in play (shader-programs.bin next to karpur.exe, the player's own data): an 8-byte anchor from the
+// middle of each program's code, at every byte, confirmed by 64 bytes around it.
+//
+// The report (game/report/shader-census.txt and the log) has numbers and names only: files and packs that hold
+// programs, the programs' offsets in them, the files' sizes and their 4-character tag when it is printable text (a
+// format name such as "BNSH"). No file contents. The process ends when it is written.
+//
+// Formats as tools/trpfs.py reads them (FlatBuffers): data.trpfd root {file_hashes [u64], pack_names [string],
+// file_info [..], pack_info [{size u64, file_count u64}]}; data.trpfs "ONEPACK\0", u64 offset of root {pack_hashes
+// [u64], pack_offsets [u64]}; a pack root {file_hashes [u64], files [{?, compression i8, level u8, size u64, data
+// [u8]}]} with the data vector the table's last field.
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "cfg.h"
+#include "fs.h"
+#include "host.h"
+#include "platform/platform.h"
+
+#define CONTROL 0x880
+#define PRG_HEAD (12 + 32 + CONTROL)   // gfx_shader.c
+#define BUF_SIZE (1ull << 30)          // packed + unpacked file, guest-visible
+
+int shader_census_wanted(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("SHADER_CENSUS", "0");
+    return on;
+}
+
+// ---- FlatBuffers, read-only (no bounds trust beyond the buffer)
+typedef struct { const uint8_t *b; uint64_t n; uint64_t pos; uint16_t nslots; const uint8_t *vt; } Fb;
+
+static uint32_t u32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static uint64_t u64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
+
+static int fb_at(Fb *t, const uint8_t *b, uint64_t n, uint64_t pos) {
+    if (pos + 4 > n) return 0;
+    int32_t back;
+    memcpy(&back, b + pos, 4);
+    uint64_t vt = pos - back;
+    if (vt + 4 > n) return 0;
+    uint16_t vsize;
+    memcpy(&vsize, b + vt, 2);
+    t->b = b, t->n = n, t->pos = pos, t->vt = b + vt, t->nslots = vsize >= 4 ? (uint16_t)((vsize - 4) / 2) : 0;
+    return 1;
+}
+static int fb_root(Fb *t, const uint8_t *b, uint64_t n, uint64_t at) { return at + 4 <= n && fb_at(t, b, n, at + u32(b + at)); }
+static uint16_t fb_slot(const Fb *t, int i) { uint16_t s = 0; if (i < t->nslots) memcpy(&s, t->vt + 4 + 2 * i, 2); return s; }
+// vector field i: start of its elements and their count
+static int fb_vec(const Fb *t, int i, uint64_t *start, uint64_t *count) {
+    uint16_t s = fb_slot(t, i);
+    if (!s) return 0;
+    uint64_t at = t->pos + s;
+    if (at + 4 > t->n) return 0;
+    uint64_t v = at + u32(t->b + at);
+    if (v + 4 > t->n) return 0;
+    *start = v + 4, *count = u32(t->b + v);
+    return 1;
+}
+static int64_t fb_i8(const Fb *t, int i, int64_t def) { uint16_t s = fb_slot(t, i); return s ? (int8_t)t->b[t->pos + s] : def; }
+static uint64_t fb_u64(const Fb *t, int i) { uint16_t s = fb_slot(t, i); return s && t->pos + s + 8 <= t->n ? u64(t->b + t->pos + s) : 0; }
+static int fb_table(const Fb *t, uint64_t vstart, uint64_t k, Fb *out) {
+    uint64_t e = vstart + 4 * k;
+    return e + 4 <= t->n && fb_at(out, t->b, t->n, e + u32(t->b + e));
+}
+static const char *fb_string(const Fb *t, uint64_t vstart, uint64_t k, uint32_t *len) {
+    uint64_t e = vstart + 4 * k;
+    if (e + 4 > t->n) return NULL;
+    uint64_t s = e + u32(t->b + e);
+    if (s + 4 > t->n) return NULL;
+    *len = u32(t->b + s);
+    return s + 4 + *len <= t->n ? (const char *)t->b + s + 4 : NULL;
+}
+
+static uint64_t fnv1a64(const char *s, uint32_t n) {
+    uint64_t h = 0xCBF29CE484222645ull;
+    for (uint32_t i = 0; i < n; i++) h = (h ^ (uint8_t)s[i]) * 0x100000001B3ull;
+    return h;
+}
+
+// ---- the recorded programs and their anchors (open addressing on the anchor)
+typedef struct { const uint8_t *code; uint32_t len, stage; uint64_t at; int found; } Prog;
+typedef struct { uint64_t key; int prog; } Slot;
+static Prog *progs;
+static int nprogs;
+static Slot *tab;
+static uint64_t tab_mask;
+static uint8_t *filter;   // a bit per (anchor * K) >> 40: rules out most positions before the table
+
+static uint64_t mix(uint64_t v) { return v * 0x9E3779B97F4A7C15ull; }
+
+static int load_programs(void) {
+    char path[1024];
+    int n = plat_exe_path(path, sizeof path - 32);
+    char *cut = n ? plat_last_sep(path) : NULL;
+    if (!cut) return 0;
+    strcpy(cut + 1, "shader-programs.bin");
+    uint64_t size = 0;
+    uint8_t *b = plat_file_read(path, &size);
+    if (!b || size < 16 || memcmp(b, "TOTKSPRG", 8)) { rt_log("shader census: no %s (play a little first)", path); return 0; }
+    int cap = 1024;
+    progs = calloc((size_t)cap, sizeof *progs);
+    for (uint64_t o = 16; size - o >= PRG_HEAD;) {
+        uint32_t stage = u32(b + o), len = u32(b + o + 4), c1 = u32(b + o + 8);
+        uint64_t rec = PRG_HEAD + (uint64_t)len + c1;
+        if (len > (64u << 20) || c1 > len || rec > size - o) break;
+        if (nprogs == cap) progs = realloc(progs, sizeof *progs * (size_t)(cap *= 2));
+        progs[nprogs++] = (Prog){b + o + PRG_HEAD, len, stage, 0, 0};
+        o += rec;
+    }
+    uint64_t want = 1;
+    while (want < (uint64_t)nprogs * 4) want <<= 1;
+    tab = calloc(want, sizeof *tab), tab_mask = want - 1;
+    filter = calloc(1u << 21, 1);   // 2^24 bits
+    int anchors = 0;
+    for (int i = 0; i < nprogs; i++) {
+        if (progs[i].len < 128) { progs[i].found = -1; continue; }
+        uint64_t at = ((uint64_t)progs[i].len / 2) & ~7ull, key = u64(progs[i].code + at);
+        if (!key || key == ~0ull) { progs[i].found = -1; continue; }
+        progs[i].at = at;
+        uint64_t h = mix(key);
+        filter[(h >> 40) >> 3] |= (uint8_t)(1u << ((h >> 40) & 7));
+        for (uint64_t s = h & tab_mask;; s = (s + 1) & tab_mask)
+            if (!tab[s].key) { tab[s] = (Slot){key, i + 1}; anchors++; break; }
+    }
+    rt_log("shader census: %d recorded programs, %d anchored", nprogs, anchors);
+    return nprogs > 0;
+}
+
+// ---- results
+typedef struct { uint64_t pack, file, size, first_off, last_off; uint32_t hits, tag; int stored; } Holder;
+static Holder holders[4096];
+static int nholders;
+
+static void search(const uint8_t *b, uint64_t n, uint64_t pack, uint64_t file, int stored) {
+    if (n < 64) return;
+    Holder *hd = NULL;
+    for (uint64_t i = 0; i + 8 <= n; i++) {
+        uint64_t v = u64(b + i), h = mix(v);
+        if (!(filter[(h >> 40) >> 3] >> ((h >> 40) & 7) & 1)) continue;
+        for (uint64_t s = h & tab_mask; tab[s].key; s = (s + 1) & tab_mask) {
+            if (tab[s].key != v) continue;
+            Prog *p = &progs[tab[s].prog - 1];
+            if (p->found) continue;
+            uint64_t a0 = p->at >= 32 ? p->at - 32 : 0, a1 = p->at + 32 <= p->len ? p->at + 32 : p->len;
+            if (i < p->at - a0 || i - (p->at - a0) + (a1 - a0) > n || memcmp(b + i - (p->at - a0), p->code + a0, a1 - a0)) continue;
+            p->found = 1;
+            uint64_t start = i - p->at;   // the code's start in the file
+            if (!hd) {
+                if (nholders == (int)(sizeof holders / sizeof *holders)) return;
+                hd = &holders[nholders++];
+                *hd = (Holder){pack, file, n, start, start, 0, u32(b), stored};
+            }
+            hd->hits++;
+            if (start < hd->first_off) hd->first_off = start;
+            if (start > hd->last_off) hd->last_off = start;
+        }
+    }
+}
+
+static int printable(uint32_t tag) {
+    for (int k = 0; k < 4; k++) {
+        uint8_t c = (uint8_t)(tag >> (8 * k));
+        if (c < 0x20 || c > 0x7e) return 0;
+    }
+    return 1;
+}
+
+// Reads n bytes at off of a RomFS file into a new buffer
+static uint8_t *read_file(uint64_t h, uint64_t off, uint64_t n) {
+    uint8_t *b = malloc(n ? n : 1);
+    uint64_t got = 0;
+    if (b && (romfs_read(&got, h, (int64_t)off, b, n) != 0 || got != n)) { free(b); b = NULL; }
+    return b;
+}
+
+void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
+    static int ran;
+    if (__atomic_exchange_n(&ran, 1, __ATOMIC_ACQ_REL)) return;
+    uint64_t t0 = plat_now_ns();
+    rt_log("shader census: start (this run ends when it is done)");
+    if (!load_programs()) exit(2);
+    // a guest-visible buffer: reserved at a free address below RT_ADDRESS_LIMIT
+    uint64_t gbuf = 0;
+    for (uint64_t at = 0x7E00000000ull; at >= 0x4000000000ull; at -= 0x200000000ull)
+        if (plat_mem_reserve(at, BUF_SIZE, 0) && plat_mem_commit(at, BUF_SIZE)) { gbuf = at; break; }
+    if (!gbuf) { rt_log("shader census: no buffer below the guest address limit"); exit(2); }
+
+    uint64_t hd_, hs_;
+    if (romfs_open(&hd_, "data:/arc/data.trpfd", FS_OPEN_READ) || romfs_open(&hs_, "data:/arc/data.trpfs", FS_OPEN_READ)) {
+        rt_log("shader census: cannot open arc/data.trpfd / data.trpfs");
+        exit(2);
+    }
+    int64_t fd_size = 0, fs_size = 0;
+    romfs_size(&fd_size, hd_), romfs_size(&fs_size, hs_);
+    uint8_t *fdb = read_file(hd_, 0, (uint64_t)fd_size);
+    uint8_t head[16];
+    uint64_t got = 0;
+    romfs_read(&got, hs_, 0, head, 16);
+    uint64_t root_at = u64(head + 8);
+    uint8_t *fsb = fdb ? read_file(hs_, root_at, (uint64_t)fs_size - root_at) : NULL;
+    Fb fd, fs;
+    uint64_t names_v, names_n, info_v, info_n, ph_v, ph_n, po_v, po_n;
+    if (!fdb || !fsb || !fb_root(&fd, fdb, (uint64_t)fd_size, 0) || !fb_root(&fs, fsb, (uint64_t)fs_size - root_at, 0) ||
+        !fb_vec(&fd, 1, &names_v, &names_n) || !fb_vec(&fd, 3, &info_v, &info_n) || !fb_vec(&fs, 0, &ph_v, &ph_n) ||
+        !fb_vec(&fs, 1, &po_v, &po_n) || ph_n != po_n) {
+        rt_log("shader census: the archive's tables do not read as expected");
+        exit(2);
+    }
+    rt_log("shader census: %llu packs, data.trpfs %.2f GiB; guest buffer at %#llx", (unsigned long long)names_n,
+           fs_size / 1073741824.0, (unsigned long long)gbuf);
+
+    uint64_t decodes = 0, failed = 0, stored_files = 0, too_big = 0, out_total = 0;
+    for (uint64_t p = 0; p < names_n; p++) {
+        uint32_t nl = 0;
+        const char *nm = fb_string(&fd, names_v, p, &nl);
+        Fb info;
+        if (!nm || p >= info_n || !fb_table(&fd, info_v, p, &info)) continue;
+        uint64_t psize = fb_u64(&info, 0), h = fnv1a64(nm, nl), poff = 0;
+        int have = 0;
+        for (uint64_t k = 0; k < ph_n; k++)
+            if (u64(fsb + ph_v + 8 * k) == h) { poff = u64(fsb + po_v + 8 * k), have = 1; break; }
+        if (!have || !psize || psize > BUF_SIZE) continue;
+        uint8_t *pk = read_file(hs_, poff, psize);
+        Fb pt;
+        uint64_t fv, fn;
+        if (!pk || !fb_root(&pt, pk, psize, 0) || !fb_vec(&pt, 1, &fv, &fn)) { free(pk); continue; }
+        for (uint64_t k = 0; k < fn; k++) {
+            Fb e;
+            uint64_t ds, dn;
+            if (!fb_table(&pt, fv, k, &e) || !fb_vec(&e, e.nslots - 1, &ds, &dn)) continue;
+            int64_t comp = fb_i8(&e, 1, -1);
+            uint64_t unpacked = fb_u64(&e, 3);
+            if (comp == -1) { stored_files++; search(pk + ds, dn, p, k, 1); continue; }
+            if (!unpacked || dn + unpacked > BUF_SIZE) { too_big++; continue; }
+            uint8_t *in = (uint8_t *)(uintptr_t)gbuf, *outp = in + ((dn + 4095) & ~4095ull);
+            memcpy(in, pk + ds, dn);
+            uint64_t r = rt_call(c, decoder, 8, (uint64_t)(uintptr_t)in, dn, (uint64_t)(uintptr_t)outp, unpacked,
+                                 a[4], a[5], a[6], a[7]);
+            decodes++;
+            if (r != unpacked) { failed++; continue; }
+            out_total += r;
+            search(outp, r, p, k, 0);
+        }
+        free(pk);
+        if (!(p % 500))
+            rt_log("shader census: %llu of %llu packs, %llu decodes (%.1f GiB), %d holders, %.0f s", (unsigned long long)p,
+                   (unsigned long long)names_n, (unsigned long long)decodes, out_total / 1073741824.0, nholders,
+                   (plat_now_ns() - t0) / 1e9);
+    }
+
+    // ---- the report
+    char *rep = malloc(1 << 20);
+    size_t o = 0;
+#define PUT(...) (o += (size_t)snprintf(rep + o, o < (1u << 20) ? (1u << 20) - o : 0, __VA_ARGS__))
+    int found = 0, by_stage[8] = {0}, of_stage[8] = {0};
+    for (int i = 0; i < nprogs; i++) {
+        if (progs[i].stage < 8) of_stage[progs[i].stage]++;
+        if (progs[i].found == 1) { found++; if (progs[i].stage < 8) by_stage[progs[i].stage]++; }
+    }
+    PUT("========================= KarPur shader census =========================\n");
+    PUT("packs %llu; Oodle decodes %llu (%.2f GiB unpacked), failed %llu, too big %llu; stored files searched %llu; %.0f s\n",
+        (unsigned long long)names_n, (unsigned long long)decodes, out_total / 1073741824.0, (unsigned long long)failed,
+        (unsigned long long)too_big, (unsigned long long)stored_files, (plat_now_ns() - t0) / 1e9);
+    PUT("recorded programs found: %d of %d (stage 0: %d of %d, 4: %d of %d, 5: %d of %d)\n", found, nprogs, by_stage[0],
+        of_stage[0], by_stage[4], of_stage[4], by_stage[5], of_stage[5]);
+    PUT("files holding programs: %d\n", nholders);
+    // by pack name ending (the main file's type) and by tag
+    for (int i = 0; i < nholders; i++) {
+        Holder *hh = &holders[i];
+        uint32_t nl = 0;
+        const char *nm = fb_string(&fd, names_v, hh->pack, &nl);
+        char tag[5] = "----";
+        if (printable(hh->tag)) memcpy(tag, &hh->tag, 4);
+        if (i < 200)
+            PUT("  %-60.*s file %4llu: %5u programs, %9llu bytes, %s, tag %s, code at %#llx..%#llx\n", (int)(nl < 60 ? nl : 60),
+                nm ? nm : "?", (unsigned long long)hh->file, hh->hits, (unsigned long long)hh->size,
+                hh->stored ? "stored" : "Oodle", tag, (unsigned long long)hh->first_off, (unsigned long long)hh->last_off);
+    }
+    PUT("==========================================================================\n");
+    rt_log("%s", rep);
+    plat_file_mkdir_p("game/report");
+    plat_file_write("game/report/shader-census.txt", rep, o);
+    rt_log("shader census: report in game/report/shader-census.txt; the run ends here");
+    exit(0);
+}
