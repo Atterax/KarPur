@@ -2757,6 +2757,13 @@ static void lb_compute(const GfxShader *cs) {
     lb_count(2, pipe ? have : 2, ms);
 }
 
+// TOTK_LIB_WARM_TRACE=1: the preparation on one thread, naming each variant and library build (crash hunts)
+static int lb_trace(void) {
+    static int v = -1;
+    if (v < 0) v = rt_knob("LIB_WARM_TRACE", "0");
+    return v;
+}
+
 // The pre-rasterization (vertex) or fragment-shader library of one shader with the LB state.
 // keep 0: build into the driver's pipeline cache only (sh is a private copy; the library is destroyed).
 static void lb_library(const GfxShader *sh, int vertex, int keep) {
@@ -2799,7 +2806,9 @@ static void lb_library(const GfxShader *sh, int vertex, int keep) {
         return;
     }
     double t0 = now_ms();
+    if (lb_trace()) fprintf(stderr, "lib warm:   creating the %s library\n", vertex ? "vertex" : "fragment"), fflush(stderr);
     VkPipeline pipe = lib_create(kind, &s, &k, lay, key);
+    if (lb_trace()) fprintf(stderr, "lib warm:   created (%s)\n", pipe ? "ok" : "failed"), fflush(stderr);
     double ms = now_ms() - t0;
     if (!keep) {
         if (pipe) vkDestroyPipeline(P.device, pipe, NULL);
@@ -2936,6 +2945,12 @@ static void lb_warm_worker(void *arg) {
         size_t i = (size_t)plat_inc64(&LB.next) - 1;
         if (i >= LB.n) return;
         int owned = 0;
+        if (lb_trace()) {   // TOTK_LIB_WARM_TRACE=1: one thread, each variant named before it is built (crash hunts)
+            fprintf(stderr, "lib warm: variant %zu, stage %u, input %02x%02x%02x%02x%02x%02x%02x%02x\n", i, LB.e[i].stage,
+                    LB.e[i].iid[0], LB.e[i].iid[1], LB.e[i].iid[2], LB.e[i].iid[3], LB.e[i].iid[4], LB.e[i].iid[5],
+                    LB.e[i].iid[6], LB.e[i].iid[7]);
+            fflush(stderr);
+        }
         const GfxShader *sh = gfx_shader_load_private(LB.e[i].iid, &owned);
         int st = sh ? gfx_shader_stage(sh) : -1;
         if (!sh) {
@@ -2976,10 +2991,16 @@ static void lb_warm_prepared(const char *dir) {
         memcpy(LB.e[i].iid, f + 16 + 36 * i + 4, 32), LB.e[i].stage = f[16 + 36 * i], LB.e[i].prio = f[16 + 36 * i + 1];
     free(f);
     if (!LB.e) return;
+    // TOTK_LIB_WARM_FROM / _COUNT: a slice of the list (crash hunts with TOTK_LIB_WARM_TRACE)
+    size_t from = (size_t)atoll(cfg_get("TOTK_LIB_WARM_FROM") ? cfg_get("TOTK_LIB_WARM_FROM") : "0");
+    size_t count = (size_t)atoll(cfg_get("TOTK_LIB_WARM_COUNT") ? cfg_get("TOTK_LIB_WARM_COUNT") : "0");
+    if (from > n) from = n;
+    if (count && count < n - from) n = from + count;
+    LB.next = from;
     LB.n = n, LB.idle = 0, LB.t0 = now_ms();
     static const uint32_t no_pr[16], no_fs[4];
     lb_state(no_pr, no_fs);
-    int cpus = (int)plat_cpu_usable(), k = 0;
+    int cpus = lb_trace() ? 1 : (int)plat_cpu_usable(), k = 0;
     PlatThread *t[64];
     for (int i = 0; i < cpus && i < 64; i++)
         if ((t[k] = plat_thread_new(lb_warm_worker, NULL, "lib warm"))) k++;
