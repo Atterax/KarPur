@@ -97,6 +97,7 @@ All off by default except the abort line.
   4. `77a9f872` copies it into the presented image.
   No separate anti-aliasing pass shows between them, and the projection at c5 +0x80 never changes, so the game has no temporal anti-aliasing of its own.
 - Where a DLAA / FSR 2 resolve fits: right after `333e928a` and before the first HUD draw, on the tone-mapped sRGB image (as ZA Recomp resolves Z-A's tone-mapped picture), with the depth `4042fad2` samples and motion vectors from c5 +0 of this frame and the last.
+- DLAA step 1: `runtime/vk_dlaa.c` (adapted from ZA Recomp) loads NGX from the driver when `TOTK_DLAA=1` (default off), adds the extensions it asks for at instance and device creation, and shuts it down before `vkDestroyDevice` (without that, the driver faulted in `nvcuda64.dll` at exit). `karpur.exe --probe-vkmem` with `TOTK_DLAA=1` on the RTX 5080 with `nvngx_dlss.dll` 310.9.1 next to the exe: "NGX up; DLSS available", exit 0. Not yet called for frames. Of the files the maintainer collected (`C:\KarPur\AMD_NVIDIA_DLLs`, all validly signed): `nvngx_dlss.dll` is the one needed; `nvngx_dlssg.dll` and `sl.*` (Streamline 2.14: frame generation, Reflex) would need Streamline's interposer; `nvngx_dlssd.dll` (ray reconstruction) needs ray-traced inputs; the AMD files are DirectX 12 builds (FSR on Vulkan needs `amd_fidelityfx_vk.dll` or FSR 2 from source).
 - Next for DLAA: find the game's final copy of the tone-mapped image and its own anti-aliasing, then the jitter, the motion vector pass and NGX.
 
 ### 2026-11-08: progress log in English

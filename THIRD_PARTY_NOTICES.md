@@ -20,6 +20,7 @@ to understand behaviour, but never copied.
 | Dear ImGui (in-game menu), as vendored by TotK Recomp | [ocornut/imgui](https://github.com/ocornut/imgui) | 1.91.9 | MIT, `runtime/third_party/imgui/` (license inside) |
 | AMD FidelityFX FSR 1 shaders | [GPUOpen FidelityFX-FSR](https://github.com/GPUOpen-Effects/FidelityFX-FSR) | as vendored by TotK Recomp | MIT, `runtime/shaders/ffx/` (license inside) |
 | Roboto font (menu) | Google Fonts | as vendored by TotK Recomp | Apache-2.0, `runtime/ui/fonts/` (license inside) |
+| NVIDIA NGX loading for DLAA, without the NVIDIA SDK: NGX types from its documented ABI, the parameter vtable check, extension and feature handling (Copyright (c) 2026 Peiikai and ZA Recomp contributors; after TotK Recomp's `runtime/vk_dlaa.c`, Copyright (c) 2026 Valiantsin Dzerakh) | [ZA Recomp](https://github.com/Hexveil404/PokeZ-ARecomp) `runtime/nvn/vulkan/dlaa.c` | `dd77bf6cfc79ac77b48cf2a4ab746c4125a6f2f3` | MIT, adapted in `runtime/vk_dlaa.c`. `nvngx_dlss.dll` is NVIDIA's (NVIDIA RTX SDK license) and is not part of this repository |
 
 The full license texts are in [licenses/](licenses/).
 
