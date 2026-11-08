@@ -85,6 +85,9 @@ All off by default except the abort line.
 
 ## Log
 
+### 2026-11-08: launcher 0.2.0
+- Released KarPur Launcher 0.2.0: NVIDIA DLAA, DLSS upscaling to the window or 4K, DLSS Frame Generation 2x-4x, the Controls tab (keys, controller buttons, sticks), rounded dropdowns and dark scrollbars, the game's DLC button back with F1 / Esc opening the Controls page. The first release whose Update tab can be tested from an older launcher (0.1.0 → 0.2.0).
+
 ### 2026-11-08: the scene camera for a temporal anti-aliasing (tests BU, BV)
 - ZA Recomp (Pokémon Legends: Z-A, MIT, github.com/Hexveil404/PokeZ-ARecomp, read in `refs/`) runs NVIDIA DLAA and AMD FSR 2/3 on a recompiled Game Freak game: it jitters the scene passes' viewport, makes camera motion vectors from the depth with this and last frame's view-projection (vertex uniform block c5 of the G-buffer draws), replaces the game's final copy of its tone-mapped image with the resolve, and loads NGX at run time from the driver (`nvngx_dlss.dll` supplied by the player). Its other quality extras: GTAO, higher shadow map resolution, 16x anisotropic filtering, water reflections. Its frame rate comes mainly from a device-local cache of all vertex/index ranges refreshed from `GetWriteWatch` pages at each submission, with GPU-written pages tracked per 64-byte line and cached again after 120 frames.
 - `TOTK_CAM_PROBE=1` (diagnostic, off): per draw with depth, the perspective matrices in the vertex shader's uniform blocks, every 600 frames in the log.

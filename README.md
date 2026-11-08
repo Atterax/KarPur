@@ -14,10 +14,8 @@
 ## Features
 
 - **60 FPS** with the game's speed kept right, smooth effects, and smooth walking indoors. 90, 120 and 144 FPS are available as experimental limits: walking indoors follows them, effects can stutter.
-- **PC Settings inside the game.** A new entry in the main menu, under Options, opens the game's own options page with PC settings, in every language the game offers:
-  - fullscreen, window size, frame rate limit, frame sync (Mailbox, VSync, off)
-  - upscaling (AMD FSR 1 or bilinear), sharpness, performance overlay
-  - Pokémon population, see below
+- **NVIDIA DLAA, DLSS and DLSS Frame Generation** (RTX cards, optional): DLAA smooths the edges of the 3D world; DLSS renders it at your window's size (or at 4K, scaled down) for a sharper picture; Frame Generation shows 2, 3 or 4 frames for each one the game renders (2x on RTX 40, up to 4x on RTX 50). The HUD stays as the game draws it. NVIDIA's files are not part of KarPur: you add your own copies (from a game that ships DLSS) in the launcher. Frame Generation also needs Windows' hardware-accelerated GPU scheduling.
+- **AMD FSR 1** or bilinear scaling of the picture to the window, with sharpness, when DLSS is off.
 - **Pokémon population in four levels**, for how many wild Pokémon roam at once. It takes effect after a restart:
 
   | Level | At once | Good for |
@@ -28,7 +26,8 @@
   | Extreme | 120 | screenshots; can drop to about 35 FPS |
 
   Switch 2 uses the spawn values of the fan mod [Pokémon Compass](https://compass.seri.studio) by Aria Seri and Kas Seri; the higher levels raise only the count. KarPur contains these numbers, none of the mod's files.
-- **Controls page** in the look of the game's menus, opened from PC Settings: key and button remapping, button layout, motion controls, vibration, stick dead zone and mouse sensitivity. Its texts are in English, German and Russian, following the Windows language.
+- **Controls page** in the look of the game's menus, opened with **F1** or **Esc**: key and button remapping, button layout, motion controls, vibration, stick dead zone and mouse sensitivity. Its texts are in English, German and Russian, following the Windows language. The launcher's **Controls** tab sets the same, and swaps the sticks or inverts the camera.
+- **PC settings page in the game's menu** (optional, `UI_PATCH=1`): it takes the place of the downloadable-content button, so it is off by default; the launcher has the same settings.
 - **Mouse and keyboard or controller**, with the mouse turning the camera.
 
 ## Known limits
@@ -60,7 +59,8 @@ How to dump your game and keys is not covered here.
 4. Press **Play**, or use the shortcut **Pokémon Violet (KarPur)** that the launcher puts into your target folder, next to a copy of the launcher.
 
 The launcher also has:
-- **Settings:** the game's PC settings before you start it (fullscreen, window size, FPS limit, frame sync, upscaling, sharpness, performance overlay, wild Pokémon), and the launcher's colour, which follows your game.
+- **Settings:** the game's settings before you start it (fullscreen, window size, FPS limit, frame sync, anti-aliasing (DLAA), upscaling (FSR 1, bilinear, DLSS), sharpness, DLSS model, frame generation, performance overlay, wild Pokémon), the buttons that add your own `nvngx_dlss.dll` and Streamline files, and the launcher's colour, which follows your game.
+- **Controls:** keyboard, mouse and controller: click a button and press the key or controller button you want; controller layout, stick dead zone, swapped sticks, inverted camera, mouse sensitivity, vibration and motion controls.
 - **Repair:** restores the project files, sets up Python again and rebuilds only what is missing or changed. Your saves and settings stay as they are.
 - **Update:** installs new launcher releases and rebuilds only what changed, usually in a few minutes.
 - **Feedback:** see below.
