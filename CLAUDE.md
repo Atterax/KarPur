@@ -33,4 +33,4 @@ This repository is public. Nothing from the game may enter it.
 
 ## Writing
 
-Code, comments, commit messages and `CLAUDE.md` are in English. `README.md` is in English. Documents the maintainer reads (`docs/*.md`) are in German. Commit messages are plain sentences without type prefixes.
+Code, comments, commit messages and `CLAUDE.md` are in English. `README.md` and `docs/progress.md` are in English (the German log up to 2026-11-08 stays in `docs/progress-archive-de.md`). The guides the maintainer reads (`docs/setup-windows.md`, `docs/launcher.md`, `docs/roadmap.md`) are in German. Commit messages are plain sentences without type prefixes.
