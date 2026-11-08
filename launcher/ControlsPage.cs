@@ -41,6 +41,7 @@ partial class MainForm
     readonly CheckBox motion = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Motion controls (gyro)", BackColor = Theme.Card };
     readonly CheckBox rumbleTriggers = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Rumble in the triggers too", BackColor = Theme.Card };
     readonly KeyButton[] keyButtons = new KeyButton[Actions.Length];
+    readonly PadButton?[] padButtons = new PadButton?[Actions.Length];   // none for the stick directions (keys only)
     readonly Button saveControls = Theme.Button("Save controls", true, "");
     readonly Button defaultKeys = Theme.Button("Default keys", glyph: "");
     readonly Label controlsNote = Theme.Label("", 9.5f, muted: true);
@@ -88,16 +89,22 @@ partial class MainForm
             int idx = i;
             keyButtons[i] = new KeyButton(Actions[i].Default);
             keyButtons[i].KeyChosen += (_, _) => controlsNote.Text = "Press Save controls to keep it.";
+            if (!Actions[i].Action.Contains("STICK_"))
+            {
+                padButtons[i] = new PadButton();
+                padButtons[i]!.PadChosen += (_, _) => controlsNote.Text = "Press Save controls to keep it.";
+            }
         }
         Control Group((string Title, string[] Actions) g)
         {
-            var t = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, BackColor = Theme.Card, Dock = DockStyle.Top, Margin = new Padding(0, 0, 24, 12) };
+            var t = new TableLayoutPanel { AutoSize = true, ColumnCount = 3, BackColor = Theme.Card, Dock = DockStyle.Top, Margin = new Padding(0, 0, 24, 12) };
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             var title = Theme.Label(g.Title, 10.5f, style: FontStyle.Bold);
             title.Margin = new Padding(0, 4, 0, 6);
             t.Controls.Add(title, 0, 0);
-            t.SetColumnSpan(title, 2);
+            t.SetColumnSpan(title, 3);
             int row = 1;
             foreach (string a in g.Actions)
             {
@@ -107,18 +114,20 @@ partial class MainForm
                 l.MinimumSize = new Size(150, 0);
                 t.Controls.Add(l, 0, row);
                 t.Controls.Add(keyButtons[i], 1, row);
+                if (padButtons[i] != null) t.Controls.Add(padButtons[i]!, 2, row);
                 row++;
             }
             return t;
         }
+        // the sticks (keys only) side by side; the buttons and the d-pad (keyboard and controller) one below the other
         keys.Controls.Add(Group(groups[0]), 0, 0);
         keys.Controls.Add(Group(groups[1]), 1, 0);
         keys.Controls.Add(Group(groups[2]), 0, 1);
-        keys.Controls.Add(Group(groups[3]), 1, 1);
-        var keysTitle = Theme.Label("Keyboard and mouse", 12f, style: FontStyle.Bold);
+        keys.Controls.Add(Group(groups[3]), 0, 2);
+        var keysTitle = Theme.Label("Keyboard, mouse and controller", 12f, style: FontStyle.Bold);
         keysTitle.Dock = DockStyle.Top;
         keysTitle.Padding = new Padding(0, 0, 0, 4);
-        var keysHint = Theme.Label("Click a key, then press the key or mouse button you want. Esc cancels; right-click for Default or None.", 9.5f, muted: true);
+        var keysHint = Theme.Label("Click a key, then press the key or mouse button you want; the second button of a row is the controller's: click it and press a button (Xbox-type pads), or right-click it to pick one. Esc cancels; right-click for Default or None.", 9.5f, muted: true);
         keysHint.Dock = DockStyle.Top;
         keysHint.Padding = new Padding(0, 0, 0, 10);
 
@@ -128,7 +137,12 @@ partial class MainForm
         bottom.Controls.Add(defaultKeys);
         bottom.Controls.Add(controlsNote);
         saveControls.Click += (_, _) => SaveControls();
-        defaultKeys.Click += (_, _) => { foreach (var b in keyButtons) b.Key = "default"; controlsNote.Text = "Press Save controls to keep it."; };
+        defaultKeys.Click += (_, _) =>
+        {
+            foreach (var b in keyButtons) b.Key = "default";
+            foreach (var b in padButtons) if (b != null) b.Pad = "default";
+            controlsNote.Text = "Press Save controls to keep it.";
+        };
 
         page.Controls.Add(bottom);
         page.Controls.Add(Spacer(14));
@@ -154,6 +168,19 @@ partial class MainForm
         return "none";
     }
 
+    // The controller button of one bind_<action> value: "pad:<name>" (the first), "default" for pad:default, "none" when the
+    // value names no pad
+    static string PadOf(string? bind)
+    {
+        if (string.IsNullOrWhiteSpace(bind)) return "default";
+        foreach (var part in bind.Split(','))
+        {
+            string p = part.Trim();
+            if (p.StartsWith("pad:", StringComparison.OrdinalIgnoreCase)) return p[4..].Trim().ToLowerInvariant();
+        }
+        return "none";
+    }
+
     void LoadControls()
     {
         bool built = targetBox.Text != "" && File.Exists(Builder.Exe(targetBox.Text));
@@ -170,10 +197,15 @@ partial class MainForm
         mouseSensValue.Text = (mouseSens.Value / 10.0).ToString("0.0");
         rumbleValue.Text = $"{rumble.Value} %";
         for (int i = 0; i < Actions.Length; i++)
-            keyButtons[i].Key = built ? KeyOf(ini.Get("bind_" + Actions[i].Action.ToLowerInvariant())) : "default";
+        {
+            string? bind = built ? ini.Get("bind_" + Actions[i].Action.ToLowerInvariant()) : null;
+            keyButtons[i].Key = KeyOf(bind);
+            if (padButtons[i] != null) padButtons[i]!.Pad = PadOf(bind);
+        }
         foreach (Control c in new Control[] { padLayout, deadzone, mouseSens, rumble, rumbleTriggers, motion, saveControls, defaultKeys })
             c.Enabled = built;
         foreach (var b in keyButtons) b.Enabled = built;
+        foreach (var b in padButtons) if (b != null) b.Enabled = built;
         controlsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
     }
 
@@ -190,11 +222,13 @@ partial class MainForm
             ini.Set("input", "motion", motion.Checked ? "1" : "0");
             for (int i = 0; i < Actions.Length; i++)
             {
-                string k = keyButtons[i].Key;
-                // the gamepad keeps its own buttons; the stick directions take keys only
-                bool stick = Actions[i].Action.Contains("STICK_");
-                string pad = stick ? "" : ", pad:default";
-                string v = k == "default" ? "key:default" + pad : k == "none" ? (stick ? "none" : "pad:default") : "key:" + k + pad;
+                // input_map.c: "key:<name>" / "key:default" and "pad:<name>" / "pad:default"; a part not named is unbound,
+                // "none" alone binds nothing (the stick directions take keys only)
+                string k = keyButtons[i].Key, p = padButtons[i]?.Pad ?? "none";
+                var parts = new List<string>();
+                if (k != "none") parts.Add("key:" + k);
+                if (p != "none") parts.Add("pad:" + p);
+                string v = parts.Count > 0 ? string.Join(", ", parts) : "none";
                 ini.Set("input", "bind_" + Actions[i].Action.ToLowerInvariant(), v);
             }
             ini.Save();

@@ -218,3 +218,114 @@ class DarkMenuRenderer : ToolStripProfessionalRenderer
         public override Color ImageMarginGradientEnd => Theme.Field;
     }
 }
+
+// A controller binding: shows the button; a click waits for the next button pressed on an XInput controller (Xbox pads,
+// and pads Steam presents as one); the right mouse button lists every button (any controller, the paddles too). Pad
+// holds runtime/input_map.c's pad name ("south" ... "rpaddle2"), "default" or "none". Positions, not letters: "south" is
+// the bottom face button on every controller (A on Xbox, B on Switch, Cross on PlayStation).
+class PadButton : RoundButton
+{
+    public static readonly (string Name, string Words)[] Pads =
+    {
+        ("south", "Bottom face button"), ("east", "Right face button"), ("west", "Left face button"), ("north", "Top face button"),
+        ("l", "L / LB"), ("r", "R / RB"), ("zl", "ZL / LT"), ("zr", "ZR / RT"), ("lstick", "Left stick press"),
+        ("rstick", "Right stick press"), ("start", "+ / Start"), ("back", "- / Back"), ("dpad_up", "D-pad up"),
+        ("dpad_down", "D-pad down"), ("dpad_left", "D-pad left"), ("dpad_right", "D-pad right"), ("lpaddle1", "Left paddle 1"),
+        ("rpaddle1", "Right paddle 1"), ("lpaddle2", "Left paddle 2"), ("rpaddle2", "Right paddle 2"),
+    };
+
+    string pad = "default";
+    bool waiting;
+    ushort startButtons;
+    byte startLt, startRt;
+    readonly System.Windows.Forms.Timer poll = new() { Interval = 25 };
+    public event EventHandler? PadChosen;
+
+    public PadButton()
+    {
+        Width = 170;
+        Height = 34;
+        Font = new Font("Segoe UI Semibold", 9.5f);
+        Margin = new Padding(8, 4, 0, 4);
+        var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), ShowImageMargin = false, BackColor = Theme.Field, ForeColor = Theme.Text };
+        menu.Items.Add("Default", null, (_, _) => Set("default"));
+        menu.Items.Add("None", null, (_, _) => Set("none"));
+        menu.Items.Add(new ToolStripSeparator());
+        foreach (var (name, words) in Pads) menu.Items.Add(words, null, (_, _) => Set(name));
+        ContextMenuStrip = menu;
+        poll.Tick += (_, _) => Poll();
+        UpdateText();
+    }
+
+    public string Pad { get => pad; set { pad = value; Stop(); } }
+
+    void Set(string p) { pad = p; Stop(); PadChosen?.Invoke(this, EventArgs.Empty); }
+
+    void Stop() { waiting = false; poll.Stop(); UpdateText(); }
+
+    void UpdateText()
+    {
+        Primary = waiting;
+        Text = waiting ? "Press a button ..." : pad == "default" ? "Default" : pad == "none" ? "-" : Words(pad);
+        Width = 170;
+        Invalidate();
+    }
+
+    public static string Words(string p) => Pads.FirstOrDefault(x => x.Name == p).Words ?? p;
+
+    protected override void OnClick(EventArgs e)
+    {
+        base.OnClick(e);
+        if (waiting) { Stop(); return; }   // a second click cancels
+        if (!Read(out var s)) { Text = "No Xbox-type pad: right-click"; Invalidate(); return; }
+        startButtons = s.buttons; startLt = s.lt; startRt = s.rt;
+        waiting = true;
+        UpdateText();
+        Focus();
+        poll.Start();
+    }
+
+    protected override void OnLostFocus(EventArgs e) { if (waiting) Stop(); base.OnLostFocus(e); }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (waiting && (keyData & Keys.KeyCode) == Keys.Escape) { Stop(); return true; }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    void Poll()
+    {
+        if (!waiting || !Read(out var s)) return;
+        ushort fresh = (ushort)(s.buttons & ~startButtons);
+        startButtons &= s.buttons;   // released buttons may count again
+        (ushort bit, string name)[] map =
+        {
+            (0x1000, "south"), (0x2000, "east"), (0x4000, "west"), (0x8000, "north"), (0x0100, "l"), (0x0200, "r"),
+            (0x0040, "lstick"), (0x0080, "rstick"), (0x0010, "start"), (0x0020, "back"), (0x0001, "dpad_up"),
+            (0x0002, "dpad_down"), (0x0004, "dpad_left"), (0x0008, "dpad_right"),
+        };
+        foreach (var (bit, name) in map)
+            if ((fresh & bit) != 0) { Set(name); return; }
+        if (s.lt > 128 && startLt <= 128) { Set("zl"); return; }
+        if (s.rt > 128 && startRt <= 128) { Set("zr"); return; }
+        if (s.lt <= 128) startLt = 0;
+        if (s.rt <= 128) startRt = 0;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct XState { public uint packet; public ushort buttons; public byte lt, rt; public short lx, ly, rx, ry; }
+    [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")] static extern int XInputGetState(int user, out XState s);
+
+    // the first connected XInput controller
+    static bool Read(out XState s)
+    {
+        s = default;
+        try
+        {
+            for (int i = 0; i < 4; i++)
+                if (XInputGetState(i, out s) == 0) return true;
+        }
+        catch (DllNotFoundException) { }
+        return false;
+    }
+}
