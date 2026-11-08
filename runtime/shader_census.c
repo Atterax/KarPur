@@ -19,6 +19,12 @@
 // format-name-like word (4 of A-Z 0-9 _, 4-aligned) before the code, and for the first files of each tag a map of
 // such words (first offset and count). Sums by tag, by pack type and by SARC entry type, and the programs not found.
 //
+// The code always sits in a BNSH (test CI). To learn its layout, for the first two programs of each file the census
+// measures (numbers only): where the program's control section lies (exact match, or how many of its first bytes
+// match), where u32 fields of that BNSH hold the code's and the control section's offsets from the BNSH's start, and
+// where the code length (control+0x704) and the control size 0x880 sit next to the code's offset field. For the first
+// files of each tag it also lists the BNSH's first 24 u32 header words (offsets, sizes and versions).
+//
 // Formats as tools/trpfs.py reads them (FlatBuffers): data.trpfd root {file_hashes [u64], pack_names [string],
 // file_info [..], pack_info [{size u64, file_count u64}]}; data.trpfs "ONEPACK\0", u64 offset of root {pack_hashes
 // [u64], pack_offsets [u64]}; a pack root {file_hashes [u64], files [{?, compression i8, level u8, size u64, data
@@ -155,6 +161,10 @@ typedef struct {
     uint32_t bnsh_count;            // "BNSH" words in the file
     uint64_t bnsh_dist;             // from the nearest "BNSH" before the first code start (~0: none)
     char map[640];                  // format-name-like words of the file, for the first files of each tag
+    int sample[2];                  // the first programs found in the file (index + 1) and their code starts
+    uint64_t sample_at[2];
+    char layout[2][400];            // their BNSH layout measurements
+    char head[300];                 // the BNSH's first u32 words, for the first files of each tag
 } Holder;
 static Holder holders[4096];
 static int nholders;
@@ -199,7 +209,69 @@ static int map_samples(uint32_t tag) {
     return 0;
 }
 
+// up to 4 positions, 4-aligned, in [lo, hi) where a u32 equals v (0 when v does not fit 32 bits)
+static int find_u32(const uint8_t *b, uint64_t lo, uint64_t hi, uint64_t v, uint64_t *at) {
+    int k = 0;
+    if (v >> 32) return 0;
+    for (uint64_t j = lo; j + 4 <= hi && k < 4; j += 4)
+        if (u32(b + j) == (uint32_t)v) at[k++] = j;
+    return k;
+}
+
+static void measure(const uint8_t *b, uint64_t n, const Prog *pr, uint64_t start, char *out, size_t cap) {
+    size_t o = 0;
+#define OUT(...) (o += (size_t)snprintf(out + o, o < cap ? cap - o : 0, __VA_ARGS__))
+    if (start >= n) { OUT("code start outside the file"); return; }
+    uint64_t base = ~0ull;
+    for (uint64_t j = start + 1; j-- > 0;)
+        if (j + 4 <= n && b[j] == 'B' && !memcmp(b + j, "BNSH", 4)) { base = j; break; }
+    const uint8_t *ctrl = pr->code - CONTROL;
+    uint32_t c1_off, length;
+    memcpy(&c1_off, ctrl + 0x700, 4), memcpy(&length, ctrl + 0x704, 4);
+    OUT("stage %u, code %u bytes (length %u, c1 at %u)", pr->stage, pr->len, length, c1_off);
+    if (base == ~0ull) { OUT(", no BNSH before the code"); return; }
+    OUT(", BNSH at %#llx, code at BNSH+%#llx", (unsigned long long)base, (unsigned long long)(start - base));
+    // the control section: exact, else the longest prefix found at a 4-aligned place
+    uint64_t cat = ~0ull, best = 0, best_at = 0;
+    for (uint64_t j = base; j + 16 <= n; j += 4) {
+        if (u64(b + j) != u64(ctrl)) continue;
+        uint64_t m = 0;
+        while (m < CONTROL && j + m < n && b[j + m] == ctrl[m]) m++;
+        if (m == CONTROL) { cat = j; break; }
+        if (m > best) best = m, best_at = j;
+    }
+    if (cat != ~0ull) OUT(", control at BNSH+%#llx (code%+lld)", (unsigned long long)(cat - base), (long long)cat - (long long)start);
+    else if (best) OUT(", control: first %llu of 0x880 bytes at BNSH+%#llx", (unsigned long long)best, (unsigned long long)(best_at - base));
+    else OUT(", control not in the file");
+    uint64_t at[4];
+    int k = find_u32(b, base, n, start - base, at);
+    OUT("; code offset u32 at");
+    for (int i = 0; i < k; i++) OUT(" BNSH+%#llx", (unsigned long long)(at[i] - base));
+    if (!k) OUT(" none");
+    if (cat != ~0ull) {
+        uint64_t ca[4];
+        int kc = find_u32(b, base, n, cat - base, ca);
+        OUT("; control offset u32 at");
+        for (int i = 0; i < kc; i++) OUT(" BNSH+%#llx", (unsigned long long)(ca[i] - base));
+        if (!kc) OUT(" none");
+    }
+    // near the first code offset field: the length, the code size and 0x880
+    if (k) {
+        uint64_t lo = at[0] >= base + 0x80 ? at[0] - 0x80 : base, hi = at[0] + 0x80 < n ? at[0] + 0x80 : n, w[4];
+        const struct { const char *name; uint64_t v; } want[] = {{"length", length}, {"code size", pr->len}, {"0x880", CONTROL}};
+        for (int q = 0; q < 3; q++) {
+            int kw = find_u32(b, lo, hi, want[q].v, w);
+            OUT("; %s at", want[q].name);
+            for (int i = 0; i < kw; i++) OUT(" field%+lld", (long long)w[i] - (long long)at[0]);
+            if (!kw) OUT(" none");
+        }
+    }
+#undef OUT
+}
+
 static void describe(const uint8_t *b, uint64_t n, Holder *hd) {
+    for (int i = 0; i < 2; i++)
+        if (hd->sample[i]) measure(b, n, &progs[hd->sample[i] - 1], hd->sample_at[i], hd->layout[i], sizeof hd->layout[i]);
     sarc_entry(b, n, hd->first_off, hd);
     hd->bnsh_dist = ~0ull;
     for (uint64_t i = 0; i + 4 <= n; i++)
@@ -212,6 +284,12 @@ static void describe(const uint8_t *b, uint64_t n, Holder *hd) {
         if (magic_like(b + i)) { hd->near_magic = u32(b + i), hd->near_dist = hd->first_off - i; break; }
     }
     if (map_samples(hd->tag) >= 3) return;
+    if (hd->bnsh_dist != ~0ull) {
+        uint64_t base = hd->first_off - hd->bnsh_dist;
+        size_t o = 0;
+        for (int w = 0; w < 24 && base + 4 * w + 4 <= n; w++)
+            o += (size_t)snprintf(hd->head + o, sizeof hd->head - o, "%s%#x", w ? " " : "", u32(b + base + 4 * w));
+    }
     // up to 24 distinct words, in order of first appearance
     uint32_t w[24], cnt[24];
     uint64_t first[24];
@@ -251,6 +329,7 @@ static void search(const uint8_t *b, uint64_t n, uint64_t pack, uint64_t file, i
                 hd = &holders[nholders++];
                 *hd = (Holder){pack, file, n, start, start, 0, u32(b), stored};
             }
+            if (hd->hits < 2) hd->sample[hd->hits] = tab[s].prog, hd->sample_at[hd->hits] = start;
             hd->hits++;
             if (start < hd->first_off) hd->first_off = start;
             if (start > hd->last_off) hd->last_off = start;
@@ -423,6 +502,9 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             hh->inner[0] ? hh->inner : "-", hh->inner_count > 1 ? " +more" : "", bn, near,
             (unsigned long long)hh->near_dist);
         if (hh->map[0]) PUT("      words: %s\n", hh->map);
+        if (hh->head[0]) PUT("      BNSH words: %s\n", hh->head);
+        for (int k = 0; k < 2; k++)
+            if (hh->layout[k][0]) PUT("      program %d: %s\n", k + 1, hh->layout[k]);
     }
     PUT("programs not found:");
     int nf = 0;
