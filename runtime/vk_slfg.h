@@ -48,7 +48,9 @@ typedef struct {
 // render submission, the tags (copied now) and the camera constants; DLSS-G switched on at the first frame
 // (TOTK_FRAMEGEN=2..4: the presented frames per rendered one)
 void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f);
-void slfg_present_mark(int end);   // around vkQueuePresentKHR: Reflex's present markers of that frame (0 start, 1 end)
+void slfg_present_mark(int end);
+// The frames per second DLSS-G puts on screen (generated ones included), over the last second; 0 without frame generation
+float slfg_shown_fps(void);   // around vkQueuePresentKHR: Reflex's present markers of that frame (0 start, 1 end)
 
 // The functions Streamline intercepts: its proxies while active, Vulkan's own otherwise
 VkResult slfg_vkCreateWin32SurfaceKHR(VkInstance inst, const void *ci, const VkAllocationCallbacks *a, VkSurfaceKHR *s);

@@ -355,6 +355,10 @@ static struct {
     int options_set, logged, errors;
     int on;                              // DLSS-G's mode is on (off while frames come without a scene)
     uint64_t paused;                     // times it was paused for frames without a scene
+    // what DLSS-G reports (slDLSSGGetState, each present): the frames it put on screen, against the rendered ones
+    uint64_t shown, rendered, t0;        // since t0 (the window of the overlay's number, ~1 s)
+    uint64_t log_shown, log_rendered, log_t0, status_or;   // since the last log line (~10 s)
+    volatile float shown_fps;            // for the overlay (read on the menu's thread)
     sl::FrameToken *token;               // the frame being presented (slfg_frame -> slfg_present_mark)
     uint32_t index;
     uint32_t ow, oh;
@@ -517,10 +521,36 @@ extern "C" void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f) {
                f->w, f->h, f->ow, f->oh, k.cameraNear, k.cameraFar, k.cameraFOV * 57.29578f);
 }
 
+// After each present: how many frames DLSS-G showed since the last call, summed into the overlay's number (~1 s) and a
+// log line (~10 s)
+static void count_shown(void) {
+    sl::DLSSGState st{};
+    sl::Result r = slDLSSGGetState(sl::ViewportHandle(0), st, nullptr);
+    if (r != sl::Result::eOk) return;
+    uint64_t now = GetTickCount64();
+    if (!F.t0) F.t0 = F.log_t0 = now;
+    F.shown += st.numFramesActuallyPresented, F.rendered++;
+    F.log_shown += st.numFramesActuallyPresented, F.log_rendered++;
+    F.status_or |= (uint64_t)st.status;
+    if (now - F.t0 >= 1000) {
+        F.shown_fps = (float)((double)F.shown * 1000.0 / (double)(now - F.t0));
+        F.shown = F.rendered = 0, F.t0 = now;
+    }
+    if (now - F.log_t0 >= 10000) {
+        double s = (double)(now - F.log_t0) / 1000.0;
+        rt_log("framegen: %.0f frames shown per second for %.0f rendered (%.2f each), DLSS-G %s, status %#llx", F.log_shown / s,
+               F.log_rendered / s, F.log_rendered ? (double)F.log_shown / (double)F.log_rendered : 0.0, F.on ? "on" : "paused",
+               (unsigned long long)F.status_or);
+        F.log_shown = F.log_rendered = F.status_or = 0, F.log_t0 = now;
+    }
+}
+
+extern "C" float slfg_shown_fps(void) { return S.active && F.mult >= 2 ? F.shown_fps : 0.0f; }
+
 extern "C" void slfg_present_mark(int end) {
     if (!S.active || F.mult < 2 || !F.token) return;
     slPCLSetMarker(end ? sl::PCLMarker::ePresentEnd : sl::PCLMarker::ePresentStart, *F.token);
-    if (end) F.token = nullptr;
+    if (end) F.token = nullptr, count_shown();
 }
 
 // ---- the intercepted functions
@@ -571,6 +601,7 @@ extern "C" void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevi
 extern "C" void slfg_shutdown(void) {}
 extern "C" void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f) { (void)cb, (void)f; }
 extern "C" void slfg_present_mark(int end) { (void)end; }
+extern "C" float slfg_shown_fps(void) { return 0.0f; }
 extern "C" VkResult slfg_vkCreateWin32SurfaceKHR(VkInstance inst, const void *ci, const VkAllocationCallbacks *a, VkSurfaceKHR *s) {
     (void)inst, (void)ci, (void)a, (void)s;
     return VK_ERROR_EXTENSION_NOT_PRESENT;
