@@ -594,7 +594,9 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     {   // KarPur DLSS upscaling (vk_taa.c): DLSS's picture with the game's HUD over it takes the game image's place
         VkImage up;
         int uw, uh;
-        if (general && vk_taa_compose(cb, slot, src, fmt, w, h, &up, &uw, &uh)) {
+        int composed = general && vk_taa_compose(cb, slot, src, fmt, w, h, &up, &uw, &uh);
+        if (!composed) slfg_frame(cb, NULL);   // KarPur TOTK_FRAMEGEN: a frame without the scene still gets its markers
+        if (composed) {
             src = up, fmt = VK_FORMAT_R8G8B8A8_UNORM;
             if (cx == 0 && cy == 0 && cw == w && ch == h) cw = uw, ch = uh;
             else cx = cx * uw / w, cy = cy * uh / h, cw = cw * uw / w, ch = ch * uh / h;

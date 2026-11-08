@@ -353,6 +353,8 @@ extern "C" void slfg_shutdown(void) {
 static struct {
     int mult;                            // TOTK_FRAMEGEN: presented frames per rendered one (2..4), 1: Streamline only
     int options_set, logged, errors;
+    int on;                              // DLSS-G's mode is on (off while frames come without a scene)
+    uint64_t paused;                     // times it was paused for frames without a scene
     sl::FrameToken *token;               // the frame being presented (slfg_frame -> slfg_present_mark)
     uint32_t index;
     uint32_t ow, oh;
@@ -413,6 +415,27 @@ extern "C" void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f) {
     }
     if (F.mult < 2) return;   // Streamline only (stage 1)
     sl::ViewportHandle vp(0);
+    // Every present needs its frame's Reflex markers, or DLSS-G stops (test CE: "eDLSSGStatusFailReflexNotDetected-
+    // AtRuntime" whenever frames came without a scene - loading screens, menus - and so without this call). Such a frame
+    // (f NULL) gets its token and markers, and DLSS-G pauses until the scene is back: it has no inputs for it.
+    if (!f) {
+        uint32_t idx = ++F.index;
+        sl::Result r = S.frame_token(F.token, &idx);
+        if (r != sl::Result::eOk || !F.token) { fg_fail("slGetNewFrameToken", r); F.token = nullptr; return; }
+        slPCLSetMarker(sl::PCLMarker::eSimulationStart, *F.token);
+        slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *F.token);
+        slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *F.token);
+        slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *F.token);
+        if (F.on) {
+            sl::DLSSGOptions o{};
+            o.mode = sl::DLSSGMode::eOff;
+            r = slDLSSGSetOptions(vp, o);
+            if (r != sl::Result::eOk) fg_fail("slDLSSGSetOptions (off)", r);
+            F.on = 0, F.options_set = 0;
+            if (F.paused++ < 4) rt_log("framegen: paused for frames without a scene");
+        }
+        return;
+    }
     if (!F.options_set || F.ow != f->ow || F.oh != f->oh) {
         sl::ReflexOptions ro{};
         ro.mode = sl::ReflexMode::eLowLatency;
@@ -426,7 +449,7 @@ extern "C" void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f) {
         if (r != sl::Result::eOk) fg_fail("slDLSSGSetOptions", r);
         else rt_log("framegen: DLSS-G on, %d presented frames per rendered one; inputs %ux%u, picture %ux%u", F.mult,
                     f->w, f->h, f->ow, f->oh);
-        F.options_set = 1, F.ow = f->ow, F.oh = f->oh;
+        F.options_set = 1, F.on = 1, F.ow = f->ow, F.oh = f->oh;
     }
     uint32_t idx = ++F.index;
     sl::Result r = S.frame_token(F.token, &idx);
