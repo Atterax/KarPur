@@ -15,6 +15,7 @@
 // 9365-9488, 9489-9921, 10013-10079 @ b75be8cf (MIT, Copyright (c) 2026 jhaizhou); the uniform-buffer spans, texture and
 // sampler descriptor lookups and the dispatch flow follow LAS Recomp runtime/nvn/vulkan/exec.c:1851-1908, 2300-2516
 // @ da35b83a (MIT, Copyright (c) 2026 Peiikai). The support buffer layout is Ryujinx's SupportBuffer.cs (MIT).
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -1022,6 +1023,143 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
 }
 
 static int twin_dispatch;   // defined with its comment below
+// ---- KarPur TOTK_CAM_PROBE=1 (diagnostic, default off): where the scene camera's view-projection lives. A temporal
+// anti-aliasing (DLAA, FSR 2) needs this frame's and the last frame's camera to make motion vectors from the depth. ZA
+// Recomp (Pokémon Legends: Z-A, MIT; runtime/nvn/vulkan/exec.c mv_note_draw) takes it from the G-buffer draws (4+ colour
+// targets): vertex uniform block c5 (NVN uniform slot 2), offset 0, rows. Violet likely shares that engine. Per draw with
+// a depth target, every 16-byte offset of the first 1 KiB of each uniform block the vertex shader reads is checked for a
+// perspective 4x4 matrix (finite, row 3's xyz not zero, not singular); per (colour targets, block, offset) the probe counts
+// draws, distinct matrices in a frame and frames in which the frame's first one changed. Every 600 frames the leading ones
+// go to the log with the field of view and aspect the matrix implies (for P x V with V a rotation and translation,
+// |row1.xyz| / |row3.xyz| = cot(fov/2)). Only numbers: no matrix values.
+#define CP_N 128
+static struct {
+    int ncolor, slot, off, col;          // key: colour targets of the pass, c[slot], byte offset, layout (1: columns)
+    uint64_t draws, frames, changed;     // draws seen; frames it was seen in; frames whose first matrix differed
+    uint32_t distinct, distinct_max;     // distinct matrices in the current frame; the most in one frame
+    uint64_t hs[8];                      // hashes of this frame's matrices (up to 8: then "8+")
+    int nhs;
+    float first[16], prev[16];           // this frame's first matrix, the last frame's first one
+    int has_first, has_prev;
+    float fov, aspect;                   // from the latest frame's first matrix
+    uint32_t w, h;                       // depth target size
+} CP[CP_N];
+static int cp_n;
+
+static int cp_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("CAM_PROBE", "0");
+        if (on) rt_log("cam_probe: looking for the scene camera in vertex uniform blocks (TOTK_CAM_PROBE=1)");
+    }
+    return on;
+}
+
+// Test BU (2026-11-08) found only blocks whose fov and aspect made no sense (171 deg, aspect 1.000 at 1920x1080), so a
+// candidate must also have rows 0, 1 and 3 (xyz) orthogonal, as P x V has for a centred projection and a rotation, and
+// both layouts are tried: rows as stored (col 0) and the transpose (col 1, the block holds columns).
+static int cp_perspective(const float *in, int col, float *fov, float *aspect) {
+    float m[16];
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) m[4 * i + j] = col ? in[4 * j + i] : in[4 * i + j];
+    for (int i = 0; i < 16; i++) if (!isfinite(m[i]) || fabsf(m[i]) > 1e7f) return 0;
+    float r3 = sqrtf(m[12] * m[12] + m[13] * m[13] + m[14] * m[14]);
+    if (r3 < 1e-6f) return 0;   // row 3 xyz zero: w does not depend on the position (orthographic, or not a matrix)
+    float r0 = sqrtf(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]) / r3, r1 = sqrtf(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]) / r3;
+    if (r0 < 1e-3f || r1 < 1e-3f || r0 > 1e3f || r1 > 1e3f) return 0;
+    float a0 = m[0] * m[5] - m[1] * m[4], a1 = m[0] * m[6] - m[2] * m[4], a2 = m[0] * m[7] - m[3] * m[4], a3 = m[1] * m[6] - m[2] * m[5],
+          a4 = m[1] * m[7] - m[3] * m[5], a5 = m[2] * m[7] - m[3] * m[6], b0 = m[8] * m[13] - m[9] * m[12], b1 = m[8] * m[14] - m[10] * m[12],
+          b2 = m[8] * m[15] - m[11] * m[12], b3 = m[9] * m[14] - m[10] * m[13], b4 = m[9] * m[15] - m[11] * m[13], b5 = m[10] * m[15] - m[11] * m[14];
+    if (fabsf(a0 * b5 - a1 * b4 + a2 * b3 + a3 * b2 - a4 * b1 + a5 * b0) < 1e-9f) return 0;
+    const float *r[3] = {m, m + 4, m + 12};
+    for (int i = 0; i < 3; i++)
+        for (int j = i + 1; j < 3; j++) {
+            float d = r[i][0] * r[j][0] + r[i][1] * r[j][1] + r[i][2] * r[j][2];
+            float li = sqrtf(r[i][0] * r[i][0] + r[i][1] * r[i][1] + r[i][2] * r[i][2]);
+            float lj = sqrtf(r[j][0] * r[j][0] + r[j][1] * r[j][1] + r[j][2] * r[j][2]);
+            if (fabsf(d) > 0.05f * li * lj) return 0;
+        }
+    *fov = 2.0f * atanf(1.0f / r1) * 57.29578f, *aspect = r1 / r0;
+    return 1;
+}
+
+static void cp_draw(const VkExec *ex, const GfxShader *vs) {
+    if (!ex->depth.image) return;
+    int nc = 0;
+    for (int i = 0; i < 8; i++) nc += ex->color[i].image != VK_NULL_HANDLE;
+    const GfxShaderRes *res;
+    int n = gfx_shader_resources(vs, GFX_RES_UBO, &res);
+    for (int k = 0; k < n; k++) {
+        int slot = res[k].slot;
+        if (slot < 3 || slot - 3 >= 18) continue;   // c0..c2: the driver's banks
+        const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][slot - 3];
+        if (!u->addr || u->size < 64) continue;
+        uint64_t len = u->size < 1024 ? u->size : 1024;
+        float buf[256];
+        VkMemSpan sp;
+        if (!upd_read(ex, u->addr, buf, len)) {
+            if (!vk_mem_resolve(u->addr, len, &sp)) continue;
+            memcpy(buf, (const void *)(uintptr_t)u->addr, len);
+        }
+        for (uint64_t off = 0; off + 64 <= len; off += 16) {
+          for (int col = 0; col < 2; col++) {
+            const float *m = buf + off / 4;
+            float fov, aspect;
+            if (!cp_perspective(m, col, &fov, &aspect)) continue;
+            int e = 0;
+            while (e < cp_n && (CP[e].ncolor != nc || CP[e].slot != slot || CP[e].off != (int)off || CP[e].col != col)) e++;
+            if (e == cp_n) {
+                if (cp_n == CP_N) continue;
+                memset(&CP[e], 0, sizeof CP[e]);
+                CP[e].ncolor = nc, CP[e].slot = slot, CP[e].off = (int)off, CP[e].col = col, cp_n++;
+            }
+            typeof(CP[0]) *c = &CP[e];
+            c->draws++;
+            c->w = ex->depth.width, c->h = ex->depth.height;
+            if (!c->has_first) memcpy(c->first, m, 64), c->has_first = 1, c->fov = fov, c->aspect = aspect;
+            uint64_t h = 1469598103934665603ull;
+            for (int i = 0; i < 64; i++) h = (h ^ ((const uint8_t *)m)[i]) * 1099511628211ull;
+            int seen = 0;
+            for (int i = 0; i < c->nhs; i++) seen |= c->hs[i] == h;
+            if (!seen) {
+                c->distinct++;
+                if (c->nhs < 8) c->hs[c->nhs++] = h;
+            }
+          }
+        }
+    }
+}
+
+void vk_cam_probe_frame(uint64_t frame) {
+    if (!cp_on()) return;
+    for (int e = 0; e < cp_n; e++) {
+        typeof(CP[0]) *c = &CP[e];
+        if (!c->has_first) continue;
+        c->frames++;
+        if (c->has_prev && memcmp(c->prev, c->first, 64)) c->changed++;
+        memcpy(c->prev, c->first, 64), c->has_prev = 1;
+        if (c->distinct > c->distinct_max) c->distinct_max = c->distinct;
+        c->has_first = 0, c->distinct = 0, c->nhs = 0;
+    }
+    if (!frame || frame % 600) return;
+    int ord[CP_N];   // the entries by draws, most first
+    for (int e = 0; e < cp_n; e++) ord[e] = e;
+    for (int i = 0; i < cp_n; i++)
+        for (int j = i + 1; j < cp_n; j++)
+            if (CP[ord[j]].draws > CP[ord[i]].draws) { int t = ord[i]; ord[i] = ord[j]; ord[j] = t; }
+    rt_log("cam_probe: frame %llu: %d candidates (perspective matrices in vertex uniform blocks of draws with depth)",
+           (unsigned long long)frame, cp_n);
+    for (int i = 0; i < cp_n && i < 12; i++) {
+        typeof(CP[0]) *c = &CP[ord[i]];
+        if (!c->draws) break;
+        rt_log("cam_probe:   %d colour targets, c%d (NVN slot %d) +%#x %s: %llu draws in %llu frames, changed in %llu, "
+               "at most %u%s distinct per frame, fov %.1f deg, aspect %.3f, depth %ux%u",
+               c->ncolor, c->slot, c->slot - 3, c->off, c->col ? "columns" : "rows", (unsigned long long)c->draws, (unsigned long long)c->frames,
+               (unsigned long long)c->changed, c->distinct_max, c->distinct_max >= 8 ? "+" : "", c->fov, c->aspect, c->w, c->h);
+    }
+    for (int e = 0; e < cp_n; e++) CP[e].draws = CP[e].frames = CP[e].changed = 0, CP[e].distinct_max = 0;
+}
+
 static int skip_describe;   // TOTK_SKIP_FS: storage blocks of the named shader still to log
 // KarPur TOTK_SKIP_MODE=raster (with TOTK_SKIP_FS): F9 keeps the named shader's draws but discards their rasterization,
 // so their vertex work still runs and their fragment work does not (where a draw's cost lies: Violet's ground grass,
@@ -2659,6 +2797,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (!vs || (has_fs && !fs)) return skip_note(SK_SHADER_FAIL);
     if (fs && shader_skipped(fs, &vk_exec_last_fs)) return 0;
     vk_exec_hazard_draw(ex, vs, fs);   // barrier tracking: may restart the pass behind a full barrier
+    if (cp_on()) cp_draw(ex, vs);      // KarPur TOTK_CAM_PROBE (diagnostic)
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;

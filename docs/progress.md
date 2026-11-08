@@ -85,6 +85,12 @@ All off by default except the abort line.
 
 ## Log
 
+### 2026-11-08: the scene camera for a temporal anti-aliasing (tests BU, BV)
+- ZA Recomp (Pokémon Legends: Z-A, MIT, github.com/Hexveil404/PokeZ-ARecomp, read in `refs/`) runs NVIDIA DLAA and AMD FSR 2/3 on a recompiled Game Freak game: it jitters the scene passes' viewport, makes camera motion vectors from the depth with this and last frame's view-projection (vertex uniform block c5 of the G-buffer draws), replaces the game's final copy of its tone-mapped image with the resolve, and loads NGX at run time from the driver (`nvngx_dlss.dll` supplied by the player). Its other quality extras: GTAO, higher shadow map resolution, 16x anisotropic filtering, water reflections. Its frame rate comes mainly from a device-local cache of all vertex/index ranges refreshed from `GetWriteWatch` pages at each submission, with GPU-written pages tracked per 64-byte line and cached again after 120 frames.
+- `TOTK_CAM_PROBE=1` (diagnostic, off): per draw with depth, the perspective matrices in the vertex shader's uniform blocks, every 600 frames in the log.
+- Result (BV): Violet draws a G-buffer too (4 colour targets, 1920×1080). The camera's view-projection is **c5 (NVN uniform slot 2) +0, stored as columns**: 1 distinct per frame, changes in every frame while the camera moves and in none while it stands, fov 46°, aspect 1.778. c5 +0x180 behaves the same (a copy or last frame's: not yet told apart), +0x80 is the projection alone (constant), +0x140 its inverse. c10 (slot 7) holds per-object matrices (260+ per frame), as in Z-A. The shadow passes (1024×1024) use other c5 offsets.
+- Next for DLAA: tell +0x180 from +0, find the game's final copy of the tone-mapped image and its own anti-aliasing, then the jitter, the motion vector pass and NGX.
+
 ### 2026-11-08: progress log in English
 - The log is in English from now on, so contributors who do not read German can follow it. The German log up to this point moved to [progress-archive-de.md](progress-archive-de.md), unchanged.
 - Released KarPur Launcher 0.1.0 (commit `c3bab43`, README `61ac70f`): https://github.com/Grunttanamo/KarPur/releases/tag/v0.1.0.
