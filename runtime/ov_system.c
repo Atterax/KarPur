@@ -320,6 +320,32 @@ static void obs_sdk_initialize(Cpu *c) { observe(c, "nninitInitializeSdkModule")
 static void obs_startup(Cpu *c) { observe(c, "nninitStartup"); }
 static void obs_main(Cpu *c) { observe(c, "nnMain"); }
 
+// KarPur: a guest string argument copied for the log when it is a plain name or path (printable ASCII, no spaces)
+static const char *abort_name(uint64_t a, char *out, int cap) {
+    if (!a || !plat_mem_readable(a, 1)) return "?";
+    int n = 0;
+    for (; n < cap - 1 && plat_mem_readable(a + (uint64_t)n, 1); n++) {
+        char ch = *(const char *)(uintptr_t)(a + (uint64_t)n);
+        if (!ch) break;
+        if (ch <= ' ' || ch > '~') return "(not a name)";
+        out[n] = ch;
+    }
+    out[n] = 0;
+    const char *slash = strrchr(out, '/'), *back = strrchr(out, '\\');
+    if (back > slash) slash = back;
+    return slash ? slash + 1 : out;
+}
+
+// KarPur: void nn::diag::detail::AbortImpl(const char *condition, const char *function, const char *file, int line,
+// const char *format, ...): the SDK's abort with a source position. The log names the function, the file's base name
+// and the line (names and numbers only; the condition and message text stay out); then the abort runs as before.
+static void obs_abort_impl(Cpu *c) {
+    char fn[128], file[160], at[160];
+    const char *f = abort_name(arg_x(c, 1), fn, sizeof fn), *p = abort_name(arg_x(c, 2), file, sizeof file);
+    rt_log("guest abort in %s (%s line %d), called from %s", f, p, (int)arg_x(c, 3), caller(c, at, sizeof at));
+    rt_original(c);
+}
+
 // Result os::AllocateAddressRegion(uintptr_t *out, size_t size)
 static void obs_address_region(Cpu *c) {
     uint64_t *out = arg_p(c, 0), size = arg_x(c, 1);
@@ -828,6 +854,7 @@ HOST_OBSERVER("_ZN2nn2os19AllocateMemoryPagesEmm", obs_memory_pages);
 HOST_OBSERVER("nnosInitialize", obs_os_initialize);
 HOST_OBSERVER("nninitInitializeSdkModule", obs_sdk_initialize);
 HOST_OBSERVER("nninitStartup", obs_startup);
+HOST_OBSERVER("_ZN2nn4diag6detail9AbortImplEPKcS3_S3_iS3_z", obs_abort_impl);
 HOST_OBSERVER("nnMain", obs_main);
 
 HOST_OVERRIDE("_ZN2nn7account10InitializeEv", ov_account_initialize);

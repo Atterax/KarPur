@@ -471,6 +471,44 @@ NVN_API(nvnQueueFenceSync) {
     s->fenced = 1;
     s->fence = nvn_fence_last();
 }
+// KarPur TOTK_TRACE=perf: who waits in nvnSyncWait, for how long, and how far behind the newest submit the fence was
+// (0: the submission just made). In towns the GPU measured ~15 ms but frames took ~24 ms with the render thread blocked
+// on a fence for ~57% (docs/progress.md 2026-11-08): CPU and GPU ran one after the other. Every 10 s the callers with
+// the most wait time go to the log (code offsets and numbers only).
+#define SW_N 16
+static struct { uint64_t lr, n, ns, behind; } sw_tab[SW_N];
+static uint64_t sw_t0;
+static PlatMutex sw_lock = PLAT_MUTEX_INIT;
+
+static void sw_note(uint64_t lr, uint64_t ns, uint64_t behind) {
+    plat_mutex_lock(&sw_lock);
+    int k = -1;
+    for (int i = 0; i < SW_N && k < 0; i++)
+        if (sw_tab[i].lr == lr || !sw_tab[i].lr) k = i;
+    if (k >= 0) sw_tab[k].lr = lr, sw_tab[k].n++, sw_tab[k].ns += ns, sw_tab[k].behind += behind;
+    uint64_t now = plat_now_ns();
+    if (!sw_t0) sw_t0 = now;
+    if (now - sw_t0 >= 10000000000ull) {
+        char out[1400] = "";
+        for (int r = 0; r < 4; r++) {   // the four with the most wait time
+            int best = -1;
+            for (int i = 0; i < SW_N; i++)
+                if (sw_tab[i].n && (best < 0 || sw_tab[i].ns > sw_tab[best].ns)) best = i;
+            if (best < 0) break;
+            char at[160];
+            size_t u = strlen(out);
+            snprintf(out + u, sizeof out - u, " %s: %llu waits, %.1f ms per s, %.2f submits behind on average;",
+                     ldr_describe(sw_tab[best].lr - 4, at, sizeof at), (unsigned long long)sw_tab[best].n,
+                     sw_tab[best].ns / 1e6 / ((now - sw_t0) / 1e9), (double)sw_tab[best].behind / (double)sw_tab[best].n);
+            sw_tab[best].n = 0;
+        }
+        rt_log("nvn: SyncWait callers that blocked, last %.0f s:%s", (now - sw_t0) / 1e9, *out ? out : " none");
+        memset(sw_tab, 0, sizeof sw_tab);
+        sw_t0 = now;
+    }
+    plat_mutex_unlock(&sw_lock);
+}
+
 // NVNsyncWaitResult nvnSyncWait(const NVNsync *s, uint64_t timeout_ns): a sync never fenced reports a timeout at once;
 // a fenced one is released only after the back end completed that fence value
 NVN_API(nvnSyncWait) {
@@ -480,10 +518,12 @@ NVN_API(nvnSyncWait) {
     const GfxBackend *b = gfx_backend();
     if (b->fence_done() >= s->fence) { b->cpu_synced(s->fence); ret_x(c, NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED); return; }
     int ok;
+    uint64_t t0 = plat_now_ns(), last = nvn_fence_last();
     {
         NVN_BLOCKING();
         ok = b->fence_wait(s->fence, timeout);
     }
+    if (rt_trace & RT_TRACE_PERF) sw_note(c->x[30], plat_now_ns() - t0, last > s->fence ? last - s->fence : 0);
     if (ok) b->cpu_synced(s->fence);
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }

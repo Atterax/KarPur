@@ -23,6 +23,8 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "input_map.h"
+#include "input_wsys.h"
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "tex.h"
@@ -121,6 +123,8 @@ static struct {
     VkDescriptorSetLayout ds_last_layout[2];
     int ds_pushed[2];                    // set number holds the push of DS.psig under ds_layout
     int res_valid;                       // the graphics sets bound hold what the inputs in RS give (bind_resources)
+    uint32_t res_pc_vs, res_pc_fs;       // TOTK_PCIE_RANK: imported buffer bindings of the sets bound, by stage
+    uint8_t vimp[17];                    // TOTK_PCIE_RANK: vertex stream b reads imported guest memory
 } B;
 
 // Contents of B.ds_last: the set's packed descriptors (VkDescSlot), which with its layout determine every write. A draw
@@ -801,6 +805,21 @@ static void count_use(int cls, int use, uint64_t n) {
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
 // aligned, a copy in transient memory when the backing is host memory with an unaligned offset. 0 when neither works.
 // written: the shader stores into it (a mirror's range goes back to guest memory at the end of the submission).
+static int twin_dispatch;   // defined with its comment below
+static int fs_desc;         // defined with its comment below
+static uint32_t pc_vs, pc_fs;   // TOTK_PCIE_RANK: buffer bindings of the descriptor build that stay in imported memory
+static int vs_shadow(VkDescriptorBufferInfo *out, VkBuffer src, VkDeviceSize off, VkDeviceSize n, uint64_t align);
+static int vs_redirected;       // TOTK_VS_VRAM: this descriptor build bound a ring copy (the next draw builds again)
+static int pc_stage;            // the NVN stage whose buffer bind_range binds (ubo_info, ssbo_info)
+
+// TOTK_SKIP_FS draw descriptions: where a bound buffer lies (imported guest memory is read over PCIe)
+static const char *where_of(uint64_t addr, VkBuffer used) {
+    VkMemSpan sp;
+    if (!vk_mem_resolve(addr, 1, &sp)) return "not backed";
+    if (!sp.pool) return "device memory";
+    return used == sp.buffer ? "IMPORTED guest memory" : "VRAM mirror";
+}
+
 static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, uint64_t max, int use, int written,
                       VkDescriptorBufferInfo *out) {
     VkMemSpan sp;
@@ -809,14 +828,27 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (n > max) n = max;
     if (!n) return 0;
     if (sp.offset % align == 0) {
+        vk_mem_use_kind = use + (twin_dispatch ? VK_MUSE_N : 0);
+        VkBuffer imported = sp.buffer;
         VK_MEM_USE_N(sp, n);
+        if (sp.pool && sp.buffer == imported && !written && pc_stage != NVN_STAGE_FS && !twin_dispatch &&
+            vs_shadow(out, sp.buffer, sp.offset, n, align))
+            vs_redirected = 1;   // TOTK_VS_VRAM: a ring copy, made right before the draw
+        else if (sp.pool && sp.buffer == imported) {   // TOTK_PCIE_RANK: read over PCIe
+            if (pc_stage == NVN_STAGE_FS) pc_fs++;
+            else pc_vs++;
+        }
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
+        if (fs_desc)
+            rt_log("vk_exec:   %s buffer: %llu bytes, %s", use == VK_MUSE_UBO ? "uniform" : use == VK_MUSE_SSBO ? "storage" : "other",
+                   (unsigned long long)n, where_of(addr, sp.buffer));
         if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
         VK_MEM_BOUND(sp);
         return 1;
     }
     if (sp.alloc) return 0;
+    if (fs_desc) rt_log("vk_exec:   buffer of kind %d: %llu bytes, unaligned: copied into scratch memory", use, (unsigned long long)n);
     VkBuffer b;
     VkDeviceSize o;
     RS.volatile_ = 1;
@@ -900,6 +932,7 @@ static void limits_init(void) {
 }
 
 static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
+    pc_stage = st;
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
     uint64_t max = LIM.ubo_max, align = LIM.ubo_align;
     VkDescriptorBufferInfo bi;
@@ -988,7 +1021,119 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
     return a;
 }
 
+static int twin_dispatch;   // defined with its comment below
+static int skip_describe;   // TOTK_SKIP_FS: storage blocks of the named shader still to log
+// KarPur TOTK_SKIP_MODE=raster (with TOTK_SKIP_FS): F9 keeps the named shader's draws but discards their rasterization,
+// so their vertex work still runs and their fragment work does not (where a draw's cost lies: Violet's ground grass,
+// docs/progress.md 2026-11-07). The next draw sets the dynamic state again.
+static int skip_raster;     // the draw being prepared is to be rasterization-discarded
+static int fs_desc;         // TOTK_SKIP_FS (declared above bind_range): the draw being prepared is one of the named fragment shader's first 8: its
+                            // textures, state and size go to the log (numbers only)
+
+// ---- KarPur: TOTK_COMPUTE_VRAM (on by default since 2026-11-08; 0 turns it off). A dispatch's storage blocks in imported guest memory are reached over
+// PCIe on every access: the weather particle shader spent 11 ms per frame so, and 0.02 ms in VRAM (docs/progress.md
+// 2026-11-04). Giving the whole pool its mirror back brought the frame drops of hot chunks instead, so here only the
+// block moves: the command buffer copies it from guest memory into a device-local ring right before the dispatch and
+// the written ones back right after it. The dispatch sees the bytes guest memory holds at that point of the GPU's work,
+// as it would reading them there, except for CPU writes during the dispatch itself.
+#define CV_RING (8ull << 20)
+#define CV_MAX_BLOCK (1ull << 20)
+#define CV_BLOCKS 32
+static VkBuffer cv_ring;
+static VmaAllocation cv_alloc;
+static uint64_t cv_used;
+static struct { VkBuffer src; VkDeviceSize src_off, off, range; int written; } cv_b[CV_BLOCKS];
+static int cv_n, cv_copied;
+static uint64_t cv_total, cv_overlaps;
+
+static int cv_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("COMPUTE_VRAM", "1");   // KarPur: on by default since 2026-11-08 (test BT)
+        if (on) {
+            VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = CV_RING,
+                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                              VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+            VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+            if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &cv_ring, &cv_alloc, NULL) != VK_SUCCESS) on = 0;
+            rt_log("vk_exec: %s (TOTK_COMPUTE_VRAM)", on ? "storage blocks of dispatches in guest memory are copied to VRAM around the dispatch"
+                                                         : "no VRAM ring: dispatches read guest memory");
+        }
+    }
+    return on;
+}
+
+// A dispatch's block in imported memory: its bytes go to the ring and *bi binds them there.
+static void cv_shadow(VkExec *ex, VkDescriptorBufferInfo *bi, const VkMemSpan *sp, uint64_t align, int written) {
+    if (!sp->pool || bi->buffer != sp->buffer || bi->range > CV_MAX_BLOCK || cv_n == CV_BLOCKS) return;
+    for (int i = 0; i < cv_n; i++) {
+        if (cv_b[i].src != bi->buffer) continue;
+        if (cv_b[i].src_off == bi->offset && cv_b[i].range == bi->range) {   // the same block bound twice: one copy
+            cv_b[i].written |= written;
+            bi->buffer = cv_ring, bi->offset = cv_b[i].off;
+            return;
+        }
+        if (bi->offset < cv_b[i].src_off + cv_b[i].range && cv_b[i].src_off < bi->offset + bi->range) {
+            cv_overlaps++;   // partly the same bytes: stays in guest memory
+            return;
+        }
+    }
+    uint64_t off = (cv_used + align - 1) & ~(align - 1);
+    if (off + bi->range > CV_RING) off = 0;   // the commands run in order behind barriers: older contents are done with
+    cv_used = off + bi->range;
+    VkBufferCopy cp = {bi->offset, off, bi->range};
+    vkCmdCopyBuffer(ex->cb, bi->buffer, cv_ring, 1, &cp);
+    ex->recorded++;
+    cv_b[cv_n].src = bi->buffer, cv_b[cv_n].src_off = bi->offset, cv_b[cv_n].off = off;
+    cv_b[cv_n].range = bi->range, cv_b[cv_n].written = written;
+    cv_n++;
+    cv_copied = 1;
+    cv_total++;
+    bi->buffer = cv_ring, bi->offset = off;
+}
+
+static void cv_barrier(VkExec *ex, VkPipelineStageFlags2 src, VkAccessFlags2 sa, VkPipelineStageFlags2 dst, VkAccessFlags2 da) {
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = src, .srcAccessMask = sa,
+                           .dstStageMask = dst, .dstAccessMask = da};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+}
+
+// After the dispatch's resources were bound: the copies finish before the shader reads.
+static void cv_before(VkExec *ex) {
+    if (!cv_copied) return;
+    cv_barrier(ex, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+               VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    cv_copied = 0;
+}
+
+// After the dispatch: what it wrote goes back to guest memory. The next op's full barrier makes it visible.
+static void cv_after(VkExec *ex) {
+    if (!cv_n) return;
+    int any = 0;
+    for (int i = 0; i < cv_n; i++) any |= cv_b[i].written;
+    if (any) {
+        cv_barrier(ex, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_READ_BIT);
+        for (int i = 0; i < cv_n; i++) {
+            if (!cv_b[i].written) continue;
+            VkBufferCopy cp = {cv_b[i].off, cv_b[i].src_off, cv_b[i].range};
+            vkCmdCopyBuffer(ex->cb, cv_ring, cv_b[i].src, 1, &cp);
+            ex->recorded++;
+        }
+        cv_barrier(ex, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    }
+    cv_n = 0;
+    if (cv_total >= 36000) {
+        rt_log("vk_exec: %llu storage blocks of dispatches moved to VRAM, %llu left in guest memory for overlapping",
+               (unsigned long long)cv_total, (unsigned long long)cv_overlaps);
+        cv_total = cv_overlaps = 0;
+    }
+}
+
 static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *r, int written) {
+    pc_stage = st;
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
     uint64_t max = LIM.sbo_max, align = LIM.sbo_align;
     VkDescriptorBufferInfo bi;
@@ -1002,6 +1147,18 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
                        written, &bi)) {
+            if (skip_describe > 0) {   // TOTK_SKIP_FS: where the shader's storage lies; a stay in imported memory is read over PCIe
+                VkMemSpan sp;
+                int have = vk_mem_resolve(b->addr - lead, 1, &sp);
+                skip_describe--;
+                rt_log("vk_exec:   storage block c%d+%#x: %llu bytes, %s, class %d, %s", r->cbuf_slot, r->handle * 4,
+                       (unsigned long long)bi.range, written ? "written" : "read only", have ? sp.cls : -1,
+                       !have ? "not backed" : !sp.pool ? "device memory" : bi.buffer == sp.buffer ? "IMPORTED guest memory" : "VRAM mirror");
+            }
+            if (twin_dispatch && cv_on()) {
+                VkMemSpan sp;
+                if (vk_mem_resolve(b->addr - lead, 1, &sp)) cv_shadow(ex, &bi, &sp, align, written);
+            }
             if (written && bi.buffer != VK_NULL_HANDLE) note_written(ex, b->addr - lead, bi.range);
             return bi;
         }
@@ -1268,6 +1425,21 @@ static struct {
 
 static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
                             VkDescriptorImageInfo *out) {
+    if (fs_desc && h) {   // TOTK_SKIP_FS: what the named shader's draws sample (texture lock held)
+        view_t v;
+        int hv;
+        samp_par sp;
+        const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
+        int has_s = !storage && !separate && vk_sampler_params_locked((int)(h >> 20 & 0xfff), &sp);
+        if (img)
+            rt_log("vk_exec:   texture (type %#x%s): %ux%u, %u layers, %u levels (view levels %u+%u), Vulkan format %d, "
+                   "%u samples; sampler %s min %d mag %d, lod %.2f..%.2f bias %.2f, aniso %.1f", r->type,
+                   storage ? ", storage" : "", img->width, img->height, img->layers, img->levels,
+                   hv && v.set_levels ? v.base_level : 0, hv && v.set_levels ? v.nlevels : img->levels, (int)img->format,
+                   img->samples, has_s ? "" : "(none)", has_s ? sp.minf : -1, has_s ? sp.magf : -1, has_s ? sp.lod_min : 0.f,
+                   has_s ? sp.lod_max : 0.f, has_s ? sp.lod_bias : 0.f, has_s ? sp.aniso : 0.f);
+        else rt_log("vk_exec:   texture (type %#x): handle not registered", r->type);
+    }
     int td_on = td_mode();
     VkImage image;
     if (!h || storage || !td_on) return tex_info_full(ex, r, h, storage, separate, out, &image);
@@ -1806,6 +1978,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         same = bind_sig(ex, info);
         if (same && was_valid && skip == 1) {
             for (int i = 0; i < RS.ncnt; i++) vk_mem_count(RS.cnt[i].cls, RS.cnt[i].use, RS.cnt[i].bytes);
+            pc_vs = B.res_pc_vs, pc_fs = B.res_pc_fs;   // the sets bound are the previous draw's
             BS.bind_skip++;
             ex->recorded++;
             return;
@@ -1814,6 +1987,8 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         if (skip == 2) memcpy(RS.pcnt, RS.cnt, sizeof RS.cnt), RS.pncnt = RS.ncnt;
         RS.rec = 1, RS.ncnt = 0, RS.cnt_over = 0, RS.volatile_ = 0, RS.cmds = 0;
     }
+    pc_vs = pc_fs = 0;
+    vs_redirected = 0;
     uint32_t n_sets = info->n_sets ? info->n_sets : 1;
     uint32_t lo[2] = {0, 0}, hi[2] = {0, 0}, d0[2] = {0, 0};   // bindings [lo, hi) and first descriptor per set
     int need_w = 0;                                             // a set without a template: fill the write structs
@@ -1970,6 +2145,8 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         }
         B.res_valid = valid;
     }
+    B.res_pc_vs = pc_vs, B.res_pc_fs = pc_fs;
+    if (vs_redirected) B.res_valid = 0;   // TOTK_VS_VRAM: ring copies hold this draw's bytes only
     ex->recorded++;
 }
 
@@ -2020,12 +2197,204 @@ static void record_fixed(VkExec *ex) {
     ex->dirty = 0;
 }
 
+// ---- KarPur TOTK_VB_VRAM=<vertex invocations> (default 4096 since 2026-11-08; 0 off; 1 means 4096): small vertex streams in imported guest
+// memory, copied to VRAM right before a draw with many vertex invocations. Violet's ground grass (fragment shader
+// e963d67a) draws a 14-triangle tuft in 100-900 instances, and every vertex reads four streams of 16-192 bytes with stride
+// 0 from imported memory over PCIe: about 10 ms a frame where the grass is dense, with the fragments only a small part
+// of it (docs/progress.md 2026-11-07). The copy runs on the GPU at the draw's place in the command buffer, so it holds
+// what the draw would have read there. It ends the pass behind a full barrier and begins it again (as TOTK_HOT_REFRESH=2
+// did); bindings and dynamic state stay with the command buffer.
+#define VB_RING (16ull << 20)
+#define VB_MAX_STREAM 4096
+static VkBuffer vb_ring;
+static VmaAllocation vb_alloc;
+static uint64_t vb_used;
+static uint64_t vb_min_inv;            // the threshold in vertex invocations; 0 off
+static int vb_init;
+static uint64_t vb_draw_inv;           // op_draw*: the coming draw's vertex invocations (count x instances); 0 unknown
+static volatile int64_t m_vb_draws, m_vb_streams;
+
+static int vb_on(void) {
+    if (!vb_init) {
+        vb_init = 1;
+        const char *e = cfg_get("TOTK_VB_VRAM");
+        vb_min_inv = e && *e ? strtoull(e, NULL, 10) : 4096;   // KarPur: on (4096) by default since 2026-11-08 (test BT)
+        if (vb_min_inv == 1) vb_min_inv = 4096;
+        if (vb_min_inv) {
+            VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = VB_RING,
+                                     .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+            VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+            if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &vb_ring, &vb_alloc, NULL) != VK_SUCCESS) vb_min_inv = 0;
+            rt_log("vk_exec: %s (TOTK_VB_VRAM=%llu)", vb_min_inv ? "small vertex streams in guest memory are copied to VRAM "
+                   "before draws with this many vertex invocations" : "no VRAM ring for vertex streams",
+                   (unsigned long long)vb_min_inv);
+        }
+    }
+    return vb_min_inv != 0;
+}
+
+// ---- KarPur TOTK_VS_VRAM=1 (default off; needs TOTK_VB_VRAM; in test BM it copied no buffer at all): the vertex stage's uniform and storage buffers (read
+// only, up to 64 KiB) in imported guest memory move to the same ring for draws over the TOTK_VB_VRAM threshold. Test BK
+// (docs/progress.md 2026-11-07): the fragment stage reads nothing over PCIe any more, but vertex stages of town and
+// bush draws still did 1-1.6 million reads of imported memory a frame. bind_range binds the ring range at once and
+// queues the copy; vb_move records it in the same pass break as the streams, before the draw.
+#define VS_MAX_BUF (64ull << 10)
+#define VS_PEND 64
+static struct { VkBuffer src; VkDeviceSize src_off, off, n; } vs_pend[VS_PEND];
+static int vs_npend;
+static volatile int64_t m_vs_bufs;
+
+static uint64_t vb_take(uint64_t n, uint64_t align) {   // a ring range; every reuse lies behind vb_move's full barrier
+    if (align < 16) align = 16;
+    uint64_t off = (vb_used + align - 1) & ~(align - 1);
+    if (off + n > VB_RING) off = 0;
+    vb_used = off + n;
+    return off;
+}
+
+static int vs_shadow(VkDescriptorBufferInfo *out, VkBuffer src, VkDeviceSize off, VkDeviceSize n, uint64_t align) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("VS_VRAM", "0");
+        if (on) rt_log("vk_exec: vertex-stage uniform and storage buffers in guest memory are copied to VRAM before heavy "
+                       "draws (TOTK_VS_VRAM)");
+    }
+    if (!on || !vb_on() || vb_draw_inv < vb_min_inv || n > VS_MAX_BUF || vs_npend == VS_PEND || (align & (align - 1)))
+        return 0;
+    uint64_t r = vb_take(n, align);
+    vs_pend[vs_npend++] = (typeof(vs_pend[0])){src, off, r, n};
+    *out = (VkDescriptorBufferInfo){vb_ring, r, n};
+    plat_inc64(&m_vs_bufs);
+    return 1;
+}
+
+// Streams of the draw that read imported memory (bytes <= VB_MAX_STREAM) move to the ring, and the queued vertex-stage
+// buffer copies run: returns 1 when any stream moved.
+static int vb_move(VkExec *ex, VkBuffer *vb, VkDeviceSize *vo, const VkDeviceSize *vsz) {
+    uint64_t inv = vb_draw_inv;
+    vb_draw_inv = 0;
+    if (!vb_on()) return 0;
+    int which[16], n = 0;
+    for (int b = 0; b < 16 && inv >= vb_min_inv; b++) {
+        if (!ex->vbuf[b].address || vsz[b] > VB_MAX_STREAM || !vsz[b]) continue;
+        VkMemSpan sp;
+        if (!vk_mem_resolve(ex->vbuf[b].address, 1, &sp) || !sp.pool || vb[b] != sp.buffer) continue;
+        which[n++] = b;
+    }
+    if (!n && !vs_npend) return 0;
+    vk_exec_barrier(ex);   // ends the pass; the earlier work's writes to guest memory are done
+    for (int i = 0; i < n; i++) {
+        int b = which[i];
+        uint64_t off = vb_take(vsz[b], 16);
+        VkBufferCopy cp = {vo[b], off, vsz[b]};
+        vkCmdCopyBuffer(ex->cb, vb[b], vb_ring, 1, &cp);
+        vb[b] = vb_ring, vo[b] = off;
+    }
+    for (int i = 0; i < vs_npend; i++) {
+        VkBufferCopy cp = {vs_pend[i].src_off, vs_pend[i].off, vs_pend[i].n};
+        vkCmdCopyBuffer(ex->cb, vs_pend[i].src, vb_ring, 1, &cp);
+    }
+    ex->recorded += vs_npend;
+    vs_npend = 0;
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded += n + 1;
+    vk_exec_pass_begin(ex);
+    plat_inc64(&m_vb_draws);
+    plat_add64(&m_vb_streams, n);
+    if (m_vb_draws % 60000 == 0)
+        rt_log("vk_exec: %lld draws had %lld small vertex streams and %lld vertex-stage buffers copied to VRAM so far "
+               "(TOTK_VB_VRAM, TOTK_VS_VRAM)", (long long)m_vb_draws, (long long)m_vb_streams, (long long)m_vs_bufs);
+    return n > 0;
+}
+
+// ---- KarPur TOTK_PCIE_RANK=1 (default off): which draws read imported guest memory most often. A binding read over
+// PCIe costs by how often the GPU reads it, not by its bytes: the grass's four 16-192 byte streams, read by each of
+// ~150000 vertex invocations a frame, cost ~10 ms (docs/progress.md 2026-11-07). Each draw adds, per shader pair, its
+// vertex invocations (count x instances) times its vertex-stage bindings and streams that stay imported; fragment-stage
+// bindings are counted per draw (their reads scale with pixels, which the replay does not know). Every 600 frames the
+// 8 pairs with the most weighted vertex reads and the 8 with the most fragment bindings go to the log.
+static uint32_t pc_vb;   // the draw's vertex streams that stay imported
+#define PC_N 1024
+static struct { uint64_t key, vreads, draws, fsb, unknown; } PC[PC_N];
+static int pc_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("PCIE_RANK", "0");
+        if (on) rt_log("vk_exec: draws ranked by reads of imported guest memory every 600 frames (TOTK_PCIE_RANK)");
+    }
+    return on;
+}
+
+static int pc_cmp_v(const void *a, const void *b) {
+    const typeof(PC[0]) *x = a, *y = b;
+    return x->vreads < y->vreads ? 1 : x->vreads > y->vreads ? -1 : 0;
+}
+static int pc_cmp_f(const void *a, const void *b) {
+    const typeof(PC[0]) *x = a, *y = b;
+    return x->fsb < y->fsb ? 1 : x->fsb > y->fsb ? -1 : 0;
+}
+
+static void pc_report(uint64_t frames) {
+    static typeof(PC[0]) t[PC_N];
+    int n = 0;
+    for (int i = 0; i < PC_N; i++)
+        if (PC[i].key) t[n++] = PC[i];
+    char a[1400] = "", c[1400] = "";
+    qsort(t, (size_t)n, sizeof t[0], pc_cmp_v);
+    for (int i = 0; i < n && i < 8 && t[i].vreads; i++) {
+        size_t u = strlen(a);
+        snprintf(a + u, sizeof a - u, " vs %08x fs %08x %.2fM reads in %.1f draws%s;", (uint32_t)(t[i].key >> 32),
+                 (uint32_t)t[i].key, t[i].vreads / 1e6 / frames, (double)t[i].draws / frames,
+                 t[i].unknown ? " (some indirect, not weighed)" : "");
+    }
+    qsort(t, (size_t)n, sizeof t[0], pc_cmp_f);
+    for (int i = 0; i < n && i < 8 && t[i].fsb; i++) {
+        size_t u = strlen(c);
+        snprintf(c + u, sizeof c - u, " vs %08x fs %08x %.1f bindings in %.1f draws;", (uint32_t)(t[i].key >> 32),
+                 (uint32_t)t[i].key, (double)t[i].fsb / frames, (double)t[i].draws / frames);
+    }
+    rt_log("vk_exec: PCIe reads per frame, vertex stage (invocations x imported bindings and streams):%s", *a ? a : " none");
+    rt_log("vk_exec: PCIe bindings per frame, fragment stage (each read per pixel):%s", *c ? c : " none");
+    memset(PC, 0, sizeof PC);
+}
+
+static void pc_note(const VkPipeState *s, uint64_t inv) {
+    static uint64_t f0;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (!f0) f0 = f;
+    if (f - f0 >= 600) pc_report(f - f0), f0 = f;
+    uint32_t v = pc_vs + pc_vb, fsb = pc_fs;
+    if (!v && !fsb) return;
+    uint32_t vid = 0, fid = 0;
+    if (s->vs) memcpy(&vid, gfx_shader_input_id(s->vs), sizeof vid);
+    if (s->fs) memcpy(&fid, gfx_shader_input_id(s->fs), sizeof fid);
+    uint64_t key = (uint64_t)vid << 32 | fid;
+    key = key ? key : 1;
+    uint32_t h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 54);
+    for (int i = 0; i < PC_N; i++, h = (h + 1) % PC_N) {
+        if (PC[h].key && PC[h].key != key) continue;
+        PC[h].key = key;
+        PC[h].draws++;
+        PC[h].fsb += fsb;
+        if (inv) PC[h].vreads += inv * v;
+        else if (v) PC[h].unknown++;
+        return;
+    }
+}
+
 static void bind_vertex_buffers(VkExec *ex) {
     VkBuffer vb[17];
     VkDeviceSize vo[17], vsz[17], vstr[17];
     int vcls[17] = {0};
     void *vpool[17] = {0};
     int dyn = vk_pipeline_vertex_input_dynamic();
+    uint8_t vimp[17] = {0};   // TOTK_PCIE_RANK
     // A stream whose range is the one its bound buffer was resolved from, with no pool or mirror change since
     // (vk_mem_gen, read before any resolve), resolves to that buffer again: most draws change one stream or none.
     uint64_t gen = vk_mem_gen();
@@ -2036,17 +2405,36 @@ static void bind_vertex_buffers(VkExec *ex) {
         const NVNbufferRange *r = &ex->vbuf[b];
         if (same_gen && B.vin[b].address == r->address && B.vin[b].size == r->size) {
             vb[b] = B.vb[b], vo[b] = B.vo[b], vsz[b] = B.vsz[b], vcls[b] = B.vcls[b], vpool[b] = B.vpool[b];
+            vimp[b] = B.vimp[b];
             continue;
         }
         VkMemSpan sp;
         if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
+        vk_mem_use_kind = VK_MUSE_VB;
+        VkBuffer imported = sp.buffer;
         VK_MEM_USE_N(sp, r->size && r->size < sp.avail ? r->size : sp.avail);
+        vimp[b] = sp.pool && sp.buffer == imported;
         uint64_t n = r->size && r->size < sp.avail ? r->size : sp.avail;
         vb[b] = sp.buffer, vo[b] = sp.offset, vsz[b] = n, vcls[b] = sp.cls, vpool[b] = sp.pool;
     }
+    if (fs_desc)   // TOTK_SKIP_FS: the named shader's vertex streams
+        for (int b = 0; b < 16; b++)
+            if (ex->vbuf[b].address)
+                rt_log("vk_exec:   vertex stream %d: %llu bytes, stride %u, divisor %u, %s", b, (unsigned long long)vsz[b],
+                       ex->pipe.vstream[b].stride, ex->pipe.vstream[b].divisor, where_of(ex->vbuf[b].address, vb[b]));
+    int moved = vb_move(ex, vb, vo, vsz);   // TOTK_VB_VRAM
+    memcpy(B.vimp, vimp, sizeof vimp);
+    pc_vb = 0;
+    for (int b = 0; b < 16; b++) pc_vb += vimp[b] && vb[b] != vb_ring;
     memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
     memcpy(B.vin, ex->vbuf, sizeof B.vin);
     B.vgen = gen;
+    if (moved) {   // ring copies hold this draw's bytes only: the next draw resolves its streams again
+        vkCmdBindVertexBuffers2(ex->cb, 0, 17, vb, vo, vsz, dyn ? NULL : vstr);
+        ex->recorded++;
+        B.vb_valid = 0;
+        return;
+    }
     if (B.vb_valid && !memcmp(B.vb, vb, sizeof vb) && !memcmp(B.vo, vo, sizeof vo) && !memcmp(B.vsz, vsz, sizeof vsz) &&
         (dyn || !memcmp(B.vstr, vstr, sizeof vstr)))
         return;
@@ -2164,6 +2552,57 @@ static void skip_tick(void) {
 }
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
+// KarPur diagnostic: with TOTK_SKIP_FS=<8 hex digits, an id TOTK_PASS_TIME names> F9 in the game window switches skipping
+// the draws or dispatches of that shader on and off, to see what it does and what it costs. It starts off: a shader the
+// whole picture needs would leave the window black from the start. Off by default. *last: the shader's id.
+static int shader_skipped(const GfxShader *sh, uint32_t *last) {
+    static int skip_init, skip_on, skip_key, raster_mode;
+    static uint32_t skip_id;
+    if (!skip_init) {
+        const char *e = cfg_get("TOTK_SKIP_FS");
+        skip_id = e && *e ? (uint32_t)strtoul(e, NULL, 16) : 0;
+        const char *m = cfg_get("TOTK_SKIP_MODE");
+        raster_mode = m && !strcmp(m, "raster");
+        if (skip_id)
+            rt_log("vk_exec: F9 switches %s of shader %08x (TOTK_SKIP_FS%s)", raster_mode ? "the rasterization of the draws"
+                   : "skipping the work", skip_id, raster_mode ? ", TOTK_SKIP_MODE=raster" : "");
+        skip_init = 1;
+    }
+    skip_raster = 0;
+    uint32_t id;
+    memcpy(&id, gfx_shader_input_id(sh), sizeof id);
+    *last = id;
+    if (!skip_id) return 0;
+    static int described, draws_left = 8;
+    fs_desc = 0;
+    if (described && id == skip_id && gfx_shader_stage(sh) == 4 && draws_left > 0) fs_desc = 1, draws_left--;
+    if (!described && id == skip_id) {   // sizes only, no shader bytes
+        const GfxShaderRes *r;
+        uint32_t local[3];
+        uint64_t words = 0;
+        described = 1;
+        gfx_shader_local_size(sh, local);
+        gfx_shader_spirv(sh, &words);
+        rt_log("vk_exec: shader %08x: stage %d, local size %ux%ux%u, %llu SPIR-V words, uniform blocks %d, storage blocks %d, "
+               "textures %d, images %d", id, gfx_shader_stage(sh), local[0], local[1], local[2], (unsigned long long)words,
+               gfx_shader_resources(sh, GFX_RES_UBO, &r), gfx_shader_resources(sh, GFX_RES_SSBO, &r),
+               gfx_shader_resources(sh, GFX_RES_TEX, &r), gfx_shader_resources(sh, GFX_RES_IMG, &r));
+        skip_describe = 2 * gfx_shader_resources(sh, GFX_RES_SSBO, &r);
+    }
+    int key = ikb_foreground() && ikb_down(KEY_F9);
+    if (key && !skip_key) {
+        skip_on = !skip_on;
+        rt_log("vk_exec: F9: work of shader %08x %s at frame %llu", skip_id, skip_on ? "skipped" : "done",
+               (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+    }
+    skip_key = key;
+    if (raster_mode) {   // the draw runs; prepare_draw turns its rasterization off
+        skip_raster = skip_on && id == skip_id && gfx_shader_stage(sh) == 4;
+        return 0;
+    }
+    return skip_on && id == skip_id;
+}
+
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     skip_tick();
     if (ex->render_disabled) return skip_note(SK_RENDER_OFF);
@@ -2218,6 +2657,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
     }
     if (!vs || (has_fs && !fs)) return skip_note(SK_SHADER_FAIL);
+    if (fs && shader_skipped(fs, &vk_exec_last_fs)) return 0;
     vk_exec_hazard_draw(ex, vs, fs);   // barrier tracking: may restart the pass behind a full barrier
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
@@ -2310,10 +2750,25 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         ex->recorded++;
         B.st = s, B.st_valid = 1;
     }
+    if (skip_raster) {   // TOTK_SKIP_MODE=raster: vertex work only; the next draw sets the dynamic state again
+        vkCmdSetRasterizerDiscardEnable(ex->cb, VK_TRUE);
+        ex->recorded++;
+        B.st_valid = 0;
+    }
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);
+    uint64_t inv_now = vb_draw_inv;   // bind_vertex_buffers (vb_move) clears it
     bind_vertex_buffers(ex);
+    if (pc_on()) pc_note(&s, inv_now);
+    vb_draw_inv = 0;
+    if (fs_desc)   // TOTK_SKIP_FS: the named fragment shader's draw state (numbers only)
+        rt_log("vk_exec:   draw: prim %d, %d vertices or indices, pass %ux%u, samples %u (ms enable %u, samples %u, raster %u, "
+               "alpha to coverage %u, sample locations %u), blend enables %#x, alpha func %u, depth test %u write %u func %u, "
+               "cull %u, colour targets %d/%d, depth target %d, feedback %u", prim, count, ex->pass_w, ex->pass_h, s.samples,
+               s.ms.enable, s.ms.samples, s.ms.raster_samples, s.ms.a2c, s.ms.sl_en, (unsigned)s.color.blend_en,
+               (unsigned)s.color.alpha_func, (unsigned)s.ds.dt, (unsigned)s.ds.dw, (unsigned)s.ds.df, (unsigned)s.poly.cull,
+               s.color_fmt[0], s.color_fmt[1], s.depth_fmt, s.feedback);
     if (vk_mem_hot_refresh_due()) {   // KarPur TOTK_HOT_REFRESH=2: hot mirror chunks copied right before this draw
         vk_exec_barrier(ex);          // ends the pass; earlier reads of the old bytes are done
         ex->recorded += vk_mem_hot_refresh_record(ex->cb);
@@ -2336,9 +2791,11 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
 
 static void op_draw(VkExec *ex, const p_draw *d) {
     c0_binst = (uint32_t)d->base_instance;
+    vb_draw_inv = (uint64_t)(d->count > 0 ? d->count : 0) * (uint64_t)(d->instances > 0 ? d->instances : 1);
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, 0)) return;
     vk_exec_frame.draws++;
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
+    if (fs_desc) rt_log("vk_exec:   draw: %u vertices, %u instances", n, inst);
     if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
@@ -2385,8 +2842,21 @@ static int restart_for(const VkExec *ex, int prim, int itype) {
     return 0;
 }
 
+// KarPur TOTK_HOT_EXACT (on by default since 2026-11-08; 0 turns it off): index buffers and indirect arguments give the mirror their real size. Without a
+// size vk_memory.c takes a binding to cover 1 MiB: with hot chunks each such draw counts as reading every chunk in that
+// span, so unrelated chunks turn hot, and with TOTK_HOT_REFRESH=0 static index data is read over PCIe.
+static VkDeviceSize hot_exact(VkDeviceSize n) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("HOT_EXACT", "1");   // KarPur: on by default since 2026-11-08 (test BT)
+        if (on) rt_log("vk_exec: index buffers and indirect arguments tell the mirror their size (TOTK_HOT_EXACT)");
+    }
+    return on ? n : 0;
+}
+
 static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     c0_binst = (uint32_t)d->base_instance;
+    vb_draw_inv = (uint64_t)(d->count > 0 ? d->count : 0) * (uint64_t)(d->instances > 0 ? d->instances : 1);
     static const uint32_t isize[3] = {1, 2, 4};
     if (d->itype < 0 || d->itype > 2) return warn_once(W_INDEX, "index type %d is unknown: draw skipped", d->itype);
     int restart = restart_for(ex, d->prim, d->itype);
@@ -2410,13 +2880,15 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     } else if (sp.offset % isize[d->itype]) {
         return warn_once(W_INDEX, "index buffer %#llx is not aligned to its index size: draw skipped", (unsigned long long)d->ibuf);
     } else {
-        VK_MEM_USE(sp);
+        vk_mem_use_kind = VK_MUSE_IB;
+        VK_MEM_USE_N(sp, hot_exact(bytes));
         vkCmdBindIndexBuffer(ex->cb, sp.buffer, sp.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         ex->recorded++;
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
     int xfb = vk_xfb_draw_begin(ex);   // KarPur: transform feedback around the draw (vk_xfb.c)
+    if (fs_desc) rt_log("vk_exec:   draw: %d indices, %d instances", d->count, d->instances > 0 ? d->instances : 1);
     vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
     if (xfb) vk_xfb_draw_end(ex, d->prim, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1);
@@ -2444,6 +2916,17 @@ static uint32_t ind_first_instance(uint64_t ind) {
     return a.firstInstance;
 }
 
+// The index bytes an indirect draw reads, from its arguments in guest memory. A compute shader may rewrite them later in
+// the submission, but index data itself does not depend on that count. GPU-only or still empty arguments give one index:
+// the mirror then looks only at the buffer's start, not at the 1 MiB it assumes for a binding of unknown size.
+static VkDeviceSize ind_index_bytes(uint64_t ind, uint32_t index_size) {
+    if (nvn_gpu_only(ind)) return index_size;
+    VkDrawIndexedIndirectCommand a;
+    memcpy(&a, (const void *)(uintptr_t)ind, sizeof a);
+    VkDeviceSize n = ((VkDeviceSize)a.firstIndex + a.indexCount) * index_size;
+    return n ? n : index_size;
+}
+
 static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     c0_binst = 0;
     if (d->itype != NVN_INDEX_TYPE_UNSIGNED_SHORT && d->itype != NVN_INDEX_TYPE_UNSIGNED_INT)
@@ -2456,8 +2939,10 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     c0_binst = ind_first_instance(d->ind);
     if (!prepare_draw(ex, d->prim, 0x7fffffff, restart_for(ex, d->prim, d->itype))) return;
     vk_exec_frame.draws++;
-    VK_MEM_USE(ip);
-    VK_MEM_USE(ib);
+    vk_mem_use_kind = VK_MUSE_IND;
+    VK_MEM_USE_N(ip, hot_exact(sizeof(VkDrawIndexedIndirectCommand)));
+    vk_mem_use_kind = VK_MUSE_IB;
+    VK_MEM_USE_N(ib, hot_exact(ind_index_bytes(d->ind, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? 2 : 4)));
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
@@ -2515,6 +3000,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);   // synchronous: a skipped dispatch changes results
     if (!cs) return disp_note(ex, d->x, d->y, d->z, 0, 0, 0);
+    if (shader_skipped(cs, &vk_exec_last_cs)) return;
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
     disp_note(ex, d->x, d->y, d->z, 0, 1, p && info);
@@ -2525,8 +3011,10 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     twin_dispatch = 1;
     bind_resources(ex, info);
     twin_dispatch = 0;
+    cv_before(ex);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
+    cv_after(ex);
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
 }
 
@@ -2542,12 +3030,14 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     int present;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, NULL, 0);
     if (!cs) return disp_note(ex, 0, 0, 0, 1, 0, 0);
+    if (shader_skipped(cs, &vk_exec_last_cs)) return;
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
     disp_note(ex, 0, 0, 0, 1, 1, p && info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);
-    VK_MEM_USE(ip);
+    vk_mem_use_kind = VK_MUSE_N + VK_MUSE_IND;
+    VK_MEM_USE_N(ip, hot_exact(sizeof(VkDispatchIndirectCommand)));
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = c0_dim[1] = c0_dim[2] = 0;
     B.c0_valid[2] = 0;   // a fresh c0 range: the copy below must not change one an earlier dispatch reads
@@ -2561,8 +3051,10 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
         vk_exec_barrier(ex);
         B.c0_valid[2] = 0;   // the range no longer holds B.c0[2]
     }
+    cv_before(ex);
     vkCmdDispatchIndirect(ex->cb, ip.buffer, ip.offset);
     ex->recorded++;
+    cv_after(ex);
     vk_mem_count(ip.cls, VK_MUSE_IND, sizeof(VkDispatchIndirectCommand));
     VK_MEM_BOUND(ip);
     if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, &(p_dispatch){0, 0, 0, d->caller});

@@ -68,6 +68,8 @@ typedef struct PoolRec {
     uint8_t *gpu_w;                    // per chunk: the GPU wrote it into the mirror (written back to guest memory)
     uint32_t *hot_sub;                 // KarPur per chunk: the submission that made it hot (TOTK_HOT_COOL)
     uint8_t *pin;                      // KarPur per chunk: hot because the GPU wrote it through imported memory: never cools
+    uint32_t *hp_fresh;                // KarPur TOTK_HOT_PASS per chunk: the pass stamp whose begin copied it into the mirror
+    uint32_t *hp_seen;                 // KarPur TOTK_HOT_PASS per chunk: the pass stamp that last noted it for its slot
     uint32_t cool_sub;                 // KarPur: the last submission that looked for chunks to cool
     uint32_t nchunks, nhot;
     uint8_t demote;                    // replay: queued to give up its mirror at the next submission (KarPur)
@@ -252,7 +254,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
     free(r->hot), free(r->late_cnt), free(r->late_seen), free(r->hot_sub), free(r->pin);
-    free(r->chunk_sub), free(r->race_cnt), free(r->race_seen), free(r->gpu_w);
+    free(r->chunk_sub), free(r->race_cnt), free(r->race_seen), free(r->gpu_w), free(r->hp_fresh), free(r->hp_seen);
     free(r);
 }
 
@@ -1439,7 +1441,8 @@ static void mirror_sync(PoolRec *r) {
 // while a submission is recorded count from the next one (mirror_gen). TOTK_MIRROR_HOT=0 turns hot chunks off.
 // KarPur: TOTK_HOT_LATE_SUBS (1..255, default 2) sets it; Violet's trees flickered after a save loaded in the woods
 // while the hot set kept growing (a ring of chunks, each caught too late until learned; docs/progress.md 2026-11-03).
-static int HOT_LATE_SUBS = 2;   // 2 again since 2026-11-03 (1 only helped with hot chunks bound from imported memory)
+static int HOT_LATE_SUBS = 1;   // KarPur: 1 since 2026-11-08 (test BT, with TOTK_SPLIT_DRAWS: the hot set is learned before
+                                // trees flicker); 2 from 2026-11-03
 // Chunk size as a shift: 4 KiB by default (test G; 64 KiB for a day on 2026-11-03); TOTK_HOT_KB=4..1024 (a
 // power of two) sets it. With 4 KiB chunks Violet's trees flickered after a save loaded among them: the tree data sits in
 // a ring whose 4 KiB chunks each had to be caught late before they turned hot, and the hot set kept growing for
@@ -1521,7 +1524,8 @@ static int hot_refresh = -1;
 static int hot_refresh_on(void) {
     if (hot_refresh < 0) {
         const char *e = cfg_get("TOTK_HOT_REFRESH");
-        hot_refresh = e && *e ? atoi(e) : 2;   // KarPur: 2 again (0 lowered the fps in woods over time, 2026-11-03)
+        hot_refresh = e && *e ? atoi(e) : 0;   // KarPur: 0 since 2026-11-08 (test BT; 2 flickered trees, 0 lost fps in woods
+                                               // on 2026-11-03 before the VRAM copies of vertex streams and dispatches)
         rt_log("mem: hot chunks %s (TOTK_HOT_REFRESH=%d)", hot_refresh == 2 ? "copied into the mirror before the first draw "
                "that binds them" : hot_refresh ? "copied into the mirror at each submission's start"
                : "bound from imported memory", hot_refresh);
@@ -1579,6 +1583,185 @@ int vk_mem_hot_refresh_record(VkCommandBuffer cb) {   // replay thread, outside 
     return rec + 1;
 }
 
+// KarPur TOTK_HOT_BIND_MAX=<KiB> (with TOTK_HOT_REFRESH=0; default 512 since 2026-11-08; 0 = no limit): a binding that touches a hot chunk
+// reads all its bytes over PCIe when it comes from imported memory, which cost Violet half its frame rate while it
+// kept every tree right. Bindings above the limit stay on the mirror, to find out whether the tree data sits in the
+// small ones. The log line "hot bindings per frame" gives the count and bytes by size either way.
+#define HOT_SIZE_BUCKETS 7
+static const uint64_t hot_size_top[HOT_SIZE_BUCKETS - 1] = {4ull << 10, 64ull << 10, 256ull << 10, 1ull << 20, 4ull << 20,
+                                                            16ull << 20};
+static volatile int64_t m_hot_size_n[HOT_SIZE_BUCKETS], m_hot_size_bytes[HOT_SIZE_BUCKETS];
+static int hot_bind_fits(VkDeviceSize n) {
+    static uint64_t limit = UINT64_MAX;
+    if (limit == UINT64_MAX) {
+        const char *e = cfg_get("TOTK_HOT_BIND_MAX");
+        limit = (e && *e ? strtoull(e, NULL, 10) : 512) << 10;   // KarPur: 512 KiB by default since 2026-11-08 (test BT)
+        if (limit) rt_log("mem: only bindings up to %llu KiB read hot chunks from imported memory (TOTK_HOT_BIND_MAX)",
+                          (unsigned long long)(limit >> 10));
+    }
+    int b = 0;
+    while (b < HOT_SIZE_BUCKETS - 1 && n > hot_size_top[b]) b++;
+    plat_inc64(&m_hot_size_n[b]);
+    plat_add64(&m_hot_size_bytes[b], (int64_t)n);
+    return !limit || n <= limit;
+}
+
+// ---- KarPur TOTK_HOT_PASS=1 (with TOTK_HOT_REFRESH=0; default off): hot chunks copied into the mirror per render pass
+// Bound from imported memory, hot chunks keep every tree right, but the GPU reads them over PCIe: in test AY Violet's
+// fps followed the bindings to hot chunks (up to ~1000 a frame 58-60 fps, over 3000 45 fps; docs/progress.md
+// 2026-11-07). The copies of TOTK_HOT_REFRESH=1 and 2 ran once per submission, so CPU writes made while the GPU worked
+// through it missed them and single trees flickered. Here the GPU copies, right before a pass begins, the hot chunks
+// that pass bound the last time (learned per pass slot: its place in the submission and its targets). A binding in
+// the pass whose hot chunks were all copied for it reads the mirror; any other stays imported and teaches the slot.
+// At the pass's end the copies count no more. Chunks the GPU wrote (pin, gpu_w, this submission's mirror writes) are
+// never copied over.
+#define HP_SLOTS 1024
+#define HP_PER 2048
+typedef struct { PoolRec *r; uint32_t c; } HpEnt;
+typedef struct { uint64_t key; int n; HpEnt e[HP_PER]; } HpSlot;
+static HpSlot *hp_slot[HP_SLOTS];
+static HpSlot *hp_cur;                 // replay: the slot of the pass being recorded; NULL outside a pass
+static uint32_t hp_stamp = 1;          // replay: the current pass's stamp in hp_fresh and hp_seen
+static int hp_any;                     // replay: the current pass copied chunks (its end bumps mirror_gen)
+static uint32_t hp_sub, hp_ord;        // replay: the submission and the pass's place in it
+static MRange *hp_rng;
+static int hp_nrng, hp_crng;
+static volatile int64_t m_hp_passes, m_hp_bytes, m_hp_copies, m_hp_served, m_hp_learned, m_hp_full;
+
+static int hot_pass_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("HOT_PASS", "0") && vk_mirror_on && hot_on() && !hot_refresh_on();
+        if (on) rt_log("mem: hot chunks a render pass bound last time are copied into the mirror right before it (TOTK_HOT_PASS)");
+    }
+    return on;
+}
+
+static int hp_init(PoolRec *r) {
+    if (r->hp_fresh) return 1;
+    if (!r->nchunks) return 0;
+    r->hp_fresh = calloc(r->nchunks, sizeof *r->hp_fresh), r->hp_seen = calloc(r->nchunks, sizeof *r->hp_seen);
+    if (!r->hp_fresh || !r->hp_seen) rt_fatal("vk: out of memory for a pool's per-pass hot copies");
+    return 1;
+}
+
+static void hp_next_stamp(void) {
+    if (++hp_stamp == 0) hp_stamp = 1;
+}
+
+// pool_lock shared: r is still a mirrored pool (a slot may name one finalized since)
+static int hp_live(const PoolRec *r) {
+    for (int i = 0; i < nm; i++)
+        if (mlist[i] == r) return 1;
+    return 0;
+}
+
+int vk_mem_hot_pass_begin(VkCommandBuffer cb, uint64_t targets) {   // replay thread, outside a pass
+    hp_cur = NULL;
+    if (!hot_pass_on()) return 0;
+    if (hp_sub != msub) hp_sub = msub, hp_ord = 0;
+    uint64_t key = (targets ^ ((uint64_t)hp_ord++ << 1)) * 0x9E3779B97F4A7C15ull;
+    key = key ? key : 1;
+    HpSlot **ps = &hp_slot[(key >> 40) % HP_SLOTS], *s = *ps;
+    if (!s && !(s = *ps = calloc(1, sizeof *s))) rt_fatal("vk: out of memory for the per-pass hot copies");
+    if (s->key != key) s->key = key, s->n = 0;   // another pass took the slot: learn it anew
+    hp_next_stamp();
+    hp_cur = s;
+    hp_any = 0;
+    int n = s->n;
+    s->n = 0;   // this pass's bindings note their hot chunks again
+    if (!n) return 0;
+    hp_nrng = 0;
+    plat_mutex_lock_shared(&pool_lock);
+    const PoolRec *ok = NULL, *bad = NULL;
+    for (int i = 0; i < n; i++) {
+        PoolRec *r = s->e[i].r;
+        uint32_t c = s->e[i].c;
+        if (r == bad) continue;
+        if (r != ok) {
+            if (!hp_live(r) || r->mstate != MS_ON || !r->mbuf || !r->hot || !hp_init(r)) { bad = r; continue; }
+            ok = r;
+        }
+        if (c >= r->nchunks || !r->hot[c] || r->pin[c] || r->hp_fresh[c] == hp_stamp) continue;
+        uint64_t span = 1ull << HOT_SHIFT, size = r->import_hi - r->import_lo, off = (uint64_t)c << HOT_SHIFT;
+        uint64_t len = off + span > size ? size - off : span;
+        if ((r->gpu_w && r->gpu_w[c]) || mirror_written_here(r, off, len)) continue;   // the mirror holds GPU output
+        r->hp_fresh[c] = hp_stamp;
+        range_add(&hp_rng, &hp_nrng, &hp_crng, r, off, len);
+    }
+    int rec = 0;
+    if (hp_nrng) {   // earlier work's reads of these mirror bytes and writes to guest memory finish first
+        uint64_t bytes = 0, copies = 0;
+        mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        rec = copy_ranges(cb, hp_rng, hp_nrng, 1, &bytes, &copies);
+        mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                 VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+        rec += 2;
+        hp_any = 1;
+        plat_inc64(&m_hp_passes);
+        plat_add64(&m_hp_bytes, (int64_t)bytes);
+        plat_add64(&m_hp_copies, (int64_t)copies);
+        __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);   // cached bindings choose again
+    }
+    plat_mutex_unlock_shared(&pool_lock);
+    return rec;
+}
+
+void vk_mem_hot_pass_end(void) {   // replay thread, after the pass ended
+    if (!hp_cur) return;
+    hp_cur = NULL;
+    hp_next_stamp();   // the pass's copies count no more
+    if (hp_any) hp_any = 0, __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
+}
+
+// A binding in a pass that touches hot chunks: notes them for the slot; 1 when the pass's begin copied all of them.
+static int hp_serve(PoolRec *r, uint64_t off, uint64_t n) {
+    if (!hp_cur || !hp_init(r)) return 0;
+    uint64_t a = off >> HOT_SHIFT, b = (off + n - 1) >> HOT_SHIFT;
+    if (b >= r->nchunks) b = r->nchunks - 1;
+    int all = 1;
+    for (uint64_t c = a; c <= b; c++) {
+        if (!r->hot[c]) continue;
+        if (r->hp_seen[c] != hp_stamp) {
+            if (hp_cur->n < HP_PER) {
+                r->hp_seen[c] = hp_stamp;
+                hp_cur->e[hp_cur->n++] = (HpEnt){r, (uint32_t)c};
+                plat_inc64(&m_hp_learned);
+            } else plat_inc64(&m_hp_full);
+        }
+        if (r->hp_fresh[c] != hp_stamp) all = 0;
+    }
+    return all;
+}
+
+int vk_mem_use_kind;
+#define KIND_N (2 * VK_MUSE_N)
+static volatile int64_t m_kind_n[KIND_N][2], m_kind_bytes[KIND_N][2];   // [kind][touches a chunk the GPU wrote (pin)]
+
+static void kind_count(const PoolRec *r, uint64_t off, VkDeviceSize n) {
+    int k = vk_mem_use_kind >= 0 && vk_mem_use_kind < KIND_N ? vk_mem_use_kind : VK_MUSE_N - 1, g = 0;
+    uint64_t a = off >> HOT_SHIFT, b = (off + n - 1) >> HOT_SHIFT;
+    if (b >= r->nchunks) b = r->nchunks - 1;
+    for (uint64_t c = a; c <= b && !g; c++) g = r->hot[c] && r->pin[c];
+    plat_inc64(&m_kind_n[k][g]);
+    plat_add64(&m_kind_bytes[k][g], (int64_t)n);
+}
+
+// KarPur TOTK_XFB_MIRROR (on by default since 2026-11-08; 0 turns it off): transform feedback writes its output into the mirror even where hot chunks
+// lie. Test BB (docs/progress.md 2026-11-07): where Violet dropped to 30 fps, 800-1600 vertex bindings a frame read
+// chunks the GPU had written through imported memory (transform feedback output, 340-770 such writes a frame), against
+// 40-120 at 60 fps. Written into the mirror, the output reaches guest memory at the submission's end (write-back), and
+// the same submission's draws read it from the mirror (mirror_written_here); later submissions still read guest memory.
+static int xfb_mirror_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("XFB_MIRROR", "1");   // KarPur: on by default since 2026-11-08 (test BT)
+        if (on) rt_log("mem: transform feedback writes into the mirror, also over hot chunks (TOTK_XFB_MIRROR)");
+    }
+    return on;
+}
+
 static void mirror_choose(PoolRec *r, VkMemSpan *sp, VkDeviceSize n) {
     if (!n) n = sp->avail < HOT_UNKNOWN_SIZE ? sp->avail : HOT_UNKNOWN_SIZE;
     if (r->nhot && hot_refresh_on() == 2 && r->refresh_sub != msub && hot_touch(r, sp->offset, n)) {
@@ -1587,9 +1770,14 @@ static void mirror_choose(PoolRec *r, VkMemSpan *sp, VkDeviceSize n) {
         hotq[nhotq++] = r;
         hot_due = 1;
     }
-    if (r->nhot && !hot_refresh_on() && hot_touch(r, sp->offset, n) && !mirror_written_here(r, sp->offset, n)) {
-        plat_inc64(&m_hot_binds);
-        return;   // the imported buffer stays in sp
+    if (r->nhot && !hot_refresh_on() && hot_touch(r, sp->offset, n) && !mirror_written_here(r, sp->offset, n) &&
+        !(vk_mem_use_kind == VK_MUSE_GPU_WRITE && xfb_mirror_on()) && hot_bind_fits(n)) {
+        if (!hot_pass_on() || !hp_serve(r, sp->offset, n)) {
+            plat_inc64(&m_hot_binds);
+            kind_count(r, sp->offset, n);
+            return;   // the imported buffer stays in sp
+        }
+        plat_inc64(&m_hp_served);   // TOTK_HOT_PASS: this pass's begin copied its hot chunks into the mirror
     }
     sp->buffer = r->mbuf;
     if (race_on() && race_pool(r) && hot_init(r)) {   // KarPur: chunks this submission reads from the mirror
@@ -1636,10 +1824,18 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
                 if (b >= r->nchunks) b = r->nchunks - 1;
                 for (uint64_t c = a; c <= b; c++) r->pin[c] = 1;
             }
+            if (r->hp_fresh) {   // TOTK_HOT_PASS: the copy this pass made of these chunks is stale now
+                uint64_t a = sp->offset >> HOT_SHIFT, b = (sp->offset + size - 1) >> HOT_SHIFT;
+                if (b >= r->nchunks) b = r->nchunks - 1;
+                for (uint64_t c = a; c <= b; c++) r->hp_fresh[c] = 0;
+                __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
+            }
         }
         return;
     }
     range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
+    // KarPur: bindings cached as imported over these hot chunks must choose again: the mirror holds the newer bytes now
+    if (r->nhot && hot_touch(r, sp->offset, size)) __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
     if (r->gpu_w) {   // KarPur TOTK_HOT_SAFE: chunks the GPU writes are never refreshed from guest memory
         uint64_t a = sp->offset >> HOT_SHIFT, b = (sp->offset + size - 1) >> HOT_SHIFT;
         if (b >= r->nchunks) b = r->nchunks - 1;
@@ -1751,7 +1947,7 @@ void vk_mem_mirror_begin(void) {
 // On by default since test G (2026-11-02): with deferred submits, 4 KiB chunks and hot refresh it keeps every object
 // and holds 60 fps. Alone (64 KiB chunks bound from imported memory) it made 323 chunks hot and cost half the frame
 // rate. TOTK_MIRROR_RACE=0 turns it off.
-static int RACE_SUBS = 2;   // TOTK_RACE_SUBS (1..255, default 2)
+static int RACE_SUBS = 1;   // TOTK_RACE_SUBS (1..255, default 1 since 2026-11-08, test BT; 2 before)
 static void hot_subs_init(void) {
     static int done;
     if (done) return;
@@ -1759,7 +1955,7 @@ static void hot_subs_init(void) {
     const char *a = cfg_get("TOTK_HOT_LATE_SUBS"), *b = cfg_get("TOTK_RACE_SUBS");
     if (a && *a && atoi(a) >= 1 && atoi(a) <= 255) HOT_LATE_SUBS = atoi(a);
     if (b && *b && atoi(b) >= 1 && atoi(b) <= 255) RACE_SUBS = atoi(b);
-    if (HOT_LATE_SUBS != 2 || RACE_SUBS != 2)
+    if (HOT_LATE_SUBS != 1 || RACE_SUBS != 1)
         rt_log("mem: a chunk turns hot after %d late and %d racing submissions (TOTK_HOT_LATE_SUBS, TOTK_RACE_SUBS)",
                HOT_LATE_SUBS, RACE_SUBS);
 }
@@ -1900,7 +2096,7 @@ void vk_mem_mirror_late(uint64_t fence) {
                 }
         }
         r->mgen = gen_now;
-        // KarPur TOTK_HOT_COOL=n (submissions, test; 0 = off): a hot chunk with no late or racing CPU write for n
+        // KarPur TOTK_HOT_COOL=n (submissions; default 300 since 2026-11-08; 0 = off): a hot chunk with no late or racing CPU write for n
         // submissions goes back to the mirror. The late sync keeps copying every CPU write into the mirror, hot or not,
         // so its bytes there are current; chunks the GPU wrote through imported memory (pin) stay hot. Without it the
         // hot set only grew while one walked, and the GPU read more and more over PCIe: Violet's fps sank after long
@@ -1908,7 +2104,7 @@ void vk_mem_mirror_late(uint64_t fence) {
         static int cool = -1;
         if (cool < 0) {
             const char *e = cfg_get("TOTK_HOT_COOL");
-            cool = e && *e ? atoi(e) : 0;
+            cool = e && *e ? atoi(e) : 300;   // KarPur: 300 by default since 2026-11-08 (test BT)
             if (cool < 0) cool = 0;
             if (cool) rt_log("mem: hot chunks cool down after %d submissions without late writes (TOTK_HOT_COOL)", cool);
         }
@@ -2115,6 +2311,36 @@ static void mirror_log(uint64_t frame) {
     double f = frame > last ? (double)(frame - last) : 1.0, M = 1048576.0;
     last = frame;
     uint64_t fc = (uint64_t)plat_xchg64(&m_flush_calls, 0), fb = (uint64_t)plat_xchg64(&m_flush_bytes, 0);
+    if (!hot_refresh_on()) {   // KarPur: which bindings reach hot chunks, in count and bytes per frame
+        char sizes[320] = "";
+        static const char *const name[HOT_SIZE_BUCKETS] = {"4K", "64K", "256K", "1M", "4M", "16M", "more"};
+        for (int i = 0; i < HOT_SIZE_BUCKETS; i++) {
+            size_t used = strlen(sizes);
+            snprintf(sizes + used, sizeof sizes - used, " %s %.1fx %.2fMiB,", name[i], plat_xchg64(&m_hot_size_n[i], 0) / f,
+                     plat_xchg64(&m_hot_size_bytes[i], 0) / f / M);
+        }
+        rt_log("mem: hot bindings per frame, by size up to:%s", sizes);
+        {   // KarPur: the same bindings by kind; "dispatch" ones are a compute shader's (TOTK_COMPUTE_VRAM moves them)
+            static const char *const kn[VK_MUSE_N] = {"vertex", "index", "uniform", "storage", "indirect", "copy",
+                                                      "gpu-write", "cpu-read"};
+            char ks[1024] = "";
+            for (int i = 0; i < KIND_N; i++)
+                for (int g = 0; g < 2; g++) {
+                    int64_t c = plat_xchg64(&m_kind_n[i][g], 0), b = plat_xchg64(&m_kind_bytes[i][g], 0);
+                    if (!c) continue;
+                    size_t used = strlen(ks);
+                    snprintf(ks + used, sizeof ks - used, " %s%s%s %.1fx %.2fMiB,", i >= VK_MUSE_N ? "dispatch " : "",
+                             kn[i % VK_MUSE_N], g ? " (GPU-written)" : "", c / f, b / f / M);
+                }
+            rt_log("mem: bindings read over PCIe per frame, by kind (GPU-written: the GPU wrote a chunk of it through "
+                   "imported memory):%s", *ks ? ks : " none");
+        }
+        if (hot_pass_on())
+            rt_log("mem: per frame (TOTK_HOT_PASS): %.1f passes copied %.3f MiB in %.1f ranges; bindings read the copy %.1f, "
+                   "chunks noted %.1f, slot full %.1f", plat_xchg64(&m_hp_passes, 0) / f, plat_xchg64(&m_hp_bytes, 0) / f / M,
+                   plat_xchg64(&m_hp_copies, 0) / f, plat_xchg64(&m_hp_served, 0) / f, plat_xchg64(&m_hp_learned, 0) / f,
+                   plat_xchg64(&m_hp_full, 0) / f);
+    }
     char ver[480] = "";
     if (mirror_verify)
         snprintf(ver, sizeof ver, "; verify: pages compared %lld, skipped %lld (written since), mismatches %lld",

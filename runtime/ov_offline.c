@@ -369,8 +369,33 @@ static void ao_append(Cpu *c) {
         s->samples[s->n] = frames;
         s->n++;
         // KarPur: the samples go to the device now; the guest may reuse the buffer once it is released
-        if (s->stream && data && bytes && plat_mem_readable(data, bytes))
+        if (s->stream && data && bytes && plat_mem_readable(data, bytes)) {
+            // KarPur: the stream has no limit and this path is paced by the clock, not by the device, so a device that
+            // takes less than it gets builds up delay that never goes away. TOTK_AUDIO_QUEUE_MAX_MS=<ms> (0: off) drops
+            // the queue above that. TOTK_TRACE=audio logs the queue every 5 s, numbers only.
+            static int max_ms = -1;
+            static uint64_t q_t0, q_drops;
+            static int q_min = -1, q_max;
+            if (max_ms < 0) {
+                const char *e = cfg_get("TOTK_AUDIO_QUEUE_MAX_MS");
+                max_ms = e && atoi(e) > 0 ? atoi(e) : 0;
+            }
+            int q = SDL_GetAudioStreamQueued(s->stream), bps = AO_RATE * 2 * AO_CHANNELS;
+            int q_ms = q > 0 ? (int)((int64_t)q * 1000 / bps) : 0;
+            if (q_min < 0 || q_ms < q_min) q_min = q_ms;
+            if (q_ms > q_max) q_max = q_ms;
+            if (max_ms && q_ms > max_ms) SDL_ClearAudioStream(s->stream), q_drops++;
             SDL_PutAudioStreamData(s->stream, (const void *)(uintptr_t)data, (int)(frames * 2 * AO_CHANNELS));
+            if (rt_trace & RT_TRACE_AUDIO) {
+                uint64_t t = kern_now_ns();
+                if (!q_t0) q_t0 = t;
+                if (t - q_t0 >= 5000000000ull) {
+                    rt_log("audout: queue over 5 s: min %d ms, max %d ms, cleared %llu times", q_min, q_max,
+                           (unsigned long long)q_drops);
+                    q_t0 = t, q_min = -1, q_max = 0;
+                }
+            }
+        }
         // KarPur TOTK_AUDIO_CENSUS=1: every 5 s the buffers appended and the loudest sample (0..32768), numbers only
         static int census = -1;
         static uint64_t t0, nbuf, nframes;

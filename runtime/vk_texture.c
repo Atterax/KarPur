@@ -1909,6 +1909,12 @@ VkSampler vk_sampler_by_id(int id) {
     return v;
 }
 
+int vk_sampler_params_locked(int id, samp_par *out) {   // KarPur: as vk_sampler_params, the texture lock held
+    int ok = id >= 0 && id < nsslots && sslots[id].used;
+    if (ok) *out = sslots[id].p;
+    return ok;
+}
+
 int vk_sampler_params(int id, samp_par *out) {
     lock();
     int ok = id >= 0 && id < nsslots && sslots[id].used;

@@ -173,6 +173,7 @@ int vk_xfb_draw_begin(VkExec *ex) {
         span_addr[b] = x->addr + written[b];
         if (!vk_mem_resolve(span_addr[b], 1, &span[b]) || span[b].offset % 4) return skip_note("a buffer is not backed"), 0;
         uint64_t n = x->size - written[b];
+        vk_mem_use_kind = VK_MUSE_GPU_WRITE;   // transform feedback output
         VK_MEM_USE_N(span[b], n < span[b].avail ? n : span[b].avail);
         buf[b] = span[b].buffer, off[b] = span[b].offset, size[b] = n < span[b].avail ? n : span[b].avail;
         nbound++;

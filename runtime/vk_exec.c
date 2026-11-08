@@ -67,6 +67,249 @@ static struct { uint32_t w, h, depth; uint64_t passes, draws; } psz[32];
 static int npsz, cur_psz = -1;
 static uint64_t psz_draws0;
 
+// ---- TOTK_PASS_TIME=1 (a diagnostic, off by default): where the GPU time of a frame goes. Timestamps at the start of
+// a pass (before its barrier), inside it after it began, at its end and after each op outside a pass split the GPU's
+// time into barriers before passes, bodies of passes by target size, dispatches, copies, clears, inline updates, game
+// barriers and the start and end of a submission (mirror uploads and write-backs). The slowest dispatch and pass of the
+// period are named by their group counts and by their target size and draws.
+// TOTK_PASS_TIME=2 also takes a full memory barrier right after each pass and dispatch, before its stamp: a stamp alone
+// does not wait for the work before it, so a dispatch's time turned up in the game barrier after it. Only this mode
+// charges a pass or a dispatch with its own work. The costliest shaders are listed by id, the one TOTK_SKIP_FS takes
+// (a pass by its last draw's fragment shader). The added barriers cost GPU time of their own.
+// Results are read when the submission's fence completes. A stamp waits for the work before it at the bottom of the
+// pipe, so the sum can run a little above the time without the switch.
+#define PT_SLOTS 8
+#define PT_STAMPS 16384
+#define PT_LABELS 40
+enum { PT_OTHER, PT_BARRIER, PT_DISPATCH, PT_COPY, PT_CLEAR, PT_UB, PT_GAME, PT_START, PT_END, PT_SIZE0 };
+static VkQueryPool pt_pool;
+static int pt_state;   // 0 not decided, 1 on, -1 off
+static float pt_period;
+static uint64_t pt_mask;
+static struct { uint32_t w, h, depth; } pt_size[PT_LABELS - PT_SIZE0];
+static int pt_nsize;
+static volatile int64_t pt_ns[PT_LABELS], pt_lost;
+static uint8_t pt_label[PT_SLOTS][PT_STAMPS];   // pt_label[s][i]: what the time between stamps i - 1 and i was spent on
+static uint32_t pt_aux[PT_SLOTS][PT_STAMPS];    // a dispatch's group counts (10 bits each) or a pass's draws
+static uint32_t pt_aux_next;                    // replay thread: pt_aux of the next stamp
+static double pt_max_disp, pt_max_pass, pt_max_game;   // completion thread: slowest of the period (ms)
+static uint32_t pt_max_disp_aux, pt_max_pass_aux, pt_max_game_aux;
+static uint8_t pt_max_pass_label;
+static uint64_t pt_game_slow;                   // completion thread: game barriers over 1 ms in the period
+static uint32_t pt_prev_pass;                   // replay thread: the last pass, label << 24 | draws (a game barrier's pt_aux)
+uint32_t vk_exec_last_fs, vk_exec_last_cs;
+static uint32_t pt_prev_fs;                     // replay thread: vk_exec_last_fs at the end of the last pass
+static uint32_t pt_fs[PT_SLOTS][PT_STAMPS];     // a game barrier's pt_prev_fs
+static uint32_t pt_max_game_fs;
+static int pt_strict;                           // TOTK_PASS_TIME=2 (and 3)
+static int pt_split;                            // TOTK_PASS_TIME=3: every draw is a pass of its own (timed alone)
+#define PT_FS_N 128
+typedef struct { uint32_t id, n; double ms; } PtById;
+static PtById pt_by_fs[PT_FS_N], pt_by_cs[PT_FS_N];   // completion thread: pass bodies and dispatches by shader
+static uint32_t pt_id_next;                     // replay thread: the shader of the next stamp, 0: pt_prev_fs
+static uint32_t pt_max_disp_id;
+
+static void pt_tab_add(PtById *tab, uint32_t id, double ms) {
+    for (uint32_t k = 0; k < PT_FS_N; k++) {
+        PtById *e = &tab[(id + k) % PT_FS_N];
+        if (!e->n || e->id == id) {
+            e->id = id, e->n++, e->ms += ms;
+            return;
+        }
+    }
+}
+
+// The costliest entries of tab as text, most time first; empties tab.
+static void pt_tab_line(PtById *tab, double frames, char *out, size_t cap) {
+    size_t o = 0;
+    out[0] = 0;
+    for (int k = 0; k < 6 && o < cap; k++) {
+        int best = -1;
+        for (int i = 0; i < PT_FS_N; i++)
+            if (tab[i].n && (best < 0 || tab[i].ms > tab[best].ms)) best = i;
+        if (best < 0) break;
+        o += (size_t)snprintf(out + o, cap - o, "%s%08x %.2f ms in %.1f", k ? ", " : "", tab[best].id, tab[best].ms / frames,
+                              tab[best].n / frames);
+        tab[best].n = 0;
+    }
+    memset(tab, 0, sizeof(PtById) * PT_FS_N);
+}
+static volatile uint8_t pt_busy[PT_SLOTS];
+static int pt_cur = -1, pt_next, pt_skip;       // replay thread: slot of this submission; no free slot for it
+static uint32_t pt_n;
+
+typedef struct { int slot; uint32_t n; } PtRead;
+
+static void pt_setup(void) {
+    pt_state = -1;
+    if (!rt_knob("PASS_TIME", "0")) return;
+    VkCtx *c = vk_ctx();
+    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
+    vkGetPhysicalDeviceFeatures2(c->phys, &f2);
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, NULL);
+    VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
+    if (!qp) return;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, qp);
+    uint32_t bits = c->gfx_family < nq ? qp[c->gfx_family].timestampValidBits : 0;
+    free(qp);
+    VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                .queryCount = PT_SLOTS * PT_STAMPS};
+    if (!f12.hostQueryReset || !bits || vkCreateQueryPool(c->device, &qi, NULL, &pt_pool) != VK_SUCCESS) {
+        rt_log("vk_exec: TOTK_PASS_TIME: no hostQueryReset, timestamps or query pool: passes not timed");
+        return;
+    }
+    vkResetQueryPool(c->device, pt_pool, 0, PT_SLOTS * PT_STAMPS);
+    pt_period = c->props.limits.timestampPeriod;
+    pt_mask = bits >= 64 ? ~0ull : (1ull << bits) - 1;
+    pt_state = 1;
+    const char *mode = cfg_get("TOTK_PASS_TIME");
+    pt_split = mode && !strcmp(mode, "3");
+    pt_strict = pt_split || (mode && !strcmp(mode, "2"));
+    rt_log("vk_exec: GPU time by pass measured (TOTK_PASS_TIME)%s%s", pt_strict ? ", with a full barrier after each pass" : "",
+           pt_split ? "; each draw ends its pass, so the fragment shader table times single draws" : "");
+}
+
+// Marks the end of what the GPU just did as label (replay thread).
+static void pt_stamp(VkExec *ex, int label) {
+    if (!pt_state) pt_setup();
+    if (pt_state < 0 || pt_skip) return;
+    if (pt_cur < 0) {
+        if (__atomic_load_n(&pt_busy[pt_next], __ATOMIC_ACQUIRE)) {   // readbacks are behind: skip this submission
+            pt_skip = 1;
+            plat_inc64(&pt_lost);
+            return;
+        }
+        pt_cur = pt_next;
+        pt_next = (pt_next + 1) % PT_SLOTS;
+        pt_busy[pt_cur] = 1;
+        pt_n = 0;
+    }
+    if (pt_n == PT_STAMPS) return;
+    pt_label[pt_cur][pt_n] = (uint8_t)label;
+    pt_aux[pt_cur][pt_n] = pt_aux_next;
+    pt_fs[pt_cur][pt_n] = pt_id_next ? pt_id_next : pt_prev_fs;
+    pt_id_next = 0;
+    pt_aux_next = 0;
+    vkCmdWriteTimestamp(ex->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pt_pool, (uint32_t)pt_cur * PT_STAMPS + pt_n);
+    pt_n++;
+}
+
+// TOTK_PASS_TIME=2: the work so far finishes before the next stamp. No image changes layout and no tracking state
+// changes: the replay goes on as before.
+static void pt_strict_barrier(VkExec *ex) {
+    if (!pt_strict) return;
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+}
+
+static int pt_pass_label(const VkExec *ex) {
+    uint32_t dep = ex->pass_depth ? 1 : 0;
+    for (int i = 0; i < pt_nsize; i++)
+        if (pt_size[i].w == ex->pass_w && pt_size[i].h == ex->pass_h && pt_size[i].depth == dep) return PT_SIZE0 + i;
+    if (pt_nsize == PT_LABELS - PT_SIZE0) return PT_OTHER;
+    __atomic_store_n(&pt_size[pt_nsize].w, ex->pass_w, __ATOMIC_RELAXED);
+    __atomic_store_n(&pt_size[pt_nsize].h, ex->pass_h, __ATOMIC_RELAXED);
+    __atomic_store_n(&pt_size[pt_nsize].depth, dep, __ATOMIC_RELAXED);
+    __atomic_store_n(&pt_nsize, pt_nsize + 1, __ATOMIC_RELEASE);
+    return PT_SIZE0 + pt_nsize - 1;
+}
+
+static void pt_read(void *arg) {   // completion thread, one at a time
+    static uint64_t r[2 * PT_STAMPS];
+    PtRead *p = arg;
+    VkCtx *c = vk_ctx();
+    uint32_t first = (uint32_t)p->slot * PT_STAMPS;
+    // A stamp in a part that was never submitted stays unavailable: it is left out, the others still count.
+    VkResult res = vkGetQueryPoolResults(c->device, pt_pool, first, p->n, 16 * (size_t)p->n, r, 16,
+                                         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (res == VK_SUCCESS || res == VK_NOT_READY) {
+        uint64_t prev = 0;
+        int have = 0;
+        for (uint32_t i = 0; i < p->n; i++) {
+            if (!r[2 * i + 1]) { have = 0; continue; }
+            if (have) {
+                int label = pt_label[p->slot][i];
+                double ns = (double)((r[2 * i] - prev) & pt_mask) * pt_period;
+                plat_add64(&pt_ns[label], (int64_t)ns);
+                if (label == PT_DISPATCH && ns / 1e6 > pt_max_disp)
+                    pt_max_disp = ns / 1e6, pt_max_disp_aux = pt_aux[p->slot][i], pt_max_disp_id = pt_fs[p->slot][i];
+                if (label == PT_GAME && ns > 1e6) pt_game_slow++;
+                if (label == PT_GAME && ns / 1e6 > pt_max_game)
+                    pt_max_game = ns / 1e6, pt_max_game_aux = pt_aux[p->slot][i], pt_max_game_fs = pt_fs[p->slot][i];
+                if (label >= PT_SIZE0) pt_tab_add(pt_by_fs, pt_fs[p->slot][i], ns / 1e6);
+                if (label == PT_DISPATCH) pt_tab_add(pt_by_cs, pt_fs[p->slot][i], ns / 1e6);
+                if (label >= PT_SIZE0 && ns / 1e6 > pt_max_pass)
+                    pt_max_pass = ns / 1e6, pt_max_pass_aux = pt_aux[p->slot][i], pt_max_pass_label = (uint8_t)label;
+            }
+            prev = r[2 * i];
+            have = 1;
+        }
+    }
+    vkResetQueryPool(c->device, pt_pool, first, p->n);
+    __atomic_store_n(&pt_busy[p->slot], 0, __ATOMIC_RELEASE);
+    free(p);
+}
+
+// At the end of a submission's recording; last_part: the last part holds commands, so a stamp in it runs.
+static void pt_finish(VkExec *ex, int last_part) {
+    pt_skip = 0;
+    if (pt_cur < 0) return;
+    if (last_part) pt_stamp(ex, PT_END);
+    PtRead *p = malloc(sizeof *p);
+    if (!p) rt_fatal("vk: out of memory");
+    p->slot = pt_cur, p->n = pt_n;
+    vk_completion_add(ex->fence, pt_read, p);
+    pt_cur = -1;
+}
+
+static void pt_summary(double frames) {
+    if (pt_state <= 0) return;
+    int n = __atomic_load_n(&pt_nsize, __ATOMIC_ACQUIRE);
+    double ms[PT_LABELS], total = 0;
+    for (int i = 0; i < PT_LABELS; i++) total += ms[i] = (double)plat_xchg64(&pt_ns[i], 0) / 1e6 / frames;
+    int order[PT_LABELS - PT_SIZE0];
+    for (int i = 0; i < n; i++) order[i] = i;
+    for (int i = 1; i < n; i++)   // most time first
+        for (int j = i; j > 0 && ms[PT_SIZE0 + order[j]] > ms[PT_SIZE0 + order[j - 1]]; j--) {
+            int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
+        }
+    char line[600];
+    size_t o = 0;
+    line[0] = 0;
+    for (int k = 0; k < n && k < 10 && o < sizeof line - 60; k++) {
+        int i = order[k];
+        o += (size_t)snprintf(line + o, sizeof line - o, ", %ux%u%s %.2f", pt_size[i].w, pt_size[i].h,
+                              pt_size[i].depth ? "+depth" : "", ms[PT_SIZE0 + i]);
+    }
+    rt_log("vk_exec: GPU ms per frame: total %.2f, dispatches %.2f, copies %.2f, clears %.2f, inline updates %.2f, game "
+           "barriers %.2f, submission start %.2f, end %.2f, other %.2f, barrier before a pass %.2f; pass bodies%s; "
+           "submissions not timed %lld", total, ms[PT_DISPATCH], ms[PT_COPY], ms[PT_CLEAR], ms[PT_UB], ms[PT_GAME],
+           ms[PT_START], ms[PT_END], ms[PT_OTHER], ms[PT_BARRIER], line, (long long)plat_xchg64(&pt_lost, 0));
+    int mp = pt_max_pass_label >= PT_SIZE0 ? pt_max_pass_label - PT_SIZE0 : 0;
+    rt_log("vk_exec: slowest dispatch %.2f ms (shader %08x, groups %ux%ux%u, 0 when indirect), slowest pass %.2f ms (%ux%u%s, %u draws)",
+           pt_max_disp, pt_max_disp_id, pt_max_disp_aux >> 20, pt_max_disp_aux >> 10 & 1023, pt_max_disp_aux & 1023, pt_max_pass,
+           pt_size[mp].w, pt_size[mp].h, pt_size[mp].depth ? "+depth" : "", pt_max_pass_aux);
+    int gl = (int)(pt_max_game_aux >> 24) - PT_SIZE0;
+    if (gl < 0 || gl >= n) gl = 0;
+    rt_log("vk_exec: slowest game barrier %.2f ms, right after a pass %ux%u%s with %u draws, last fragment shader %08x; "
+           "game barriers over 1 ms per frame %.2f", pt_max_game, pt_size[gl].w, pt_size[gl].h,
+           pt_size[gl].depth ? "+depth" : "", pt_max_game_aux & 0xffffff, pt_max_game_fs, (double)pt_game_slow / frames);
+    char top[300], topc[300];
+    pt_tab_line(pt_by_fs, frames, top, sizeof top);
+    pt_tab_line(pt_by_cs, frames, topc, sizeof topc);
+    rt_log("vk_exec: pass bodies per frame by last fragment shader (ms in passes): %s", top);
+    rt_log("vk_exec: dispatches per frame by compute shader (ms in dispatches): %s", topc);
+    pt_max_disp = pt_max_pass = pt_max_game = 0;
+    pt_game_slow = 0;
+}
+
 static void size_begin(const VkExec *ex) {
     uint32_t dep = ex->pass_depth ? 1 : 0;
     int i = 0;
@@ -186,6 +429,7 @@ static void frame_summary(uint64_t frame) {
            f->full_why[VK_HZ_WHY_UNKNOWN] / d, f->full_why[VK_HZ_WHY_FBL] / d, f->full_why[VK_HZ_WHY_FIRST] / d,
            f->full_why[VK_HZ_WHY_SAMPLED] / d, f->game_barriers_tracked / d);
     size_summary(d);
+    pt_summary(d);
     add_total(f);
     memset(f, 0, sizeof *f);
     since = frame;
@@ -858,6 +1102,10 @@ void vk_exec_pass_begin(VkExec *ex) {
         if (has_image(want, nwant, t->image)) continue;
         want[nwant] = t->image, wasp[nwant++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
     }
+    pt_stamp(ex, PT_OTHER);
+    // KarPur TOTK_HOT_PASS: hot chunks this pass bound last time, copied into the mirror behind their own barriers
+    ex->recorded += vk_mem_hot_pass_begin(ex->cb, (uint64_t)(uintptr_t)ex->color[0].image ^
+                                                      (uint64_t)(uintptr_t)ex->depth.image << 7 ^ (uint64_t)ex->pass_w << 20 ^ ex->pass_h);
     pass_barrier(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
     ex->fbl_mask = fbl;
     ex->fb_dirty = 0;
@@ -886,6 +1134,7 @@ void vk_exec_pass_begin(VkExec *ex) {
                           .pDepthAttachment = ex->pass_depth ? &da : NULL,
                           .pStencilAttachment = ex->pass_stencil ? &sa : NULL};
     vkCmdBeginRendering(ex->cb, &ri);
+    pt_stamp(ex, PT_BARRIER);
     vk_exec_frame.passes++;
     size_begin(ex);
     ex->recorded++;
@@ -896,6 +1145,16 @@ void vk_exec_pass_end(VkExec *ex) {
     if (!ex->in_pass) return;
     vk_exec_oq_pass_end(ex);
     vkCmdEndRendering(ex->cb);
+    vk_mem_hot_pass_end();
+    if (pt_state > 0) {   // after the end of the rendering: the pass's fragments and its store count for the pass
+        pt_strict_barrier(ex);
+        int label = pt_pass_label(ex);
+        uint32_t draws = (uint32_t)(vk_exec_frame.draws - psz_draws0);
+        pt_prev_pass = (uint32_t)label << 24 | (draws & 0xffffff);
+        pt_prev_fs = vk_exec_last_fs;
+        pt_aux_next = draws;
+        pt_stamp(ex, label);
+    }
     size_end();
     ex->recorded++;
     ex->in_pass = 0;
@@ -1057,7 +1316,7 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 
 // ---- command buffer parts
 // NVN starts the GPU as soon as commands are submitted; one Vulkan command buffer per submission starts it only after
-// the whole replay. Between passes, once TOTK_SPLIT_DRAWS (KarPur default 0: off; TotK 64) draws and dispatches were recorded since the
+// the whole replay. Between passes, once TOTK_SPLIT_DRAWS (64, as TotK; KarPur off from 2026-11-01 to 2026-11-08) draws and dispatches were recorded since the
 // last part, the part goes to the queue (vk_sync_split) and the replay continues in a new command buffer. Only
 // command-buffer state is lost there (bindings and dynamic state: vk_exec_draw_new_cb, ex->dirty); barriers, layouts and
 // queries are not: a barrier's first scope is everything earlier in submission order, image layouts belong to the image,
@@ -1066,10 +1325,11 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 // A part also spans at least TOTK_SPLIT_US (1000) of replay time: a split costs about 40 us of the render thread
 // (vkQueueSubmit2, a command buffer, the mirror prologue), and a fight frame of 2,000 draws made 15 parts on the 7900X;
 // a millisecond of recording is a fraction of a millisecond of GPU work, so the GPU still starts early.
-// KarPur: off by default. With parts, Violet's trees flicker and one tree draws from wrong data; with TOTK_SPLIT_DRAWS=0
-// or TOTK_MEMORY=import (no VRAM mirrors) they draw correctly (maintainer A/B tests, docs/progress.md 2026-11-01). The
-// likely cause is the mirrors' per-part prologue (uploads of CPU-written ranges) and their write-backs at the end of the
-// submission, which do not order GPU writes of one part against the next part's prologue. Not fixed yet.
+// KarPur: off from 2026-11-01 (Violet's trees flickered with parts) and on again since 2026-11-08 (test BT). Parts reach
+// the GPU at once, without the window of the deferred submit, so CPU writes the game makes while the GPU reads an early
+// part miss the mirror; the chunks they hit turn hot (read from imported memory) after one late or racing write
+// (TOTK_HOT_LATE_SUBS, TOTK_RACE_SUBS, both 1 since then), and the flicker no longer showed. In towns the parts cut the
+// chain submit -> replay -> GPU that the game waits on once per frame (main+0xcd0eb0): 41-47 fps became 52-60.
 static int split_n = -1, split_draws, part_start;
 static uint64_t split_ns, part_t0;
 static uint64_t n_parts, n_subs;
@@ -1175,6 +1435,9 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
             vk_exec_op_draw(ex, h->op, a);
+            // TOTK_PASS_TIME=3: the pass ends after each draw, and the next draw begins a new one (loads keep the image)
+            if (pt_split && pt_state > 0 && ex->in_pass && (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND))
+                vk_exec_pass_end(ex), vk_exec_pass_begin(ex);
             break;
         case OP_BIND_PROGRAM: vk_prog_bind(a); break;   // binds by stage; vk_prog_select passes it on (vk_xfb.c)
         case OP_BIND_XFB: case OP_XFB: case OP_DRAW_XFB: vk_exec_op_xfb(ex, h->op, a); break;
@@ -1187,6 +1450,25 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
             vk_exec_op_xfer(ex, h->op, a);
             break;
         default: rt_fatal("vk: op %s has no replay handler", nvn_op_name(h->op));
+        }
+        if (pt_state > 0 && !ex->in_pass) {   // TOTK_PASS_TIME: what this op cost the GPU, its barrier included
+            int label = -1;
+            switch (h->op) {
+            case OP_DISPATCH: {
+                const p_dispatch *d = a;
+                pt_aux_next = (uint32_t)(d->x & 1023) << 20 | (uint32_t)(d->y & 1023) << 10 | (uint32_t)(d->z & 1023);
+                label = PT_DISPATCH;
+                break;
+            }
+            case OP_DISPATCH_IND: label = PT_DISPATCH; break;
+            case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: label = PT_COPY; break;
+            case OP_CLEAR_TEX: case OP_CLEAR_BUF: case OP_CLEAR_COLOR: case OP_CLEAR_DS: label = PT_CLEAR; break;
+            case OP_UPDATE_UB: label = PT_UB; break;
+            case OP_BARRIER: pt_aux_next = pt_prev_pass; label = PT_GAME; break;
+            default: break;
+            }
+            if (label == PT_DISPATCH) pt_strict_barrier(ex), pt_id_next = vk_exec_last_cs;
+            if (label >= 0) pt_stamp(ex, label);
         }
         if (split_draws >= split_n) maybe_split(ex);
         h = nvn_op_next(h);
@@ -1212,7 +1494,9 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     part_t0 = kern_now_ns();
     x_here = 1;
     uint64_t t0 = kern_now_ns();
+    if (n) pt_stamp(ex, PT_OTHER);
     if (n) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
+    if (n) pt_stamp(ex, PT_START);
     uint64_t t1 = kern_now_ns();
     for (int i = 0; i < n; i++) {
         if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
@@ -1233,6 +1517,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         vk_completion_add(fence, free_views, l);
         ex->nviews = 0;
     }
+    pt_finish(ex, ex->recorded != part_start);
     ex->cb = VK_NULL_HANDLE;
     if (n) n_subs++;
     if ((rt_trace & RT_TRACE_PERF) && n_subs >= 240) {

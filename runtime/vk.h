@@ -189,6 +189,9 @@ void vk_mem_pick(VkMemSpan *sp);
 // pool (vk_memory.c) gets the imported buffer.
 void vk_mem_use_n(VkMemSpan *sp, VkDeviceSize n);
 void vk_mem_pick_n(VkMemSpan *sp, VkDeviceSize n);
+// KarPur: what the next vk_mem_use_n binds (VK_MUSE_*, + VK_MUSE_N inside a dispatch), for the log line that splits
+// bindings read over PCIe by kind (TOTK_TRACE=perf). Replay thread; set by the caller right before the use.
+extern int vk_mem_use_kind;
 #define VK_MEM_USE_N(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_use_n(&(sp), (n)); } while (0)
 #define VK_MEM_PICK_N(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_pick_n(&(sp), (n)); } while (0)
 #define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
@@ -207,6 +210,8 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_mirror_pending(void);
 void vk_mem_mirror_prologue(VkCommandBuffer cb);
 void vk_mem_mirror_late(uint64_t fence);
+int vk_mem_hot_pass_begin(VkCommandBuffer cb, uint64_t targets);   // KarPur TOTK_HOT_PASS: copies before a pass; commands
+void vk_mem_hot_pass_end(void);                                    // KarPur TOTK_HOT_PASS: after vkCmdEndRendering
 int vk_mem_hot_refresh_due(void);                    // KarPur TOTK_HOT_REFRESH=2: a draw bound a hot chunk not copied yet
 int vk_mem_hot_refresh_record(VkCommandBuffer cb);   // records those copies (outside a pass); commands recorded   // KarPur: CPU writes since the mirrors' first-access syncs, queued for the prologue
 // Shadow storage (vk_memory.c): vk_sync.c calls vk_mem_shadow_sync right before each submit; the replay notes every GPU
@@ -362,6 +367,7 @@ void vk_texture_new_submit(void);                   // a queue submit starts: dr
 uint32_t vk_texture_epoch(void);                    // the write-watch snapshot epoch vk_texture_new_submit started
 VkSampler vk_sampler_by_id(int id);                 // VK_NULL_HANDLE for an empty slot
 VkSampler vk_sampler_for(const samp_par *s);        // cached by content
+int vk_sampler_params_locked(int id, samp_par *out);   // the same with the texture lock held
 int vk_sampler_params(int id, samp_par *out);       // parameters of a sampler slot; 0 for an empty slot
 
 // 8-bit RGBA PNG with stored deflate blocks (boot.c); stops with rt_fatal when the file cannot be written.

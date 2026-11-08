@@ -152,6 +152,8 @@ int vk_exec_targets_recent(VkExec *ex, int any);
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
 
 // Barrier tracking: what set VkExec.hz_other, and why a pass or clear took the full barrier.
+extern uint32_t vk_exec_last_fs;   // first 4 bytes of the input id of the last draw's fragment shader (TOTK_PASS_TIME)
+extern uint32_t vk_exec_last_cs;   // the same of the last dispatch's compute shader
 enum { VK_HZ_NONE, VK_HZ_OP, VK_HZ_GAME, VK_HZ_DRAW_WRITES, VK_HZ_XFB, VK_HZ_AFTER_PASS, VK_HZ_CB_START, VK_HZ_OVERFLOW,
        VK_HZ_RESTART, VK_HZ_N };
 enum { VK_HZ_WHY_OFF, VK_HZ_WHY_OTHER, VK_HZ_WHY_UNKNOWN, VK_HZ_WHY_FBL, VK_HZ_WHY_FIRST, VK_HZ_WHY_SAMPLED,
