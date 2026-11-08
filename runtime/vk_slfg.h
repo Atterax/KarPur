@@ -17,7 +17,8 @@ extern "C" {
 #endif
 
 int slfg_active(void);   // Streamline was loaded and initialised (before the instance is made)
-int slfg_manual(void);   // ... in its manual hooking mode (TOTK_FRAMEGEN_MODE=manual)
+int slfg_manual(void);
+int slfg_generating(void);   // ... and frame generation is to run (TOTK_FRAMEGEN 2..4): DLSS's output goes to the window's size   // ... in its manual hooking mode (TOTK_FRAMEGEN_MODE=manual)
 // Before vkCreateInstance: loads and initialises Streamline when TOTK_FRAMEGEN asks for it (logged)
 void slfg_start(void);
 // What the loaded features need, added to KarPur's lists: instance extensions; device extensions (those the device has);

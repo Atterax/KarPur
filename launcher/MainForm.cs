@@ -26,7 +26,9 @@ class MainForm : Form
     // Settings
     readonly CheckBox fullscreen = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
     readonly ComboBox windowSize = Combo(), fpsLimit = Combo(), present = Combo(), upscaler = Combo(), overlay = Combo(),
-                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssOut = Combo(), dlssModel = Combo();
+                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssOut = Combo(), dlssModel = Combo(), frameGen = Combo();
+    readonly Button addStreamline = Theme.Button("Add Streamline files", glyph: Theme.GlyphFolder);
+    readonly Label fgNote = Theme.Label("", 9.5f, muted: true);
     readonly Button addDlss = Theme.Button("Add nvngx_dlss.dll", glyph: Theme.GlyphFolder);
     readonly Label dlssNote = Theme.Label("", 9.5f, muted: true);
     readonly TrackBar sharpness = new() { Minimum = 0, Maximum = 100, TickFrequency = 10, Width = 280, BackColor = Theme.Card };
@@ -66,6 +68,8 @@ class MainForm : Form
     static readonly (string, string)[] DlssOuts =
         { ("game", "Game resolution (1080p)"), ("window", "Window size (DLSS upscaling)"), ("2560x1440", "2560 x 1440"),
           ("3840x2160", "3840 x 2160 (4K)") };
+    static readonly (string, string)[] FrameGens =
+        { ("0", "Off"), ("2", "2x (DLSS Frame Generation)"), ("3", "3x (RTX 50)"), ("4", "4x (RTX 50)") };
     static readonly (string, string)[] DlssModels =
         { ("5", "CNN (steady, recommended)"), ("11", "Transformer (sharper, can smear)") };
     static readonly (string, string)[] Overlays = { ("off", "Off"), ("fps", "FPS only"), ("full", "Full") };
@@ -106,6 +110,13 @@ class MainForm : Form
         sharpness.ValueChanged += (_, _) => sharpnessValue.Text = sharpness.Value.ToString();
         saveSettings.Click += (_, _) => SaveGameSettings();
         addDlss.Click += (_, _) => AddDlss();
+        addStreamline.Click += (_, _) => AddStreamline();
+        frameGen.SelectedIndexChanged += (_, _) =>
+        {
+            // frame generation runs on DLAA's picture at the window's size: both follow when it is switched on
+            if (!loadingGame && Value(frameGen) != "0") { Select(antiAliasing, "1", "0"); Select(dlssOut, "window", "game"); }
+            FgStatus();
+        };
         antiAliasing.SelectedIndexChanged += (_, _) => DlssStatus();
         colour.SelectedIndexChanged += (_, _) => { ApplyColour(); if (!loading) SaveSettings(); };
         checkUpdate.Click += async (_, _) => await CheckUpdate();
@@ -271,6 +282,7 @@ class MainForm : Form
         Fill(antiAliasing, AntiAliasings);
         Fill(dlssOut, DlssOuts);
         Fill(dlssModel, DlssModels);
+        Fill(frameGen, FrameGens);
         Fill(overlay, Overlays);
         Fill(population, Populations);
         Fill(colour, Colours);
@@ -292,6 +304,15 @@ class MainForm : Form
         SettingRow(grid, "Anti-aliasing", aa);
         SettingRow(grid, "DLSS output", dlssOut);
         SettingRow(grid, "DLSS model", dlssModel);
+        var fg = new FlowLayoutPanel { AutoSize = true, BackColor = Theme.Card, Margin = new Padding(0), WrapContents = false };
+        frameGen.Margin = new Padding(0, 3, 10, 0);
+        addStreamline.Margin = new Padding(0);
+        fg.Controls.Add(frameGen);
+        fg.Controls.Add(addStreamline);
+        SettingRow(grid, "Frame generation", fg);
+        fgNote.MaximumSize = new Size(560, 0);
+        fgNote.AutoSize = true;
+        SettingRow(grid, "", fgNote);
         dlssNote.MaximumSize = new Size(560, 0);
         dlssNote.AutoSize = true;
         SettingRow(grid, "", dlssNote);
@@ -608,13 +629,79 @@ class MainForm : Form
         Select(antiAliasing, built ? ini.Get("dlaa") : null, "0");
         Select(dlssOut, built ? ini.Get("dlss_out") : null, "game");
         Select(dlssModel, built ? ini.Get("dlaa_preset") : null, "5");
+        loadingGame = true;
+        Select(frameGen, built ? ini.Get("framegen") : null, "0");
+        loadingGame = false;
         Select(overlay, built ? ini.Get("perf_overlay") : null, "off");
         Select(population, built ? ini.Get("population") : null, "switch");
         sharpness.Value = int.TryParse(built ? ini.Get("sharpness") : null, out int s) ? Math.Clamp(s, 0, 100) : 80;
-        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssOut, dlssModel, overlay, population, sharpness, saveSettings })
+        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssOut, dlssModel, frameGen, addStreamline, overlay, population, sharpness, saveSettings })
             c.Enabled = built;
         settingsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
         DlssStatus();
+        FgStatus();
+    }
+
+    // ---- DLSS Frame Generation: NVIDIA Streamline's files are NVIDIA's; the player adds their own copies next to
+    // karpur.exe (games with DLSS Frame Generation ship them). Windows' hardware-accelerated GPU scheduling must be on.
+
+    static readonly string[] StreamlineFiles =
+        { "sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "nvngx_dlssg.dll" };
+    bool loadingGame;
+
+    static bool HagsOn()
+    {
+        try
+        {
+            return Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers",
+                                                     "HwSchMode", null) is int v && v == 2;
+        }
+        catch { return false; }
+    }
+
+    void FgStatus()
+    {
+        if (targetBox.Text == "" || !File.Exists(Builder.Exe(targetBox.Text))) { fgNote.Text = ""; return; }
+        string dir = Path.GetDirectoryName(Builder.Exe(targetBox.Text))!;
+        var missing = StreamlineFiles.Where(f => !File.Exists(Path.Combine(dir, f))).ToList();
+        var notes = new List<string>();
+        if (missing.Count > 0) notes.Add("Missing next to karpur.exe: " + string.Join(", ", missing) + ". Add them with the button "
+                                         + "(a game with DLSS Frame Generation has them; KarPur cannot ship them).");
+        if (!File.Exists(DlssPath())) notes.Add("Frame generation also needs nvngx_dlss.dll (Anti-aliasing above).");
+        if (!HagsOn()) notes.Add("Turn on Windows' hardware-accelerated GPU scheduling (Settings > System > Display > Graphics) "
+                                 + "and restart the PC.");
+        fgNote.Text = notes.Count > 0 ? string.Join(" ", notes)
+                    : "Ready: frame generation shows 2 to 4 frames for each one the game renders (NVIDIA RTX 40/50; 3x and 4x: RTX 50). "
+                      + "Needs V-Sync off (Frame sync).";
+    }
+
+    void AddStreamline()
+    {
+        using var dlg = new FolderBrowserDialog { Description = "Choose the folder that holds sl.interposer.dll and the other Streamline files" };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        string dir = Path.GetDirectoryName(Builder.Exe(targetBox.Text))!;
+        int copied = 0;
+        var notFound = new List<string>();
+        try
+        {
+            foreach (string f in StreamlineFiles)
+            {
+                string src = Path.Combine(dlg.SelectedPath, f);
+                if (!File.Exists(src)) { notFound.Add(f); continue; }
+                // a check against picking the wrong files, not a trust decision (see AddDlss): NVIDIA's certificate name
+                string signer;
+#pragma warning disable SYSLIB0057
+                try { signer = System.Security.Cryptography.X509Certificates.X509Certificate.CreateFromSignedFile(src).Subject; }
+                catch { signer = ""; }
+#pragma warning restore SYSLIB0057
+                if (!signer.Contains("NVIDIA Corporation")) { notFound.Add(f + " (not signed by NVIDIA)"); continue; }
+                File.Copy(src, Path.Combine(dir, f), true);
+                copied++;
+            }
+            FgStatus();
+            settingsNote.Text = $"Copied {copied} Streamline file(s)." + (notFound.Count > 0 ? " Not in that folder: " + string.Join(", ", notFound) + "." : "");
+        }
+        catch (Exception e) { settingsNote.Text = "Could not copy: " + e.Message; }
     }
 
     // ---- NVIDIA DLAA: nvngx_dlss.dll is NVIDIA's and not part of KarPur; the player adds their own copy next to
@@ -678,6 +765,7 @@ class MainForm : Form
             ini.Set("display", "dlaa", Value(antiAliasing));
             ini.Set("display", "dlss_out", Value(dlssOut));
             ini.Set("display", "dlaa_preset", Value(dlssModel));
+            ini.Set("display", "framegen", Value(frameGen));
             ini.Set("display", "sharpness", sharpness.Value.ToString());
             ini.Set("display", "perf_overlay", Value(overlay));
             ini.Set("display", "population", Value(population));

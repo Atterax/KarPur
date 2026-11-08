@@ -88,7 +88,10 @@ sl::Result slGetFeatureFunction(sl::Feature feature, const char *name, void *&fn
 }
 }
 
+static int F_mult_start;   // TOTK_FRAMEGEN as read at start: 1 Streamline only, 2..4 presented frames per rendered one
 extern "C" int slfg_active(void) { return S.active; }
+// Frame generation will run: its inputs (DLSS's picture at the window's size without the HUD) are needed every frame
+extern "C" int slfg_generating(void) { return S.active && F_mult_start >= 2; }
 extern "C" int slfg_manual(void) { return S.active && !S.iat; }
 
 // karpur.exe's imports from vulkan-1.dll pointed at sl.interposer.dll's functions of the same name (it exports the
@@ -126,6 +129,11 @@ extern "C" void slfg_start(void) {
     if (S.tried) return;
     S.tried = 1;
     if (!rt_knob("FRAMEGEN", "0")) return;
+    {
+        const char *e = cfg_get("TOTK_FRAMEGEN");
+        F_mult_start = e && *e ? atoi(e) : 1;
+        if (F_mult_start > 4) F_mult_start = 4;
+    }
     wchar_t dir[MAX_PATH], path[MAX_PATH + 32];
     DWORD len = GetModuleFileNameW(NULL, dir, MAX_PATH);
     while (len && dir[len - 1] != L'\\') len--;
@@ -587,6 +595,7 @@ extern "C" VkResult slfg_vkDeviceWaitIdle(VkDevice d) {
 #include "vk_slfg.h"
 #undef vkDeviceWaitIdle
 extern "C" int slfg_active(void) { return 0; }
+extern "C" int slfg_generating(void) { return 0; }
 extern "C" int slfg_manual(void) { return 0; }
 extern "C" void slfg_start(void) {}
 extern "C" void slfg_instance_exts(const char **ext, uint32_t *n, uint32_t max) { (void)ext, (void)n, (void)max; }

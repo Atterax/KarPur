@@ -159,6 +159,12 @@ static void out_size(uint32_t w, uint32_t h, uint32_t *ow, uint32_t *oh) {
     *ow = w, *oh = h;
     const char *e = cfg_value("TOTK_DLSS_OUT");
     unsigned x = 0, y = 0;
+    // Frame generation needs the picture without the HUD at the size the present shows (vk_slfg.cpp): the window's
+    if (slfg_generating()) {
+        static int said;
+        if (strcmp(e, "window") && !said++) rt_log("dlaa: frame generation on: DLSS's output follows the window (TOTK_DLSS_OUT=%s ignored)", e);
+        e = "window";
+    }
     if (!strcmp(e, "window")) {
         uint32_t sw = 0, sh = 0;
         gfx_present_extent(&sw, &sh);
