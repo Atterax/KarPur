@@ -26,7 +26,7 @@ class MainForm : Form
     // Settings
     readonly CheckBox fullscreen = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
     readonly ComboBox windowSize = Combo(), fpsLimit = Combo(), present = Combo(), upscaler = Combo(), overlay = Combo(),
-                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssOut = Combo();
+                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssOut = Combo(), dlssModel = Combo();
     readonly Button addDlss = Theme.Button("Add nvngx_dlss.dll", glyph: Theme.GlyphFolder);
     readonly Label dlssNote = Theme.Label("", 9.5f, muted: true);
     readonly TrackBar sharpness = new() { Minimum = 0, Maximum = 100, TickFrequency = 10, Width = 280, BackColor = Theme.Card };
@@ -66,6 +66,8 @@ class MainForm : Form
     static readonly (string, string)[] DlssOuts =
         { ("game", "Game resolution (1080p)"), ("window", "Window size (DLSS upscaling)"), ("2560x1440", "2560 x 1440"),
           ("3840x2160", "3840 x 2160 (4K)") };
+    static readonly (string, string)[] DlssModels =
+        { ("5", "CNN (steady, recommended)"), ("11", "Transformer (sharper, can smear)") };
     static readonly (string, string)[] Overlays = { ("off", "Off"), ("fps", "FPS only"), ("full", "Full") };
     static readonly (string, string)[] Populations =
         { ("switch", "Switch (15, default)"), ("switch2", "Switch 2 (40)"), ("enhanced", "Enhanced (80)"),
@@ -268,6 +270,7 @@ class MainForm : Form
         Fill(upscaler, Upscalers);
         Fill(antiAliasing, AntiAliasings);
         Fill(dlssOut, DlssOuts);
+        Fill(dlssModel, DlssModels);
         Fill(overlay, Overlays);
         Fill(population, Populations);
         Fill(colour, Colours);
@@ -288,6 +291,7 @@ class MainForm : Form
         aa.Controls.Add(addDlss);
         SettingRow(grid, "Anti-aliasing", aa);
         SettingRow(grid, "DLSS output", dlssOut);
+        SettingRow(grid, "DLSS model", dlssModel);
         dlssNote.MaximumSize = new Size(560, 0);
         dlssNote.AutoSize = true;
         SettingRow(grid, "", dlssNote);
@@ -603,10 +607,11 @@ class MainForm : Form
         Select(upscaler, built ? ini.Get("upscaler") : null, "fsr");
         Select(antiAliasing, built ? ini.Get("dlaa") : null, "0");
         Select(dlssOut, built ? ini.Get("dlss_out") : null, "game");
+        Select(dlssModel, built ? ini.Get("dlaa_preset") : null, "5");
         Select(overlay, built ? ini.Get("perf_overlay") : null, "off");
         Select(population, built ? ini.Get("population") : null, "switch");
         sharpness.Value = int.TryParse(built ? ini.Get("sharpness") : null, out int s) ? Math.Clamp(s, 0, 100) : 80;
-        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssOut, overlay, population, sharpness, saveSettings })
+        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssOut, dlssModel, overlay, population, sharpness, saveSettings })
             c.Enabled = built;
         settingsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
         DlssStatus();
@@ -672,6 +677,7 @@ class MainForm : Form
             ini.Set("display", "upscaler", Value(upscaler));
             ini.Set("display", "dlaa", Value(antiAliasing));
             ini.Set("display", "dlss_out", Value(dlssOut));
+            ini.Set("display", "dlaa_preset", Value(dlssModel));
             ini.Set("display", "sharpness", sharpness.Value.ToString());
             ini.Set("display", "perf_overlay", Value(overlay));
             ini.Set("display", "population", Value(population));

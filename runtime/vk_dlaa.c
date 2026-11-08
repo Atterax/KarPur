@@ -256,11 +256,13 @@ int vk_dlaa_record(VkDevice dev, VkCommandBuffer cmd, const VkTaaFrame *f) {
         p_setu(p, "OutHeight", f->oh);
         p_seti(p, "DLSS.Feature.Create.Flags", NGX_FLAG_MV_LOWRES | (f->depth_inv ? NGX_FLAG_DEPTH_INVERTED : 0));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
-        // the model: TOTK_DLAA_PRESET=<n> (NVSDK_NGX_DLSS_Hint_Render_Preset: 0 the DLL's default, 6 F, 10 J, 11 K
-        // transformer), as a hint for every quality value; default K (an older DLSS ignores what it does not know)
+        // the model: TOTK_DLAA_PRESET=<n> (NVSDK_NGX_DLSS_Hint_Render_Preset: 0 the DLL's default, 5 E, the last CNN
+        // model, 10 J, 11 K transformer), as a hint for every quality value. Default E: our motion vectors follow the
+        // camera only, and K kept trails behind what moves on its own (idle arms, freckles, leaves in front of the
+        // camera); E showed none (test CC, 2026-11-08).
         {
             const char *e = cfg_get("TOTK_DLAA_PRESET");
-            unsigned pr = e && *e ? (unsigned)atoi(e) : 11u;
+            unsigned pr = e && *e ? (unsigned)atoi(e) : 5u;
             static const char *const q[] = {"DLAA", "Quality", "Balanced", "Performance", "UltraPerformance", "UltraQuality"};
             char k[64];
             for (int i = 0; i < 6; i++) snprintf(k, sizeof k, "DLSS.Hint.Render.Preset.%s", q[i]), p_setu(p, k, pr);
