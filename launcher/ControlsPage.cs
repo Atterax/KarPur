@@ -39,6 +39,9 @@ partial class MainForm
     readonly TrackBar rumble = new() { Minimum = 0, Maximum = 300, TickFrequency = 25, SmallChange = 10, LargeChange = 25, Width = 280, BackColor = Theme.Card };
     readonly Label deadzoneValue = Theme.Label(""), mouseSensValue = Theme.Label(""), rumbleValue = Theme.Label("");
     readonly CheckBox motion = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Motion controls (gyro)", BackColor = Theme.Card };
+    readonly CheckBox stickSwap = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Swap the sticks (move with the right, camera with the left)", BackColor = Theme.Card };
+    readonly CheckBox camInvX = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Invert the camera horizontally", BackColor = Theme.Card };
+    readonly CheckBox camInvY = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Invert the camera vertically", BackColor = Theme.Card };
     readonly CheckBox rumbleTriggers = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Rumble in the triggers too", BackColor = Theme.Card };
     readonly KeyButton[] keyButtons = new KeyButton[Actions.Length];
     readonly PadButton?[] padButtons = new PadButton?[Actions.Length];   // none for the stick directions (keys only)
@@ -65,6 +68,9 @@ partial class MainForm
         padLayout.Width = 360;
         SettingRow(grid, "Controller layout", padLayout);
         SettingRow(grid, "Stick deadzone", Slider(deadzone, deadzoneValue));
+        SettingRow(grid, "Sticks", stickSwap);
+        SettingRow(grid, "", camInvX);
+        SettingRow(grid, "", camInvY);
         SettingRow(grid, "Mouse sensitivity", Slider(mouseSens, mouseSensValue));
         SettingRow(grid, "Rumble strength", Slider(rumble, rumbleValue));
         SettingRow(grid, "", rumbleTriggers);
@@ -198,6 +204,9 @@ partial class MainForm
         rumble.Value = Math.Clamp(int.TryParse(built ? ini.Get("rumble_strength") : null, out int rs) ? rs : 130, 0, 300);
         rumbleTriggers.Checked = (built ? ini.Get("rumble_triggers") : null) == "1";
         motion.Checked = (built ? ini.Get("motion") : null) != "0";
+        stickSwap.Checked = (built ? ini.Get("stick_swap") : null) == "1";
+        camInvX.Checked = (built ? ini.Get("camera_invert_x") : null) == "1";
+        camInvY.Checked = (built ? ini.Get("camera_invert_y") : null) == "1";
         deadzoneValue.Text = $"{deadzone.Value} %";
         mouseSensValue.Text = (mouseSens.Value / 10.0).ToString("0.0");
         rumbleValue.Text = $"{rumble.Value} %";
@@ -207,7 +216,7 @@ partial class MainForm
             keyButtons[i].Key = KeyOf(bind);
             if (padButtons[i] != null) padButtons[i]!.Pad = PadOf(bind);
         }
-        foreach (Control c in new Control[] { padLayout, deadzone, mouseSens, rumble, rumbleTriggers, motion, saveControls, defaultKeys })
+        foreach (Control c in new Control[] { padLayout, deadzone, stickSwap, camInvX, camInvY, mouseSens, rumble, rumbleTriggers, motion, saveControls, defaultKeys })
             c.Enabled = built;
         foreach (var b in keyButtons) b.Enabled = built;
         foreach (var b in padButtons) if (b != null) b.Enabled = built;
@@ -225,6 +234,9 @@ partial class MainForm
             ini.Set("input", "rumble_strength", rumble.Value.ToString());
             ini.Set("input", "rumble_triggers", rumbleTriggers.Checked ? "1" : "0");
             ini.Set("input", "motion", motion.Checked ? "1" : "0");
+            ini.Set("input", "stick_swap", stickSwap.Checked ? "1" : "0");
+            ini.Set("input", "camera_invert_x", camInvX.Checked ? "1" : "0");
+            ini.Set("input", "camera_invert_y", camInvY.Checked ? "1" : "0");
             for (int i = 0; i < Actions.Length; i++)
             {
                 // input_map.c: "key:<name>" / "key:default" and "pad:<name>" / "pad:default"; a part not named is unbound,

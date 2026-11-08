@@ -275,6 +275,19 @@ static float stick_dead_get(void) {
     return stick_dead;
 }
 
+// KarPur: the sticks' roles and directions (live, read again when the settings change): TOTK_STICK_SWAP=1 moves with
+// the right stick and turns the camera with the left; TOTK_CAMERA_INVERT_X / _Y turn the camera the other way on that
+// axis (whichever stick it is on)
+static int stick_swap, cam_inv_x, cam_inv_y;
+static unsigned stick_opts_seen = ~0u;
+
+static void stick_opts(void) {
+    unsigned ver = cfg_version();
+    if (ver == stick_opts_seen) return;
+    stick_opts_seen = ver;
+    stick_swap = cfg_bool("TOTK_STICK_SWAP"), cam_inv_x = cfg_bool("TOTK_CAMERA_INVERT_X"), cam_inv_y = cfg_bool("TOTK_CAMERA_INVERT_Y");
+}
+
 // One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
 static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t out[2]) {
     input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
@@ -428,6 +441,13 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     float dead = stick_dead_get();
     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead, sl);
     stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, dead, sr);
+    stick_opts();
+    if (stick_swap) {
+        int32_t t0 = sl[0], t1 = sl[1];
+        sl[0] = sr[0], sl[1] = sr[1], sr[0] = t0, sr[1] = t1;
+    }
+    if (cam_inv_x) sr[0] = -sr[0];
+    if (cam_inv_y) sr[1] = -sr[1];
     return 1;
 }
 
