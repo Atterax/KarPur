@@ -215,6 +215,14 @@ Beenden kannst du das Spiel über das **X** am Fenster.
 
 ## 9. PC-Einstellungen im Hauptmenü einrichten
 
+**Für Purpur 4.0.0 reicht ein Befehl.** Er kopiert die mitgelieferte Liste an ihren Platz:
+
+```
+copy tools\data\ui_patch_violet_4.0.0.txt game\ui_patch.txt
+```
+
+Beim nächsten Start steht dann **PC-Einstellungen** im Hauptmenü unter Options, und du kannst den Rest dieses Schritts überspringen. Für eine andere Spielversion geht es so:
+
 Damit im Hauptmenü des Spiels (X) der Eintrag „PC-Einstellungen“ erscheint, braucht es eine Liste, die zu deinen Spieldateien passt. Sie bleibt unter `game\`. Bis dahin läuft das Spiel normal, die Einstellungen liegen dann im Menü auf **F1**.
 
 ```

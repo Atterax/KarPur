@@ -37,11 +37,43 @@
 - Online features are not available, and downloadable content is not reported to the game yet.
 - Some graphics details are still open, see [docs/progress.md](docs/progress.md).
 
+## What you need
+
+- **Your own *Pokémon Violet*** from your own console. Only Violet has been tested; Scarlet may work but is untested.
+  - the **base game as an `.xci`** (a cartridge dump). **An `.nsp` does not work as the base game**: the system fonts come from the cartridge image.
+  - the **update 4.0.0 as an `.nsp`**. Other updates are not supported.
+  - the **DLC as an `.nsp`**, if you have it (optional)
+- **`prod.keys`** from the same console
+- **Windows 10 or 11 (64-bit)** and a graphics card with **Vulkan** and a current driver
+- About **30 GB of free space** while building; about 12.5 GB stay in use afterwards
+- An internet connection for the first build (about 250 MB of tools)
+
+How to dump your game and keys is not covered here.
+
 ## Getting started
 
-**The easy way: the KarPur Launcher.** Download `KarPur-Launcher.exe` from the [releases page](https://github.com/Grunttanamo/KarPur/releases), start it, choose your base game (`.xci`), update and DLC (`.nsp`), `prod.keys` and a target folder, and press **Build**. It needs no installation and no administrator rights; it downloads Python and the compiler from their official sources and builds the game on your PC (30-60 minutes the first time). Afterwards it starts the game, holds its settings, repairs the installation, updates it and sends feedback as a GitHub issue. Details: [docs/launcher.md](docs/launcher.md) (German).
+### The easy way: the KarPur Launcher
 
-**By hand:** You build everything yourself from your own copy of the game: [docs/setup-windows.en.md](docs/setup-windows.en.md) ([Deutsch](docs/setup-windows.md)) goes through it step by step, including the one-time step that makes PC Settings appear in the main menu. Without that step the game still runs, with the older full settings menu on F1. That menu stays available for troubleshooting with:
+1. Download **`KarPur-Launcher.exe`** from the [releases page](https://github.com/Grunttanamo/KarPur/releases). It is a single file: no installation, no administrator rights, nothing else to download by hand. Windows may warn that the file is unknown (it is not signed): choose *More info* → *Run anyway*.
+2. In the **Setup** tab, choose your base game (`.xci`), update and DLC (`.nsp`), `prod.keys` and a **target folder** without spaces.
+3. Press **Build**. The first build takes 30-60 minutes and keeps your PC busy. The launcher downloads Python and the compiler from their official sources (every file is checked against a fixed checksum) and builds the game on your PC. You can stop at any time: the next Build goes on where it stopped.
+4. Press **Play**, or use the shortcut **Pokémon Violet (KarPur)** that the launcher puts into your target folder, next to a copy of the launcher.
+
+The launcher also has:
+- **Settings:** the game's PC settings before you start it (fullscreen, window size, FPS limit, frame sync, upscaling, sharpness, performance overlay, wild Pokémon), and the launcher's colour, which follows your game.
+- **Repair:** restores the project files, sets up Python again and rebuilds only what is missing or changed. Your saves and settings stay as they are.
+- **Update:** installs new launcher releases and rebuilds only what changed, usually in a few minutes.
+- **Feedback:** see below.
+
+Your dumps, your keys and the built game stay on your PC. Details (German): [docs/launcher.md](docs/launcher.md).
+
+### Feedback: tell us how it runs
+
+KarPur has only been tested on the maintainer's PC, so reports from other systems help a lot. The launcher's **Feedback** tab fills in your launcher version, game, update, DLC, GPU, CPU, RAM and Windows version by itself; you add a few words (and, with *Attach log*, the end of the game's log). **Open on GitHub** opens it as a filled-in [issue](https://github.com/Grunttanamo/KarPur/issues) in your browser, where you check it and submit it. You need a free GitHub account for that; reports are public. Without an account, *Copy report* copies it for anywhere else.
+
+### By hand
+
+You can also set everything up yourself: [docs/setup-windows.en.md](docs/setup-windows.en.md) ([Deutsch](docs/setup-windows.md)) goes through it step by step. The older full settings menu stays available for troubleshooting with:
 
 ```
 .venv\Scripts\python tools\run_with.py MENU_LOCK=0

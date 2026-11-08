@@ -215,6 +215,14 @@ Close the game with the **X** on the window.
 
 ## 9. Set up PC Settings in the main menu
 
+**For Violet 4.0.0 one command is enough.** It copies the list that comes with KarPur into place:
+
+```
+copy tools\data\ui_patch_violet_4.0.0.txt game\ui_patch.txt
+```
+
+At the next start **PC Settings** is in the main menu under Options, and you can skip the rest of this step. For another game version:
+
 For the "PC Settings" entry to appear in the game's main menu (X), you need a list that matches your game files. It stays under `game\`. Until then the game runs normally, with the settings in the menu on **F1**.
 
 ```
