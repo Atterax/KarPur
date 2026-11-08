@@ -1181,6 +1181,14 @@ typedef struct {
     int final;
 } Req;
 
+// The code hash of a program as recorded in shader-programs.bin: length and c1 from the control section (shader census)
+int gfx_shader_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint8_t hash[32]) {
+    uint32_t c1_off, length;
+    memcpy(&c1_off, control + 0x700, 4), memcpy(&length, control + 0x704, 4);
+    if (c1_off > length) return 0;
+    return build_code_hash(stage, control, code, length, code + c1_off, length - c1_off, hash);
+}
+
 static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size, const uint8_t *c1,
                     const GfxShaderAnswers *a) {
     r->stage_name = stage == GFX_STAGE_VS ? "vs" : stage == GFX_STAGE_FS ? "ps" : stage == GFX_STAGE_CS ? "cs" : NULL;

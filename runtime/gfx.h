@@ -90,6 +90,9 @@ typedef struct {
     uint8_t separate;           // TEX: texture and sampler handles are separate
 } GfxShaderRes;
 typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
+// sha256 code hash of an NVN program (stage, 0x880-byte control section, code with its c1 constants) as shader-programs.bin
+// keys it; 0 when the control section's c1 offset is past its length
+int gfx_shader_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint8_t hash[32]);
 int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
 uint32_t gfx_shader_slot_mask(const GfxShader *s);                    // texture/image slots whose type its translation read

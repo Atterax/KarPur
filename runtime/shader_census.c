@@ -25,6 +25,15 @@
 // where the code length (control+0x704) and the control size 0x880 sit next to the code's offset field. For the first
 // files of each tag it also lists the BNSH's first 24 u32 header words (offsets, sizes and versions).
 //
+// Extraction (test CJ found the layout): inside a BNSH, a program's shader info holds u64 control offset, u64 code
+// offset and u32 code length, offsets from the BNSH's start, and the control section's length field (+0x704) repeats
+// that length. Every BNSH of every unpacked file (header: "BNSH", 0, BOM 0xFEFF at +0xC, file size at +0x1C) is walked
+// for such triples; the stage comes from the shader program header after the code's first 0x30 bytes (Maxwell SPH:
+// type 1 with stage 1..4, or type 2 with stage 5), else compute. Each distinct program (by its code hash, the same as
+// gfx_shader.c records) goes to bnsh-programs.bin next to karpur.exe in shader-programs.bin's form (the player's own
+// data, never shared). The report counts them and checks them against the recorded programs: how many the extraction
+// reproduces exactly, and where its stage differs from the recorded one.
+//
 // Formats as tools/trpfs.py reads them (FlatBuffers): data.trpfd root {file_hashes [u64], pack_names [string],
 // file_info [..], pack_info [{size u64, file_count u64}]}; data.trpfs "ONEPACK\0", u64 offset of root {pack_hashes
 // [u64], pack_offsets [u64]}; a pack root {file_hashes [u64], files [{?, compression i8, level u8, size u64, data
@@ -36,6 +45,7 @@
 
 #include "cfg.h"
 #include "fs.h"
+#include "gfx.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -147,6 +157,107 @@ static int load_programs(void) {
     }
     rt_log("shader census: %d recorded programs, %d anchored", nprogs, anchors);
     return nprogs > 0;
+}
+
+// ---- extraction from BNSH
+#define HSET_BITS 20
+typedef struct { uint8_t h[32]; uint8_t used; } HSlot;
+static HSlot *rec_set, *out_set;          // recorded code hashes, extracted ones
+static uint64_t n_bnsh, n_triples, n_out, n_out_stage[6], n_reproduced, n_stage_wrong, out_bytes, n_hash_fail;
+static uint64_t conf[6][6];               // [recorded stage][guessed stage] for programs reproduced under any stage
+static FILE *out_f;
+static uint8_t *out_buf;
+static size_t out_n;
+
+static int hset_put(HSlot *set, const uint8_t h[32]) {   // 1 when new
+    uint64_t i;
+    memcpy(&i, h, 8);
+    for (i &= (1u << HSET_BITS) - 1;; i = (i + 1) & ((1u << HSET_BITS) - 1)) {
+        if (!set[i].used) { memcpy(set[i].h, h, 32), set[i].used = 1; return 1; }
+        if (!memcmp(set[i].h, h, 32)) return 0;
+    }
+}
+static int hset_has(const HSlot *set, const uint8_t h[32]) {
+    uint64_t i;
+    memcpy(&i, h, 8);
+    for (i &= (1u << HSET_BITS) - 1; set[i].used; i = (i + 1) & ((1u << HSET_BITS) - 1))
+        if (!memcmp(set[i].h, h, 32)) return 1;
+    return 0;
+}
+
+static int guess_stage(const uint8_t *code, uint32_t len) {
+    if (len < 0x30 + 0x50) return GFX_STAGE_CS;
+    uint32_t w = u32(code + 0x30), type = w & 0x1f, ver = (w >> 5) & 0x1f, st = (w >> 10) & 0xf;
+    if (ver == 0) return GFX_STAGE_CS;
+    if (type == 1 && st >= 1 && st <= 4) return (int)st - 1;   // vertex, tessellation control / evaluation, geometry
+    if (type == 2 && st == 5) return GFX_STAGE_FS;
+    return GFX_STAGE_CS;
+}
+
+static void out_flush(void) {
+    if (out_f && out_n) fwrite(out_buf, 1, out_n, out_f);
+    out_n = 0;
+}
+
+static void extract_program(const uint8_t *ctrl, const uint8_t *code, uint32_t len) {
+    int g = guess_stage(code, len);
+    uint8_t h[32];
+    if (!gfx_shader_code_hash(g, ctrl, code, h)) { n_hash_fail++; return; }
+    if (n_out >= (7u << HSET_BITS) / 8) { n_hash_fail++; return; }   // the set is full: counted, not kept
+    if (!hset_put(out_set, h)) return;
+    // checked against the recorded programs, also under the other stages
+    if (hset_has(rec_set, h)) n_reproduced++, conf[g][g]++;
+    else
+        for (int t = 0; t < 6; t++) {
+            uint8_t h2[32];
+            if (t == g || !gfx_shader_code_hash(t, ctrl, code, h2) || !hset_has(rec_set, h2)) continue;
+            n_stage_wrong++, conf[t][g]++;
+            break;
+        }
+    n_out++, n_out_stage[g]++;
+    uint32_t c1_off = u32(ctrl + 0x700), c1 = len - c1_off;
+    size_t rec = PRG_HEAD + (size_t)len + c1;
+    if (out_n + rec > (64u << 20)) out_flush();
+    if (rec > (64u << 20)) return;
+    uint8_t *o = out_buf + out_n;
+    uint32_t head[3] = {(uint32_t)g, len, c1};
+    memcpy(o, head, 12), memcpy(o + 12, h, 32), memcpy(o + 44, ctrl, CONTROL), memcpy(o + PRG_HEAD, code, len);
+    memcpy(o + PRG_HEAD + len, code + c1_off, c1);
+    out_n += rec, out_bytes += rec;
+}
+
+static void extract(const uint8_t *b, uint64_t n) {
+    for (uint64_t base = 0; base + 0x60 <= n; base += 4) {
+        if (u32(b + base) != 0x48534E42u || u32(b + base + 4) || (u32(b + base + 0xC) & 0xFFFF) != 0xFEFF) continue;
+        uint64_t size = u32(b + base + 0x1C);
+        if (size < 0x60 || size > n - base) continue;
+        const uint8_t *bn = b + base;
+        n_bnsh++;
+        for (uint64_t j = 0x20; j + 24 <= size; j += 8) {
+            uint64_t co = u64(bn + j), xo = u64(bn + j + 8);
+            uint32_t len = u32(bn + j + 16);
+            if (!len || (xo & 0xFF) || co & 7 || co + CONTROL > size || xo >= size || len > size - xo) continue;
+            if (u32(bn + co + 0x704) != len || u32(bn + co + 0x700) > len) continue;
+            n_triples++;
+            extract_program(bn + co, bn + xo, len);
+        }
+        base += size - 4;   // the next BNSH after this one
+    }
+}
+
+static void extract_begin(void) {
+    rec_set = calloc(1u << HSET_BITS, sizeof *rec_set), out_set = calloc(1u << HSET_BITS, sizeof *out_set);
+    out_buf = malloc(64u << 20);
+    for (int i = 0; i < nprogs; i++) hset_put(rec_set, progs[i].code - CONTROL - 32);
+    char path[1024];
+    int n = plat_exe_path(path, sizeof path - 32);
+    char *cut = n ? plat_last_sep(path) : NULL;
+    if (!cut) return;
+    strcpy(cut + 1, "bnsh-programs.bin");
+    out_f = fopen(path, "wb");
+    if (!out_f) { rt_log("shader census: cannot write %s", path); return; }
+    struct { char magic[8]; uint32_t version, rec_size; } hd = {"TOTKSPRG", 1, 0};
+    fwrite(&hd, sizeof hd, 1, out_f);
 }
 
 // ---- results
@@ -360,6 +471,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
     uint64_t t0 = plat_now_ns();
     rt_log("shader census: start (this run ends when it is done)");
     if (!load_programs()) exit(2);
+    extract_begin();
     // a guest-visible buffer: reserved at a free address below RT_ADDRESS_LIMIT
     uint64_t gbuf = 0;
     for (uint64_t at = 0x7E00000000ull; at >= 0x4000000000ull; at -= 0x200000000ull)
@@ -411,7 +523,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             if (!fb_table(&pt, fv, k, &e) || !fb_vec(&e, e.nslots - 1, &ds, &dn)) continue;
             int64_t comp = fb_i8(&e, 1, -1);
             uint64_t unpacked = fb_u64(&e, 3);
-            if (comp == -1) { stored_files++; search(pk + ds, dn, p, k, 1); continue; }
+            if (comp == -1) { stored_files++; search(pk + ds, dn, p, k, 1); extract(pk + ds, dn); continue; }
             if (!unpacked || dn + unpacked > BUF_SIZE) { too_big++; continue; }
             uint8_t *in = (uint8_t *)(uintptr_t)gbuf, *outp = in + ((dn + 4095) & ~4095ull);
             memcpy(in, pk + ds, dn);
@@ -421,6 +533,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             if (r != unpacked) { failed++; continue; }
             out_total += r;
             search(outp, r, p, k, 0);
+            extract(outp, r);
         }
         free(pk);
         if (!(p % 500))
@@ -506,6 +619,20 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
         for (int k = 0; k < 2; k++)
             if (hh->layout[k][0]) PUT("      program %d: %s\n", k + 1, hh->layout[k]);
     }
+    out_flush();
+    if (out_f) fclose(out_f);
+    PUT("extraction: %llu BNSH, %llu shader infos, %llu distinct programs (vertex %llu, tess %llu/%llu, geometry %llu, "
+        "fragment %llu, compute %llu), %.1f MiB in bnsh-programs.bin; hash failures %llu\n",
+        (unsigned long long)n_bnsh, (unsigned long long)n_triples, (unsigned long long)n_out,
+        (unsigned long long)n_out_stage[0], (unsigned long long)n_out_stage[1], (unsigned long long)n_out_stage[2],
+        (unsigned long long)n_out_stage[3], (unsigned long long)n_out_stage[4], (unsigned long long)n_out_stage[5],
+        out_bytes / 1048576.0, (unsigned long long)n_hash_fail);
+    PUT("extraction vs recorded: %llu of %d recorded programs reproduced exactly; %llu more only under another stage;"
+        " stage (recorded > guessed):", (unsigned long long)n_reproduced, nprogs, (unsigned long long)n_stage_wrong);
+    for (int r = 0; r < 6; r++)
+        for (int q = 0; q < 6; q++)
+            if (conf[r][q]) PUT(" %d>%d %llu", r, q, (unsigned long long)conf[r][q]);
+    PUT("\n");
     PUT("programs not found:");
     int nf = 0;
     for (int i = 0; i < nprogs; i++)
