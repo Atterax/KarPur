@@ -75,8 +75,9 @@ partial class MainForm
 
         // the keys in four groups, two side by side: label and key button per row
         var keys = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Theme.Card };
-        keys.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        keys.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        // columns as wide as their groups need (a 50/50 split cut the controller column off in a narrow window)
+        keys.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        keys.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         (string Title, string[] Actions)[] groups =
         {
             ("Move", new[] { "LSTICK_UP", "LSTICK_LEFT", "LSTICK_DOWN", "LSTICK_RIGHT" }),
@@ -122,8 +123,12 @@ partial class MainForm
         // the sticks (keys only) side by side; the buttons and the d-pad (keyboard and controller) one below the other
         keys.Controls.Add(Group(groups[0]), 0, 0);
         keys.Controls.Add(Group(groups[1]), 1, 0);
-        keys.Controls.Add(Group(groups[2]), 0, 1);
-        keys.Controls.Add(Group(groups[3]), 0, 2);
+        var buttonsGroup = Group(groups[2]);
+        var dpadGroup = Group(groups[3]);
+        keys.Controls.Add(buttonsGroup, 0, 1);
+        keys.Controls.Add(dpadGroup, 0, 2);
+        keys.SetColumnSpan(buttonsGroup, 2);   // three columns: over the whole width
+        keys.SetColumnSpan(dpadGroup, 2);
         var keysTitle = Theme.Label("Keyboard, mouse and controller", 12f, style: FontStyle.Bold);
         keysTitle.Dock = DockStyle.Top;
         keysTitle.Padding = new Padding(0, 0, 0, 4);
