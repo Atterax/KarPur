@@ -55,3 +55,8 @@ __pycache__/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Launcher build output (tools/make_launcher.py)
+/dist/
+/launcher/bin/
+/launcher/obj/

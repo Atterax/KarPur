@@ -1,0 +1,60 @@
+# Feedback from the launcher's Feedback tab (launcher/Feedback.cs). The launcher opens this form with every field filled
+# in through the URL (?template=feedback.yml&launcher=...), so the field ids below must match the launcher's.
+name: Feedback
+description: How KarPur runs on your PC (the launcher fills this in for you)
+title: "[Feedback] "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing KarPur! Please check the fields and press **Submit new issue**.
+        This report is public: do not paste your keys, dumps or anything personal.
+  - type: input
+    id: launcher
+    attributes:
+      label: Launcher version
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game version
+      description: Scarlet or Violet
+    validations:
+      required: true
+  - type: input
+    id: update
+    attributes:
+      label: Latest game update (4.0.0)
+      description: "Yes or No"
+  - type: input
+    id: dlc
+    attributes:
+      label: DLC
+      description: "Yes or No"
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU
+  - type: input
+    id: ram
+    attributes:
+      label: RAM
+      description: Type and size, for example DDR5, 32 GB
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Windows 10 or Windows 11
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: How does it run? What went wrong? Logs are welcome (up to 5000 characters).
+    validations:
+      required: true

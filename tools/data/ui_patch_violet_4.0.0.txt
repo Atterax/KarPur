@@ -1,0 +1,401 @@
+# Violet 4.0.0 reference copy of game/ui_patch.txt (tools/pc_menu.py output): sizes, FNV-1a hashes and offsets of
+# the game's packed menu files, KarPur's new byte values and KarPur's own texts; no game bytes. runtime/data_patch.c
+# applies a line only where size and hash match, so another game version is left alone. tools/setup_build.py copies it.
+# made by tools/pc_menu.py; UI bytes and texts set by runtime/data_patch.c
+oodle 64629 288704 6448977f0e9cf415 220ac u8 mod=120 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220ad u8 mod=109 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220ae u8 mod=101 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220af u8 mod=110 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b0 u8 mod=117 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b1 u8 mod=95 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b2 u8 mod=98 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b3 u8 mod=117 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b4 u8 mod=116 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b5 u8 mod=116 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b6 u8 mod=111 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b7 u8 mod=110 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b8 u8 mod=95 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220b9 u8 mod=48 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220ba u8 mod=48 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220bb u8 mod=0 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220bc u8 mod=0 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220bd u8 mod=0 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 220be u8 mod=0 part:L_xbutton_06
+oodle 64629 288704 6448977f0e9cf415 1b2e u8 mod=53 texture:xmenu_button_00:xmenu_button_icon_01^s
+oodle 64629 288704 6448977f0e9cf415 465d0 f32 mod=-160.0 key:465d0
+oodle 64629 288704 6448977f0e9cf415 46720 f32 mod=650.0 key:46720
+oodle 64629 288704 6448977f0e9cf415 21e74 f32 mod=-80.0 set:N_dlc_00.y
+oodle 64629 288704 6448977f0e9cf415 22098 f32 mod=510.0 set:L_xbutton_06.w
+oodle 64629 288704 6448977f0e9cf415 2209c f32 mod=80.0 set:L_xbutton_06.h
+oodle 64629 288704 6448977f0e9cf415 21ea8 u8 mod=0 hide:P_base_01
+oodle 533 1480 8768cfc54b3adc3a 3d0 u8 mod=5 grid:dlc
+oodle 533 1480 8768cfc54b3adc3a 3f0 u8 mod=6 grid:report
+msgtext 4749 5904 566391e94d3fb42c 14 pc:title:German PC-EINSTELLUNGEN
+msgtext 4749 5904 566391e94d3fb42c 15 pc:fullscreen:German Vollbild
+msgtext 4749 5904 566391e94d3fb42c 16 pc:fullscreen_info:German Zeigt das Spiel im Vollbild oder in einem Fenster.
+msgtext 4749 5904 566391e94d3fb42c 17 pc:fps:German FPS-Limit
+msgtext 4749 5904 566391e94d3fb42c 6 pc:fps_info:German Die höchste Bildrate. Über 60 FPS experimentell: Effekte\nkönnen ruckeln. Nach einer Änderung neu starten.
+msgtext 4749 5904 566391e94d3fb42c 7 pc:fps_30:German 30 FPS
+msgtext 4749 5904 566391e94d3fb42c 10 pc:fps_60:German 60 FPS
+msgtext 4749 5904 566391e94d3fb42c 11 pc:fps_90:German 90 FPS (experimentell)
+msgtext 4749 5904 566391e94d3fb42c 12 pc:fps_120:German 120 FPS (experimentell)
+msgtext 4749 5904 566391e94d3fb42c 13 pc:fps_144:German 144 FPS (experimentell)
+msgtext 4749 5904 566391e94d3fb42c 18 pc:fps_display:German Bildschirm (experimentell)
+msgtext 4749 5904 566391e94d3fb42c 19 pc:sync:German Bildsynchronisation
+msgtext 4749 5904 566391e94d3fb42c 20 pc:sync_info:German VSync verhindert Bildrisse. Mailbox reagiert schneller,\nAus hat die geringste Verzögerung.
+msgtext 4749 5904 566391e94d3fb42c 21 pc:sync_mailbox:German Mailbox
+msgtext 4749 5904 566391e94d3fb42c 30 pc:sync_vsync:German VSync
+msgtext 4749 5904 566391e94d3fb42c 31 pc:upscaler:German Hochskalierung
+msgtext 4749 5904 566391e94d3fb42c 32 pc:upscaler_info:German Wie das Bild auf die Fenstergröße kommt:\nAMD FSR 1 ist schärfer, Bilinear weicher.
+msgtext 4749 5904 566391e94d3fb42c 33 pc:upscaler_fsr:German AMD FSR 1
+msgtext 4749 5904 566391e94d3fb42c 36 pc:upscaler_bilinear:German Bilinear
+msgtext 4749 5904 566391e94d3fb42c 37 pc:sharpness:German Schärfe
+msgtext 4749 5904 566391e94d3fb42c 60 pc:sharpness_info:German Wie stark AMD FSR 1 nachschärft. Wirkt nur, wenn\ndas Fenster größer ist als 1920 x 1080.
+msgtext 4749 5904 566391e94d3fb42c 61 pc:perf:German Leistungsanzeige
+msgtext 4749 5904 566391e94d3fb42c 83 pc:perf_info:German Zeigt die Bildrate oben im Bild an.
+msgtext 4749 5904 566391e94d3fb42c 84 pc:perf_fps:German FPS
+msgtext 4749 5904 566391e94d3fb42c 29 pc:perf_full:German Ausführlich
+msgtext 4749 5904 566391e94d3fb42c 74 pc:window:German Fenstergröße
+msgtext 4749 5904 566391e94d3fb42c 75 pc:window_info:German Wirkt nur außerhalb des Vollbilds.\nDas Spielbild selbst bleibt bei 1920 x 1080.
+msgtext 4749 5904 566391e94d3fb42c 40 pc:window_720:German 1280 x 720
+msgtext 4749 5904 566391e94d3fb42c 77 pc:window_1080:German 1920 x 1080
+msgtext 4749 5904 566391e94d3fb42c 78 pc:window_1440:German 2560 x 1440
+msgtext 4749 5904 566391e94d3fb42c 79 pc:window_2160:German 3840 x 2160
+msgtext 4749 5904 566391e94d3fb42c 54 pc:population:German Pokémon-Anzahl
+msgtext 4749 5904 566391e94d3fb42c 55 pc:population_info:German Wie viele wilde Pokémon gleichzeitig unterwegs sind: 15, 40,\n80 oder 120. Hohe Stufen können Leistung kosten.\nWirkt erst nach einem Neustart.
+msgtext 4749 5904 566391e94d3fb42c 52 pc:population_switch:German Switch
+msgtext 4749 5904 566391e94d3fb42c 8 pc:population_switch2:German Switch 2
+msgtext 4749 5904 566391e94d3fb42c 9 pc:population_enhanced:German Enhanced
+msgtext 4749 5904 566391e94d3fb42c 41 pc:population_extreme:German Extreme
+msgtext 4749 5904 566391e94d3fb42c 53 pc:keymap:German Steuerung
+msgtext 4749 5904 566391e94d3fb42c 56 pc:keymap_info:German Links oder rechts drücken: Öffnet Tastenbelegung,\nController, Vibration und Maus.
+msgtext 4749 5904 566391e94d3fb42c 49 pc:keymap_open:German Öffnen
+msgtext 3862 4552 e9da77bc5f0071d7 111 pc:entry:German PC-Einstellungen
+msgtext 5015 6340 5a130dbec1f458e2 14 pc:title:English PC SETTINGS
+msgtext 5015 6340 5a130dbec1f458e2 15 pc:fullscreen:English Fullscreen
+msgtext 5015 6340 5a130dbec1f458e2 16 pc:fullscreen_info:English Shows the game in fullscreen or in a window.
+msgtext 5015 6340 5a130dbec1f458e2 17 pc:fps:English Frame Rate Limit
+msgtext 5015 6340 5a130dbec1f458e2 6 pc:fps_info:English The highest frame rate. Above 60 FPS is experimental:\neffects may stutter. Restart after a change.
+msgtext 5015 6340 5a130dbec1f458e2 7 pc:fps_30:English 30 FPS
+msgtext 5015 6340 5a130dbec1f458e2 10 pc:fps_60:English 60 FPS
+msgtext 5015 6340 5a130dbec1f458e2 11 pc:fps_90:English 90 FPS (experimental)
+msgtext 5015 6340 5a130dbec1f458e2 12 pc:fps_120:English 120 FPS (experimental)
+msgtext 5015 6340 5a130dbec1f458e2 13 pc:fps_144:English 144 FPS (experimental)
+msgtext 5015 6340 5a130dbec1f458e2 18 pc:fps_display:English Display (experimental)
+msgtext 5015 6340 5a130dbec1f458e2 19 pc:sync:English Frame Sync
+msgtext 5015 6340 5a130dbec1f458e2 20 pc:sync_info:English VSync prevents tearing. Mailbox responds faster,\nOff has the lowest latency.
+msgtext 5015 6340 5a130dbec1f458e2 21 pc:sync_mailbox:English Mailbox
+msgtext 5015 6340 5a130dbec1f458e2 30 pc:sync_vsync:English VSync
+msgtext 5015 6340 5a130dbec1f458e2 31 pc:upscaler:English Upscaling
+msgtext 5015 6340 5a130dbec1f458e2 32 pc:upscaler_info:English How the image is scaled to the window:\nAMD FSR 1 is sharper, Bilinear is softer.
+msgtext 5015 6340 5a130dbec1f458e2 33 pc:upscaler_fsr:English AMD FSR 1
+msgtext 5015 6340 5a130dbec1f458e2 36 pc:upscaler_bilinear:English Bilinear
+msgtext 5015 6340 5a130dbec1f458e2 37 pc:sharpness:English Sharpness
+msgtext 5015 6340 5a130dbec1f458e2 60 pc:sharpness_info:English How much AMD FSR 1 sharpens. Only applies when\nthe window is larger than 1920 x 1080.
+msgtext 5015 6340 5a130dbec1f458e2 61 pc:perf:English Performance Overlay
+msgtext 5015 6340 5a130dbec1f458e2 83 pc:perf_info:English Shows the frame rate at the top of the screen.
+msgtext 5015 6340 5a130dbec1f458e2 84 pc:perf_fps:English FPS
+msgtext 5015 6340 5a130dbec1f458e2 29 pc:perf_full:English Detailed
+msgtext 5015 6340 5a130dbec1f458e2 74 pc:window:English Window Size
+msgtext 5015 6340 5a130dbec1f458e2 75 pc:window_info:English Only applies outside fullscreen.\nThe game image itself stays at 1920 x 1080.
+msgtext 5015 6340 5a130dbec1f458e2 40 pc:window_720:English 1280 x 720
+msgtext 5015 6340 5a130dbec1f458e2 77 pc:window_1080:English 1920 x 1080
+msgtext 5015 6340 5a130dbec1f458e2 78 pc:window_1440:English 2560 x 1440
+msgtext 5015 6340 5a130dbec1f458e2 79 pc:window_2160:English 3840 x 2160
+msgtext 5015 6340 5a130dbec1f458e2 54 pc:population:English Pokémon Population
+msgtext 5015 6340 5a130dbec1f458e2 55 pc:population_info:English How many wild Pokémon roam at once: 15, 40, 80 or 120.\nHigher levels can cost performance.\nTakes effect after a restart.
+msgtext 5015 6340 5a130dbec1f458e2 52 pc:population_switch:English Switch
+msgtext 5015 6340 5a130dbec1f458e2 8 pc:population_switch2:English Switch 2
+msgtext 5015 6340 5a130dbec1f458e2 9 pc:population_enhanced:English Enhanced
+msgtext 5015 6340 5a130dbec1f458e2 41 pc:population_extreme:English Extreme
+msgtext 5015 6340 5a130dbec1f458e2 53 pc:keymap:English Controls
+msgtext 5015 6340 5a130dbec1f458e2 56 pc:keymap_info:English Press left or right to open key mapping,\ncontroller, rumble and mouse settings.
+msgtext 5015 6340 5a130dbec1f458e2 49 pc:keymap_open:English Open
+msgtext 3370 4520 9ff23a978e9f7aec 111 pc:entry:English PC Settings
+msgtext 5179 6160 0981187a952d4e91 14 pc:title:French OPTIONS PC
+msgtext 5179 6160 0981187a952d4e91 15 pc:fullscreen:French Plein écran
+msgtext 5179 6160 0981187a952d4e91 16 pc:fullscreen_info:French Affiche le jeu en plein écran ou dans une fenêtre.
+msgtext 5179 6160 0981187a952d4e91 17 pc:fps:French Limite d'images/s
+msgtext 5179 6160 0981187a952d4e91 6 pc:fps_info:French Le nombre maximal d'images par seconde. Au-delà de 60 :\nexpérimental, effets saccadés possibles. Relancez après un changement.
+msgtext 5179 6160 0981187a952d4e91 7 pc:fps_30:French 30 FPS
+msgtext 5179 6160 0981187a952d4e91 10 pc:fps_60:French 60 FPS
+msgtext 5179 6160 0981187a952d4e91 11 pc:fps_90:French 90 FPS (expérimental)
+msgtext 5179 6160 0981187a952d4e91 12 pc:fps_120:French 120 FPS (expérimental)
+msgtext 5179 6160 0981187a952d4e91 13 pc:fps_144:French 144 FPS (expérimental)
+msgtext 5179 6160 0981187a952d4e91 18 pc:fps_display:French Écran (expérimental)
+msgtext 5179 6160 0981187a952d4e91 19 pc:sync:French Synchro d'image
+msgtext 5179 6160 0981187a952d4e91 20 pc:sync_info:French VSync évite les déchirures. Mailbox réagit plus vite,\nsans synchro, le délai est minimal.
+msgtext 5179 6160 0981187a952d4e91 21 pc:sync_mailbox:French Mailbox
+msgtext 5179 6160 0981187a952d4e91 30 pc:sync_vsync:French VSync
+msgtext 5179 6160 0981187a952d4e91 31 pc:upscaler:French Mise à l'échelle
+msgtext 5179 6160 0981187a952d4e91 32 pc:upscaler_info:French Comment l'image s'adapte à la fenêtre :\nAMD FSR 1 est plus net, Bilinear plus doux.
+msgtext 5179 6160 0981187a952d4e91 33 pc:upscaler_fsr:French AMD FSR 1
+msgtext 5179 6160 0981187a952d4e91 36 pc:upscaler_bilinear:French Bilinear
+msgtext 5179 6160 0981187a952d4e91 37 pc:sharpness:French Netteté
+msgtext 5179 6160 0981187a952d4e91 60 pc:sharpness_info:French L'intensité de netteté d'AMD FSR 1. Seulement si\nla fenêtre dépasse 1920 x 1080.
+msgtext 5179 6160 0981187a952d4e91 61 pc:perf:French Affichage des performances
+msgtext 5179 6160 0981187a952d4e91 83 pc:perf_info:French Affiche le nombre d'images par seconde en haut de l'écran.
+msgtext 5179 6160 0981187a952d4e91 84 pc:perf_fps:French FPS
+msgtext 5179 6160 0981187a952d4e91 29 pc:perf_full:French Détaillé
+msgtext 5179 6160 0981187a952d4e91 74 pc:window:French Taille de la fenêtre
+msgtext 5179 6160 0981187a952d4e91 75 pc:window_info:French S'applique uniquement hors plein écran.\nL'image du jeu reste en 1920 x 1080.
+msgtext 5179 6160 0981187a952d4e91 40 pc:window_720:French 1280 x 720
+msgtext 5179 6160 0981187a952d4e91 77 pc:window_1080:French 1920 x 1080
+msgtext 5179 6160 0981187a952d4e91 78 pc:window_1440:French 2560 x 1440
+msgtext 5179 6160 0981187a952d4e91 79 pc:window_2160:French 3840 x 2160
+msgtext 5179 6160 0981187a952d4e91 54 pc:population:French Nombre de Pokémon
+msgtext 5179 6160 0981187a952d4e91 55 pc:population_info:French Nombre de Pokémon sauvages en même temps : 15, 40, 80 ou 120.\nLes niveaux élevés peuvent réduire les performances.\nPrend effet après un redémarrage.
+msgtext 5179 6160 0981187a952d4e91 52 pc:population_switch:French Switch
+msgtext 5179 6160 0981187a952d4e91 8 pc:population_switch2:French Switch 2
+msgtext 5179 6160 0981187a952d4e91 9 pc:population_enhanced:French Enhanced
+msgtext 5179 6160 0981187a952d4e91 41 pc:population_extreme:French Extreme
+msgtext 5179 6160 0981187a952d4e91 53 pc:keymap:French Commandes
+msgtext 5179 6160 0981187a952d4e91 56 pc:keymap_info:French Gauche ou droite : ouvre les touches, la manette,\nles vibrations et la souris.
+msgtext 5179 6160 0981187a952d4e91 49 pc:keymap_open:French Ouvrir
+msgtext 3525 4484 3b1c70c311687884 111 pc:entry:French Options PC
+msgtext 4976 6176 da8d0301c7da3c2e 14 pc:title:Italian OPZIONI PC
+msgtext 4976 6176 da8d0301c7da3c2e 15 pc:fullscreen:Italian Schermo intero
+msgtext 4976 6176 da8d0301c7da3c2e 16 pc:fullscreen_info:Italian Mostra il gioco a schermo intero o in una finestra.
+msgtext 4976 6176 da8d0301c7da3c2e 17 pc:fps:Italian Limite FPS
+msgtext 4976 6176 da8d0301c7da3c2e 6 pc:fps_info:Italian La frequenza massima. Oltre 60 FPS è sperimentale:\ngli effetti possono scattare. Riavvia dopo una modifica.
+msgtext 4976 6176 da8d0301c7da3c2e 7 pc:fps_30:Italian 30 FPS
+msgtext 4976 6176 da8d0301c7da3c2e 10 pc:fps_60:Italian 60 FPS
+msgtext 4976 6176 da8d0301c7da3c2e 11 pc:fps_90:Italian 90 FPS (sperimentale)
+msgtext 4976 6176 da8d0301c7da3c2e 12 pc:fps_120:Italian 120 FPS (sperimentale)
+msgtext 4976 6176 da8d0301c7da3c2e 13 pc:fps_144:Italian 144 FPS (sperimentale)
+msgtext 4976 6176 da8d0301c7da3c2e 18 pc:fps_display:Italian Schermo (sperimentale)
+msgtext 4976 6176 da8d0301c7da3c2e 19 pc:sync:Italian Sincronia immagine
+msgtext 4976 6176 da8d0301c7da3c2e 20 pc:sync_info:Italian VSync evita gli strappi. Mailbox risponde più in fretta,\nsenza sincronia il ritardo è minimo.
+msgtext 4976 6176 da8d0301c7da3c2e 21 pc:sync_mailbox:Italian Mailbox
+msgtext 4976 6176 da8d0301c7da3c2e 30 pc:sync_vsync:Italian VSync
+msgtext 4976 6176 da8d0301c7da3c2e 31 pc:upscaler:Italian Upscaling
+msgtext 4976 6176 da8d0301c7da3c2e 32 pc:upscaler_info:Italian Come l'immagine si adatta alla finestra:\nAMD FSR 1 è più nitido, Bilinear più morbido.
+msgtext 4976 6176 da8d0301c7da3c2e 33 pc:upscaler_fsr:Italian AMD FSR 1
+msgtext 4976 6176 da8d0301c7da3c2e 36 pc:upscaler_bilinear:Italian Bilinear
+msgtext 4976 6176 da8d0301c7da3c2e 37 pc:sharpness:Italian Nitidezza
+msgtext 4976 6176 da8d0301c7da3c2e 60 pc:sharpness_info:Italian Quanto AMD FSR 1 aumenta la nitidezza. Solo se\nla finestra supera 1920 x 1080.
+msgtext 4976 6176 da8d0301c7da3c2e 61 pc:perf:Italian Dati prestazioni
+msgtext 4976 6176 da8d0301c7da3c2e 83 pc:perf_info:Italian Mostra i FPS nella parte alta dello schermo.
+msgtext 4976 6176 da8d0301c7da3c2e 84 pc:perf_fps:Italian FPS
+msgtext 4976 6176 da8d0301c7da3c2e 29 pc:perf_full:Italian Dettagliato
+msgtext 4976 6176 da8d0301c7da3c2e 74 pc:window:Italian Dimensioni finestra
+msgtext 4976 6176 da8d0301c7da3c2e 75 pc:window_info:Italian Vale solo fuori dallo schermo intero.\nL'immagine del gioco resta a 1920 x 1080.
+msgtext 4976 6176 da8d0301c7da3c2e 40 pc:window_720:Italian 1280 x 720
+msgtext 4976 6176 da8d0301c7da3c2e 77 pc:window_1080:Italian 1920 x 1080
+msgtext 4976 6176 da8d0301c7da3c2e 78 pc:window_1440:Italian 2560 x 1440
+msgtext 4976 6176 da8d0301c7da3c2e 79 pc:window_2160:Italian 3840 x 2160
+msgtext 4976 6176 da8d0301c7da3c2e 54 pc:population:Italian Numero di Pokémon
+msgtext 4976 6176 da8d0301c7da3c2e 55 pc:population_info:Italian Quanti Pokémon selvatici insieme: 15, 40, 80 o 120.\nI livelli alti possono ridurre le prestazioni.\nHa effetto dopo il riavvio.
+msgtext 4976 6176 da8d0301c7da3c2e 52 pc:population_switch:Italian Switch
+msgtext 4976 6176 da8d0301c7da3c2e 8 pc:population_switch2:Italian Switch 2
+msgtext 4976 6176 da8d0301c7da3c2e 9 pc:population_enhanced:Italian Enhanced
+msgtext 4976 6176 da8d0301c7da3c2e 41 pc:population_extreme:Italian Extreme
+msgtext 4976 6176 da8d0301c7da3c2e 53 pc:keymap:Italian Comandi
+msgtext 4976 6176 da8d0301c7da3c2e 56 pc:keymap_info:Italian Sinistra o destra: apre tasti, controller,\nvibrazione e mouse.
+msgtext 4976 6176 da8d0301c7da3c2e 49 pc:keymap_open:Italian Apri
+msgtext 3221 4324 810f17c1da4434d1 111 pc:entry:Italian Opzioni PC
+msgtext 5004 6168 789a286c242a277a 14 pc:title:Spanish AJUSTES DE PC
+msgtext 5004 6168 789a286c242a277a 15 pc:fullscreen:Spanish Pantalla completa
+msgtext 5004 6168 789a286c242a277a 16 pc:fullscreen_info:Spanish Muestra el juego a pantalla completa o en una ventana.
+msgtext 5004 6168 789a286c242a277a 17 pc:fps:Spanish Límite de FPS
+msgtext 5004 6168 789a286c242a277a 6 pc:fps_info:Spanish La tasa máxima de imágenes. Más de 60 FPS es experimental:\nlos efectos pueden ir a tirones. Reinicia tras un cambio.
+msgtext 5004 6168 789a286c242a277a 7 pc:fps_30:Spanish 30 FPS
+msgtext 5004 6168 789a286c242a277a 10 pc:fps_60:Spanish 60 FPS
+msgtext 5004 6168 789a286c242a277a 11 pc:fps_90:Spanish 90 FPS (experimental)
+msgtext 5004 6168 789a286c242a277a 12 pc:fps_120:Spanish 120 FPS (experimental)
+msgtext 5004 6168 789a286c242a277a 13 pc:fps_144:Spanish 144 FPS (experimental)
+msgtext 5004 6168 789a286c242a277a 18 pc:fps_display:Spanish Pantalla (experimental)
+msgtext 5004 6168 789a286c242a277a 19 pc:sync:Spanish Sincronización
+msgtext 5004 6168 789a286c242a277a 20 pc:sync_info:Spanish VSync evita los cortes. Mailbox responde más rápido,\nsin sincronía el retraso es mínimo.
+msgtext 5004 6168 789a286c242a277a 21 pc:sync_mailbox:Spanish Mailbox
+msgtext 5004 6168 789a286c242a277a 30 pc:sync_vsync:Spanish VSync
+msgtext 5004 6168 789a286c242a277a 31 pc:upscaler:Spanish Escalado
+msgtext 5004 6168 789a286c242a277a 32 pc:upscaler_info:Spanish Cómo se adapta la imagen a la ventana:\nAMD FSR 1 es más nítido, Bilinear más suave.
+msgtext 5004 6168 789a286c242a277a 33 pc:upscaler_fsr:Spanish AMD FSR 1
+msgtext 5004 6168 789a286c242a277a 36 pc:upscaler_bilinear:Spanish Bilinear
+msgtext 5004 6168 789a286c242a277a 37 pc:sharpness:Spanish Nitidez
+msgtext 5004 6168 789a286c242a277a 60 pc:sharpness_info:Spanish Cuánto enfoca AMD FSR 1. Solo si la ventana\nsupera 1920 x 1080.
+msgtext 5004 6168 789a286c242a277a 61 pc:perf:Spanish Datos de rendimiento
+msgtext 5004 6168 789a286c242a277a 83 pc:perf_info:Spanish Muestra los FPS en la parte superior de la pantalla.
+msgtext 5004 6168 789a286c242a277a 84 pc:perf_fps:Spanish FPS
+msgtext 5004 6168 789a286c242a277a 29 pc:perf_full:Spanish Detallado
+msgtext 5004 6168 789a286c242a277a 74 pc:window:Spanish Tamaño de la ventana
+msgtext 5004 6168 789a286c242a277a 75 pc:window_info:Spanish Solo se aplica fuera de pantalla completa.\nLa imagen del juego sigue en 1920 x 1080.
+msgtext 5004 6168 789a286c242a277a 40 pc:window_720:Spanish 1280 x 720
+msgtext 5004 6168 789a286c242a277a 77 pc:window_1080:Spanish 1920 x 1080
+msgtext 5004 6168 789a286c242a277a 78 pc:window_1440:Spanish 2560 x 1440
+msgtext 5004 6168 789a286c242a277a 79 pc:window_2160:Spanish 3840 x 2160
+msgtext 5004 6168 789a286c242a277a 54 pc:population:Spanish Cantidad de Pokémon
+msgtext 5004 6168 789a286c242a277a 55 pc:population_info:Spanish Cuántos Pokémon salvajes a la vez: 15, 40, 80 o 120.\nLos niveles altos pueden reducir el rendimiento.\nSe aplica tras reiniciar.
+msgtext 5004 6168 789a286c242a277a 52 pc:population_switch:Spanish Switch
+msgtext 5004 6168 789a286c242a277a 8 pc:population_switch2:Spanish Switch 2
+msgtext 5004 6168 789a286c242a277a 9 pc:population_enhanced:Spanish Enhanced
+msgtext 5004 6168 789a286c242a277a 41 pc:population_extreme:Spanish Extreme
+msgtext 5004 6168 789a286c242a277a 53 pc:keymap:Spanish Controles
+msgtext 5004 6168 789a286c242a277a 56 pc:keymap_info:Spanish Izquierda o derecha: abre teclas, mando,\nvibración y ratón.
+msgtext 5004 6168 789a286c242a277a 49 pc:keymap_open:Spanish Abrir
+msgtext 3325 4300 a3cc95f73fd12cfb 111 pc:entry:Spanish Ajustes de PC
+msgtext 4520 6088 163c398bca460ea7 14 pc:title:JPN PC設定
+msgtext 4520 6088 163c398bca460ea7 15 pc:fullscreen:JPN フルスクリーン
+msgtext 4520 6088 163c398bca460ea7 16 pc:fullscreen_info:JPN ゲームをフルスクリーンまたは\nウィンドウで表示します。
+msgtext 4520 6088 163c398bca460ea7 17 pc:fps:JPN FPS上限
+msgtext 4520 6088 163c398bca460ea7 6 pc:fps_info:JPN フレームレートの上限です。60 FPSを超える設定は実験的で、\nエフェクトがカクつくことがあります。変更後は再起動してください。
+msgtext 4520 6088 163c398bca460ea7 7 pc:fps_30:JPN 30 FPS
+msgtext 4520 6088 163c398bca460ea7 10 pc:fps_60:JPN 60 FPS
+msgtext 4520 6088 163c398bca460ea7 11 pc:fps_90:JPN 90 FPS(実験的)
+msgtext 4520 6088 163c398bca460ea7 12 pc:fps_120:JPN 120 FPS(実験的)
+msgtext 4520 6088 163c398bca460ea7 13 pc:fps_144:JPN 144 FPS(実験的)
+msgtext 4520 6088 163c398bca460ea7 18 pc:fps_display:JPN ディスプレイ(実験的)
+msgtext 4520 6088 163c398bca460ea7 19 pc:sync:JPN 画面同期
+msgtext 4520 6088 163c398bca460ea7 20 pc:sync_info:JPN VSyncは画面のズレを防ぎます。\nMailboxはより速く反応し、\nオフは遅延が最小です。
+msgtext 4520 6088 163c398bca460ea7 21 pc:sync_mailbox:JPN Mailbox
+msgtext 4520 6088 163c398bca460ea7 30 pc:sync_vsync:JPN VSync
+msgtext 4520 6088 163c398bca460ea7 31 pc:upscaler:JPN アップスケール
+msgtext 4520 6088 163c398bca460ea7 32 pc:upscaler_info:JPN 画像をウィンドウに合わせる方法です。\nAMD FSR 1はシャープ、Bilinearは柔らかめです。
+msgtext 4520 6088 163c398bca460ea7 33 pc:upscaler_fsr:JPN AMD FSR 1
+msgtext 4520 6088 163c398bca460ea7 36 pc:upscaler_bilinear:JPN Bilinear
+msgtext 4520 6088 163c398bca460ea7 37 pc:sharpness:JPN シャープネス
+msgtext 4520 6088 163c398bca460ea7 60 pc:sharpness_info:JPN AMD FSR 1のシャープさの強さです。\nウィンドウが1920 x 1080より大きいときのみ有効です。
+msgtext 4520 6088 163c398bca460ea7 61 pc:perf:JPN パフォーマンス表示
+msgtext 4520 6088 163c398bca460ea7 83 pc:perf_info:JPN 画面上部にフレームレートを表示します。
+msgtext 4520 6088 163c398bca460ea7 84 pc:perf_fps:JPN FPS
+msgtext 4520 6088 163c398bca460ea7 29 pc:perf_full:JPN 詳細
+msgtext 4520 6088 163c398bca460ea7 74 pc:window:JPN ウィンドウサイズ
+msgtext 4520 6088 163c398bca460ea7 75 pc:window_info:JPN フルスクリーン以外で有効です。\nゲームの画像は1920 x 1080のままです。
+msgtext 4520 6088 163c398bca460ea7 40 pc:window_720:JPN 1280 x 720
+msgtext 4520 6088 163c398bca460ea7 77 pc:window_1080:JPN 1920 x 1080
+msgtext 4520 6088 163c398bca460ea7 78 pc:window_1440:JPN 2560 x 1440
+msgtext 4520 6088 163c398bca460ea7 79 pc:window_2160:JPN 3840 x 2160
+msgtext 4520 6088 163c398bca460ea7 54 pc:population:JPN ポケモンの数
+msgtext 4520 6088 163c398bca460ea7 55 pc:population_info:JPN 同時に現れる野生のポケモンの数です(15、40、80、120)。\n高い設定では動作が重くなることがあります。\n再起動後に反映されます。
+msgtext 4520 6088 163c398bca460ea7 52 pc:population_switch:JPN Switch
+msgtext 4520 6088 163c398bca460ea7 8 pc:population_switch2:JPN Switch 2
+msgtext 4520 6088 163c398bca460ea7 9 pc:population_enhanced:JPN Enhanced
+msgtext 4520 6088 163c398bca460ea7 41 pc:population_extreme:JPN Extreme
+msgtext 4520 6088 163c398bca460ea7 53 pc:keymap:JPN 操作設定
+msgtext 4520 6088 163c398bca460ea7 56 pc:keymap_info:JPN 左右を押すとキー設定、コントローラー、\n振動、マウスの設定を開きます。
+msgtext 4520 6088 163c398bca460ea7 49 pc:keymap_open:JPN 開く
+msgtext 4314 6068 6f9ea521cd57becc 111 pc:entry:JPN PC設定
+msgtext 2954 3468 d59cca26085dd535 14 pc:title:Korean PC 설정
+msgtext 2954 3468 d59cca26085dd535 15 pc:fullscreen:Korean 전체 화면
+msgtext 2954 3468 d59cca26085dd535 16 pc:fullscreen_info:Korean 게임을 전체 화면 또는 창으로 표시합니다.
+msgtext 2954 3468 d59cca26085dd535 17 pc:fps:Korean FPS 제한
+msgtext 2954 3468 d59cca26085dd535 6 pc:fps_info:Korean 최대 프레임 수입니다. 60 FPS 초과는 실험적이며\n효과가 끊길 수 있습니다. 변경 후 다시 시작하세요.
+msgtext 2954 3468 d59cca26085dd535 7 pc:fps_30:Korean 30 FPS
+msgtext 2954 3468 d59cca26085dd535 10 pc:fps_60:Korean 60 FPS
+msgtext 2954 3468 d59cca26085dd535 11 pc:fps_90:Korean 90 FPS(실험적)
+msgtext 2954 3468 d59cca26085dd535 12 pc:fps_120:Korean 120 FPS(실험적)
+msgtext 2954 3468 d59cca26085dd535 13 pc:fps_144:Korean 144 FPS(실험적)
+msgtext 2954 3468 d59cca26085dd535 18 pc:fps_display:Korean 디스플레이(실험적)
+msgtext 2954 3468 d59cca26085dd535 19 pc:sync:Korean 화면 동기화
+msgtext 2954 3468 d59cca26085dd535 20 pc:sync_info:Korean VSync는 화면 찢어짐을 막습니다.\nMailbox는 더 빠르게 반응하고\n끄면 지연이 가장 적습니다.
+msgtext 2954 3468 d59cca26085dd535 21 pc:sync_mailbox:Korean Mailbox
+msgtext 2954 3468 d59cca26085dd535 30 pc:sync_vsync:Korean VSync
+msgtext 2954 3468 d59cca26085dd535 31 pc:upscaler:Korean 업스케일링
+msgtext 2954 3468 d59cca26085dd535 32 pc:upscaler_info:Korean 화면을 창 크기에 맞추는 방식입니다.\nAMD FSR 1은 선명하고 Bilinear는 부드럽습니다.
+msgtext 2954 3468 d59cca26085dd535 33 pc:upscaler_fsr:Korean AMD FSR 1
+msgtext 2954 3468 d59cca26085dd535 36 pc:upscaler_bilinear:Korean Bilinear
+msgtext 2954 3468 d59cca26085dd535 37 pc:sharpness:Korean 선명도
+msgtext 2954 3468 d59cca26085dd535 60 pc:sharpness_info:Korean AMD FSR 1의 선명하게 하는 정도입니다.\n창이 1920 x 1080보다 클 때만 적용됩니다.
+msgtext 2954 3468 d59cca26085dd535 61 pc:perf:Korean 성능 표시
+msgtext 2954 3468 d59cca26085dd535 83 pc:perf_info:Korean 화면 위쪽에 프레임 수를 표시합니다.
+msgtext 2954 3468 d59cca26085dd535 84 pc:perf_fps:Korean FPS
+msgtext 2954 3468 d59cca26085dd535 29 pc:perf_full:Korean 자세히
+msgtext 2954 3468 d59cca26085dd535 74 pc:window:Korean 창 크기
+msgtext 2954 3468 d59cca26085dd535 75 pc:window_info:Korean 전체 화면이 아닐 때만 적용됩니다.\n게임 화면 자체는 1920 x 1080입니다.
+msgtext 2954 3468 d59cca26085dd535 40 pc:window_720:Korean 1280 x 720
+msgtext 2954 3468 d59cca26085dd535 77 pc:window_1080:Korean 1920 x 1080
+msgtext 2954 3468 d59cca26085dd535 78 pc:window_1440:Korean 2560 x 1440
+msgtext 2954 3468 d59cca26085dd535 79 pc:window_2160:Korean 3840 x 2160
+msgtext 2954 3468 d59cca26085dd535 54 pc:population:Korean 포켓몬 수
+msgtext 2954 3468 d59cca26085dd535 55 pc:population_info:Korean 동시에 나타나는 야생 포켓몬 수입니다: 15, 40, 80, 120.\n높은 단계는 성능이 떨어질 수 있습니다.\n다시 시작한 후 적용됩니다.
+msgtext 2954 3468 d59cca26085dd535 52 pc:population_switch:Korean Switch
+msgtext 2954 3468 d59cca26085dd535 8 pc:population_switch2:Korean Switch 2
+msgtext 2954 3468 d59cca26085dd535 9 pc:population_enhanced:Korean Enhanced
+msgtext 2954 3468 d59cca26085dd535 41 pc:population_extreme:Korean Extreme
+msgtext 2954 3468 d59cca26085dd535 53 pc:keymap:Korean 조작 설정
+msgtext 2954 3468 d59cca26085dd535 56 pc:keymap_info:Korean 왼쪽이나 오른쪽을 누르면 키 설정,\n컨트롤러, 진동, 마우스 설정이 열립니다.
+msgtext 2954 3468 d59cca26085dd535 49 pc:keymap_open:Korean 열기
+msgtext 2489 3176 7d56b1c8339f6d30 111 pc:entry:Korean PC 설정
+msgtext 2116 2660 7f28a9c948ced456 14 pc:title:Simp_Chinese PC设置
+msgtext 2116 2660 7f28a9c948ced456 15 pc:fullscreen:Simp_Chinese 全屏
+msgtext 2116 2660 7f28a9c948ced456 16 pc:fullscreen_info:Simp_Chinese 以全屏或窗口模式显示游戏。
+msgtext 2116 2660 7f28a9c948ced456 17 pc:fps:Simp_Chinese 帧率上限
+msgtext 2116 2660 7f28a9c948ced456 6 pc:fps_info:Simp_Chinese 最高帧率。超过60 FPS为实验性功能,\n特效可能卡顿。更改后请重新启动。
+msgtext 2116 2660 7f28a9c948ced456 7 pc:fps_30:Simp_Chinese 30 FPS
+msgtext 2116 2660 7f28a9c948ced456 10 pc:fps_60:Simp_Chinese 60 FPS
+msgtext 2116 2660 7f28a9c948ced456 11 pc:fps_90:Simp_Chinese 90 FPS(实验性)
+msgtext 2116 2660 7f28a9c948ced456 12 pc:fps_120:Simp_Chinese 120 FPS(实验性)
+msgtext 2116 2660 7f28a9c948ced456 13 pc:fps_144:Simp_Chinese 144 FPS(实验性)
+msgtext 2116 2660 7f28a9c948ced456 18 pc:fps_display:Simp_Chinese 显示器(实验性)
+msgtext 2116 2660 7f28a9c948ced456 19 pc:sync:Simp_Chinese 画面同步
+msgtext 2116 2660 7f28a9c948ced456 20 pc:sync_info:Simp_Chinese VSync可防止画面撕裂。\nMailbox响应更快,\n关闭时延迟最低。
+msgtext 2116 2660 7f28a9c948ced456 21 pc:sync_mailbox:Simp_Chinese Mailbox
+msgtext 2116 2660 7f28a9c948ced456 30 pc:sync_vsync:Simp_Chinese VSync
+msgtext 2116 2660 7f28a9c948ced456 31 pc:upscaler:Simp_Chinese 画面放大
+msgtext 2116 2660 7f28a9c948ced456 32 pc:upscaler_info:Simp_Chinese 画面适应窗口的方式:\nAMD FSR 1更清晰,Bilinear更柔和。
+msgtext 2116 2660 7f28a9c948ced456 33 pc:upscaler_fsr:Simp_Chinese AMD FSR 1
+msgtext 2116 2660 7f28a9c948ced456 36 pc:upscaler_bilinear:Simp_Chinese Bilinear
+msgtext 2116 2660 7f28a9c948ced456 37 pc:sharpness:Simp_Chinese 锐度
+msgtext 2116 2660 7f28a9c948ced456 60 pc:sharpness_info:Simp_Chinese AMD FSR 1的锐化强度。\n仅在窗口大于1920 x 1080时生效。
+msgtext 2116 2660 7f28a9c948ced456 61 pc:perf:Simp_Chinese 性能显示
+msgtext 2116 2660 7f28a9c948ced456 83 pc:perf_info:Simp_Chinese 在画面上方显示帧率。
+msgtext 2116 2660 7f28a9c948ced456 84 pc:perf_fps:Simp_Chinese FPS
+msgtext 2116 2660 7f28a9c948ced456 29 pc:perf_full:Simp_Chinese 详细
+msgtext 2116 2660 7f28a9c948ced456 74 pc:window:Simp_Chinese 窗口大小
+msgtext 2116 2660 7f28a9c948ced456 75 pc:window_info:Simp_Chinese 仅在非全屏时生效。\n游戏画面本身仍为1920 x 1080。
+msgtext 2116 2660 7f28a9c948ced456 40 pc:window_720:Simp_Chinese 1280 x 720
+msgtext 2116 2660 7f28a9c948ced456 77 pc:window_1080:Simp_Chinese 1920 x 1080
+msgtext 2116 2660 7f28a9c948ced456 78 pc:window_1440:Simp_Chinese 2560 x 1440
+msgtext 2116 2660 7f28a9c948ced456 79 pc:window_2160:Simp_Chinese 3840 x 2160
+msgtext 2116 2660 7f28a9c948ced456 54 pc:population:Simp_Chinese 宝可梦数量
+msgtext 2116 2660 7f28a9c948ced456 55 pc:population_info:Simp_Chinese 同时出现的野生宝可梦数量:15、40、80或120。\n高等级可能影响性能。\n重新启动后生效。
+msgtext 2116 2660 7f28a9c948ced456 52 pc:population_switch:Simp_Chinese Switch
+msgtext 2116 2660 7f28a9c948ced456 8 pc:population_switch2:Simp_Chinese Switch 2
+msgtext 2116 2660 7f28a9c948ced456 9 pc:population_enhanced:Simp_Chinese Enhanced
+msgtext 2116 2660 7f28a9c948ced456 41 pc:population_extreme:Simp_Chinese Extreme
+msgtext 2116 2660 7f28a9c948ced456 53 pc:keymap:Simp_Chinese 操作设置
+msgtext 2116 2660 7f28a9c948ced456 56 pc:keymap_info:Simp_Chinese 按左或右打开按键、手柄、\n振动和鼠标设置。
+msgtext 2116 2660 7f28a9c948ced456 49 pc:keymap_open:Simp_Chinese 打开
+msgtext 2014 2764 d43b5ef0f38b7c7a 111 pc:entry:Simp_Chinese PC设置
+msgtext 2103 2660 71c72d820fc40bbc 14 pc:title:Trad_Chinese PC設定
+msgtext 2103 2660 71c72d820fc40bbc 15 pc:fullscreen:Trad_Chinese 全螢幕
+msgtext 2103 2660 71c72d820fc40bbc 16 pc:fullscreen_info:Trad_Chinese 以全螢幕或視窗模式顯示遊戲。
+msgtext 2103 2660 71c72d820fc40bbc 17 pc:fps:Trad_Chinese 影格率上限
+msgtext 2103 2660 71c72d820fc40bbc 6 pc:fps_info:Trad_Chinese 最高影格率。超過60 FPS為實驗性功能,\n特效可能卡頓。更改後請重新啟動。
+msgtext 2103 2660 71c72d820fc40bbc 7 pc:fps_30:Trad_Chinese 30 FPS
+msgtext 2103 2660 71c72d820fc40bbc 10 pc:fps_60:Trad_Chinese 60 FPS
+msgtext 2103 2660 71c72d820fc40bbc 11 pc:fps_90:Trad_Chinese 90 FPS(實驗性)
+msgtext 2103 2660 71c72d820fc40bbc 12 pc:fps_120:Trad_Chinese 120 FPS(實驗性)
+msgtext 2103 2660 71c72d820fc40bbc 13 pc:fps_144:Trad_Chinese 144 FPS(實驗性)
+msgtext 2103 2660 71c72d820fc40bbc 18 pc:fps_display:Trad_Chinese 顯示器(實驗性)
+msgtext 2103 2660 71c72d820fc40bbc 19 pc:sync:Trad_Chinese 畫面同步
+msgtext 2103 2660 71c72d820fc40bbc 20 pc:sync_info:Trad_Chinese VSync可防止畫面撕裂。\nMailbox反應更快,\n關閉時延遲最低。
+msgtext 2103 2660 71c72d820fc40bbc 21 pc:sync_mailbox:Trad_Chinese Mailbox
+msgtext 2103 2660 71c72d820fc40bbc 30 pc:sync_vsync:Trad_Chinese VSync
+msgtext 2103 2660 71c72d820fc40bbc 31 pc:upscaler:Trad_Chinese 畫面放大
+msgtext 2103 2660 71c72d820fc40bbc 32 pc:upscaler_info:Trad_Chinese 畫面適應視窗的方式:\nAMD FSR 1更清晰,Bilinear更柔和。
+msgtext 2103 2660 71c72d820fc40bbc 33 pc:upscaler_fsr:Trad_Chinese AMD FSR 1
+msgtext 2103 2660 71c72d820fc40bbc 36 pc:upscaler_bilinear:Trad_Chinese Bilinear
+msgtext 2103 2660 71c72d820fc40bbc 37 pc:sharpness:Trad_Chinese 銳利度
+msgtext 2103 2660 71c72d820fc40bbc 60 pc:sharpness_info:Trad_Chinese AMD FSR 1的銳化強度。\n僅在視窗大於1920 x 1080時生效。
+msgtext 2103 2660 71c72d820fc40bbc 61 pc:perf:Trad_Chinese 效能顯示
+msgtext 2103 2660 71c72d820fc40bbc 83 pc:perf_info:Trad_Chinese 在畫面上方顯示影格率。
+msgtext 2103 2660 71c72d820fc40bbc 84 pc:perf_fps:Trad_Chinese FPS
+msgtext 2103 2660 71c72d820fc40bbc 29 pc:perf_full:Trad_Chinese 詳細
+msgtext 2103 2660 71c72d820fc40bbc 74 pc:window:Trad_Chinese 視窗大小
+msgtext 2103 2660 71c72d820fc40bbc 75 pc:window_info:Trad_Chinese 僅在非全螢幕時生效。\n遊戲畫面本身仍為1920 x 1080。
+msgtext 2103 2660 71c72d820fc40bbc 40 pc:window_720:Trad_Chinese 1280 x 720
+msgtext 2103 2660 71c72d820fc40bbc 77 pc:window_1080:Trad_Chinese 1920 x 1080
+msgtext 2103 2660 71c72d820fc40bbc 78 pc:window_1440:Trad_Chinese 2560 x 1440
+msgtext 2103 2660 71c72d820fc40bbc 79 pc:window_2160:Trad_Chinese 3840 x 2160
+msgtext 2103 2660 71c72d820fc40bbc 54 pc:population:Trad_Chinese 寶可夢數量
+msgtext 2103 2660 71c72d820fc40bbc 55 pc:population_info:Trad_Chinese 同時出現的野生寶可夢數量:15、40、80或120。\n高等級可能影響效能。\n重新啟動後生效。
+msgtext 2103 2660 71c72d820fc40bbc 52 pc:population_switch:Trad_Chinese Switch
+msgtext 2103 2660 71c72d820fc40bbc 8 pc:population_switch2:Trad_Chinese Switch 2
+msgtext 2103 2660 71c72d820fc40bbc 9 pc:population_enhanced:Trad_Chinese Enhanced
+msgtext 2103 2660 71c72d820fc40bbc 41 pc:population_extreme:Trad_Chinese Extreme
+msgtext 2103 2660 71c72d820fc40bbc 53 pc:keymap:Trad_Chinese 操作設定
+msgtext 2103 2660 71c72d820fc40bbc 56 pc:keymap_info:Trad_Chinese 按左或右開啟按鍵、控制器、\n震動和滑鼠設定。
+msgtext 2103 2660 71c72d820fc40bbc 49 pc:keymap_open:Trad_Chinese 開啟
+msgtext 2146 2772 acec7116b4fda43b 111 pc:entry:Trad_Chinese PC設定

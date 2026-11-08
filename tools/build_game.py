@@ -44,7 +44,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # In a git worktree (tools/worktree.py) build/ and generated/ are junctions into the main checkout, and resolve() follows
 # them. MAIN_ROOT is where they land, so resolved paths still print and compare relative to a root.
 MAIN_ROOT = (ROOT / 'build').resolve().parent
-UCRT = Path(r'C:\msys64\ucrt64\bin')
+# MSYS2's UCRT64 tree; KARPUR_UCRT names another one (tools/setup_build.py unpacks the packages into the install
+# folder instead of installing MSYS2)
+UCRT = Path(os.environ.get('KARPUR_UCRT') or r'C:\msys64\ucrt64') / 'bin'
 EXE = 'karpur.exe' if WIN else 'karpur'
 
 
@@ -373,6 +375,13 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "karpur.manifest")}')
         else:
             lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+        rt.append(o)
+    icon = out / 'icon.ico'   # tools/game_icon.py: the player's own game icon (never in the repository)
+    if WIN and icon.is_file() and not make_lib:
+        rc = out / 'icon.rc'
+        write_if_changed(rc, f'1 ICON "{icon.as_posix()}"\n')
+        o = out / 'obj' / 'icon.rc.o'   # every object under obj/ (the object hash check names them relative to it)
+        lines.append(f'build {ninja_path(o)}: rc {ninja_path(rc)} | {ninja_path(icon)}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]

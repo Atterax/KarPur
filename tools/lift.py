@@ -25,7 +25,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WIN = os.name == 'nt'
-MSYS_BIN = Path(r'C:\msys64\ucrt64\bin')
+# MSYS2's UCRT64 tree; KARPUR_UCRT names another one (tools/setup_build.py unpacks the packages into the install
+# folder instead of installing MSYS2)
+MSYS_BIN = Path(os.environ.get('KARPUR_UCRT') or r'C:\msys64\ucrt64') / 'bin'
 MODULES = ('main', 'subsdk0', 'sdk')
 
 # Flags for generated code, as TotK Recomp and LAS Recomp build it.

@@ -39,7 +39,9 @@
 
 ## Getting started
 
-You build everything yourself from your own copy of the game: [docs/setup-windows.en.md](docs/setup-windows.en.md) ([Deutsch](docs/setup-windows.md)) goes through it step by step, including the one-time step that makes PC Settings appear in the main menu. Without that step the game still runs, with the older full settings menu on F1. That menu stays available for troubleshooting with:
+**The easy way: the KarPur Launcher.** Download `KarPur-Launcher.exe` from the [releases page](https://github.com/Grunttanamo/KarPur/releases), start it, choose your base game (`.xci`), update and DLC (`.nsp`), `prod.keys` and a target folder, and press **Build**. It needs no installation and no administrator rights; it downloads Python and the compiler from their official sources and builds the game on your PC (30-60 minutes the first time). Afterwards it starts the game, holds its settings, repairs the installation, updates it and sends feedback as a GitHub issue. Details: [docs/launcher.md](docs/launcher.md) (German).
+
+**By hand:** You build everything yourself from your own copy of the game: [docs/setup-windows.en.md](docs/setup-windows.en.md) ([Deutsch](docs/setup-windows.md)) goes through it step by step, including the one-time step that makes PC Settings appear in the main menu. Without that step the game still runs, with the older full settings menu on F1. That menu stays available for troubleshooting with:
 
 ```
 .venv\Scripts\python tools\run_with.py MENU_LOCK=0

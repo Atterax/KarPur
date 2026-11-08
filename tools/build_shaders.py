@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BIN = Path(r'C:\msys64\ucrt64\bin')   # Windows; elsewhere glslc and spirv-val come from PATH
+BIN = Path(os.environ.get('KARPUR_UCRT') or r'C:\msys64\ucrt64') / 'bin'   # Windows (KARPUR_UCRT: another UCRT64 tree); elsewhere glslc and spirv-val come from PATH
 WIN = os.name == 'nt'
 TARGET = 'vulkan1.1'
 
