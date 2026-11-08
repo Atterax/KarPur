@@ -2028,6 +2028,23 @@ int gfx_shader_prepare_seed(const char *dir, int threads, int procs) {
         memcpy(r + 4, iid[i], 32);
         by[r[1]]++, stages[r[0]]++, u++;
     }
+    // how many variants play recorded (shader-answers.bin, their resolved input ids) the preparation covers
+    char played[PATH_CAP + 32];
+    snprintf(played, sizeof played, "%s/shader-answers.bin", dir);
+    uint8_t *pb = NULL;
+    size_t pn = 0, covered = 0, play_n = 0;
+    if (rec_read(played, "TOTKSANS", ANS_VERSION, ANS_REC, &pb, &pn)) {
+        Set64 probe = seen;   // a copy: set_add on it tells membership (it may grow its own table, freed below)
+        probe.v = probe.cap ? malloc(probe.cap * sizeof *probe.v) : NULL;
+        if (probe.v) memcpy(probe.v, seen.v, probe.cap * sizeof *probe.v);
+        for (size_t i = 0; probe.v && i < pn / ANS_REC; i++) {
+            const uint8_t *r = pb + i * ANS_REC + 36;
+            if (!memcmp(r, zero, 32)) continue;
+            play_n++;
+            covered += !set_add(&probe, hash8(r));
+        }
+        free(probe.v), free(pb);
+    }
     free(seen.v);
     RecHeader h = {{'T', 'O', 'T', 'K', 'S', 'P', 'R', 'P'}, PRP_VERSION, PRP_REC};
     uint8_t *file = recs ? malloc(sizeof h + u * PRP_REC + 1) : NULL;
@@ -2036,10 +2053,11 @@ int gfx_shader_prepare_seed(const char *dir, int threads, int procs) {
         memcpy(file, &h, sizeof h), memcpy(file + sizeof h, recs, u * PRP_REC);
         ok = plat_file_write_atomic(out, file, sizeof h + u * PRP_REC);
     }
-    char msg[640];
+    char msg[800];
     snprintf(msg, sizeof msg, "gfx_shader: prepared %zu shader variants (vertex %zu, fragment %zu, compute %zu; title %zu, "
-             "warm-up %zu, other %zu) from %lld seed records, %llu translations failed, in %.0f ms; %s %s", u,
-             stages[GFX_STAGE_VS], stages[GFX_STAGE_FS], stages[GFX_STAGE_CS], by[0], by[1], by[2], n,
+             "warm-up %zu, other %zu; %zu of %zu variants recorded in play among them) from %lld seed records, %llu "
+             "translations failed, in %.0f ms; %s %s", u,
+             stages[GFX_STAGE_VS], stages[GFX_STAGE_FS], stages[GFX_STAGE_CS], by[0], by[1], by[2], covered, play_n, n,
              (unsigned long long)((uint64_t)n_failures - fail0), (double)plat_now_ms() - t0,
              ok ? "wrote" : "cannot write", out);
     rt_log("%s", msg);

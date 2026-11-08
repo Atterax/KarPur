@@ -30,9 +30,17 @@
 // that length. Every BNSH of every unpacked file (header: "BNSH", 0, BOM 0xFEFF at +0xC, file size at +0x1C) is walked
 // for such triples; the stage comes from the shader program header after the code's first 0x30 bytes (Maxwell SPH:
 // type 1 with stage 1..4, or type 2 with stage 5), else compute. Each distinct program (by its code hash, the same as
-// gfx_shader.c records) goes to bnsh-programs.bin next to karpur.exe in shader-programs.bin's form (the player's own
-// data, never shared). The report counts them and checks them against the recorded programs: how many the extraction
-// reproduces exactly, and where its stage differs from the recorded one.
+// gfx_shader.c records) goes to seed-programs.bin next to karpur.exe in shader-programs.bin's form (the player's own
+// data, never shared), with a seed answers record in seed-answers.bin: karpur.exe --prepare-shaders then translates
+// all of them and builds their stage libraries into the driver's cache. The report counts them and checks them
+// against the recorded programs: how many the extraction reproduces exactly, and where its stage differs.
+//
+// The seed answers: no Violet shader asks for texture or image types (the use masks of all 3401 recorded variants have
+// no slots), so they are the defaults: float vertex attributes, float colour outputs and, for compute, the local size
+// of the control section (+0x748, 0 read as 1), as vk_exec_draw.c answers_for gives them. Against play this matches
+// 3385 of the 3401 recorded variants (7 vertex shaders read integer attributes, 2 fragment shaders write integer
+// targets, 7 compute records carry a shared memory size); those few are translated in play as before. The priority
+// byte is 0 for programs play recorded, 2 for the rest.
 //
 // Formats as tools/trpfs.py reads them (FlatBuffers): data.trpfd root {file_hashes [u64], pack_names [string],
 // file_info [..], pack_info [{size u64, file_count u64}]}; data.trpfs "ONEPACK\0", u64 offset of root {pack_hashes
@@ -165,7 +173,7 @@ typedef struct { uint8_t h[32]; uint8_t used; } HSlot;
 static HSlot *rec_set, *out_set;          // recorded code hashes, extracted ones
 static uint64_t n_bnsh, n_triples, n_out, n_out_stage[6], n_reproduced, n_stage_wrong, out_bytes, n_hash_fail;
 static uint64_t conf[6][6];               // [recorded stage][guessed stage] for programs reproduced under any stage
-static FILE *out_f;
+static FILE *out_f, *ans_f;
 static uint8_t *out_buf;
 static size_t out_n;
 
@@ -224,6 +232,18 @@ static void extract_program(const uint8_t *ctrl, const uint8_t *code, uint32_t l
     memcpy(o, head, 12), memcpy(o + 12, h, 32), memcpy(o + 44, ctrl, CONTROL), memcpy(o + PRG_HEAD, code, len);
     memcpy(o + PRG_HEAD + len, code + c1_off, c1);
     out_n += rec, out_bytes += rec;
+    // its seed answers record (gfx_shader.c ANS_REC: stage u32, code hash, input id 0, packed answers, priority)
+    uint8_t a[4 + 32 + 32 + 147 + 1] = {0};
+    a[0] = (uint8_t)g;
+    memcpy(a + 4, h, 32);
+    if (g == GFX_STAGE_CS)
+        for (int k = 0; k < 3; k++) {
+            uint32_t l = u32(ctrl + 0x748 + 4 * k);
+            l = l ? l : 1;
+            a[68 + 136 + 2 * k] = (uint8_t)l, a[68 + 137 + 2 * k] = (uint8_t)(l >> 8);
+        }
+    a[sizeof a - 1] = hset_has(rec_set, h) ? 0 : 2;
+    if (ans_f) fwrite(a, sizeof a, 1, ans_f);
 }
 
 static void extract(const uint8_t *b, uint64_t n) {
@@ -253,11 +273,14 @@ static void extract_begin(void) {
     int n = plat_exe_path(path, sizeof path - 32);
     char *cut = n ? plat_last_sep(path) : NULL;
     if (!cut) return;
-    strcpy(cut + 1, "bnsh-programs.bin");
+    strcpy(cut + 1, "seed-programs.bin");
     out_f = fopen(path, "wb");
-    if (!out_f) { rt_log("shader census: cannot write %s", path); return; }
-    struct { char magic[8]; uint32_t version, rec_size; } hd = {"TOTKSPRG", 1, 0};
+    strcpy(cut + 1, "seed-answers.bin");
+    ans_f = fopen(path, "wb");
+    if (!out_f || !ans_f) { rt_log("shader census: cannot write the seed files next to karpur.exe"); return; }
+    struct { char magic[8]; uint32_t version, rec_size; } hd = {"TOTKSPRG", 1, 0}, ha = {"TOTKSANS", 1, 4 + 32 + 32 + 147 + 1};
     fwrite(&hd, sizeof hd, 1, out_f);
+    fwrite(&ha, sizeof ha, 1, ans_f);
 }
 
 // ---- results
@@ -621,8 +644,9 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
     }
     out_flush();
     if (out_f) fclose(out_f);
+    if (ans_f) fclose(ans_f);
     PUT("extraction: %llu BNSH, %llu shader infos, %llu distinct programs (vertex %llu, tess %llu/%llu, geometry %llu, "
-        "fragment %llu, compute %llu), %.1f MiB in bnsh-programs.bin; hash failures %llu\n",
+        "fragment %llu, compute %llu), %.1f MiB in seed-programs.bin (+ seed-answers.bin); hash failures %llu\n",
         (unsigned long long)n_bnsh, (unsigned long long)n_triples, (unsigned long long)n_out,
         (unsigned long long)n_out_stage[0], (unsigned long long)n_out_stage[1], (unsigned long long)n_out_stage[2],
         (unsigned long long)n_out_stage[3], (unsigned long long)n_out_stage[4], (unsigned long long)n_out_stage[5],
