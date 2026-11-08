@@ -524,4 +524,6 @@ void vk_pipeline_shutdown(void);           // waits for background builds, saves
                                            // cache; before vk_shutdown
 int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
 
+#include "vk_slfg.h"
+#define vkDeviceWaitIdle slfg_vkDeviceWaitIdle   // KarPur TOTK_FRAMEGEN: Streamline intercepts it (vk_slfg.cpp)
 #include "vk_rec.h"   // last: its macros route the vkCmd* calls of every file that includes vk.h

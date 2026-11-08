@@ -10,6 +10,7 @@
 #include "host.h"
 #include "vk.h"
 #include "vk_dlaa.h"
+#include "vk_slfg.h"
 #include "platform/platform.h"
 
 static VkCtx g_vk;
@@ -65,7 +66,10 @@ static int create_instance(void) {
         rt_log("vk: TOTK_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
-    if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    slfg_start();   // KarPur TOTK_FRAMEGEN: Streamline creates the instance and device (vk_slfg.cpp)
+    // with Streamline the debug-utils extension is on (its plugins name their resources and mark their work with it)
+    if (validate || slfg_active()) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    slfg_instance_exts(ext, &n_ext, 24);   // KarPur TOTK_FRAMEGEN: what Streamline's features need
     vk_dlaa_instance_exts(ext, &n_ext, 24);   // KarPur TOTK_DLAA: what NGX needs
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "KarPur",
                              .pEngineName = "KarPur", .apiVersion = VK_API_VERSION_1_3};
@@ -303,17 +307,37 @@ static int create_device(void) {
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 
-    float prio = 1.0f;
-    VkDeviceQueueCreateInfo qi[2] = {
-        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = 1,
-         .pQueuePriorities = &prio}};
+    float prio[16] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    // KarPur TOTK_FRAMEGEN: Streamline's queues after KarPur's: extra graphics queues in the graphics family, compute
+    // queues in a compute-only family when there is one (else the graphics family)
+    uint32_t sl_gfx = 0, sl_comp = 0, comp_family = g_vk.gfx_family, comp_index = 0;
+    slfg_extra_queues(&sl_gfx, &sl_comp);
+    uint32_t nqf = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nqf, NULL);
+    VkQueueFamilyProperties *qfp = calloc(nqf ? nqf : 1, sizeof *qfp);
+    vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nqf, qfp);
+    for (uint32_t i = 0; sl_comp && i < nqf; i++)
+        if ((qfp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(qfp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) { comp_family = i; break; }
+    uint32_t gfx_count = 1 + sl_gfx + (comp_family == g_vk.gfx_family ? sl_comp : 0);
+    if (gfx_count > qfp[g_vk.gfx_family].queueCount) gfx_count = qfp[g_vk.gfx_family].queueCount;
+    if (comp_family == g_vk.gfx_family) comp_index = 1 + sl_gfx;
+    VkDeviceQueueCreateInfo qi[3] = {
+        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = gfx_count,
+         .pQueuePriorities = prio}};
     uint32_t nqi = 1;
     if (g_vk.xfer_family != g_vk.gfx_family) {
         qi[1] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = &prio};
+                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = prio};
         nqi = 2;
     }
+    if (sl_comp && comp_family != g_vk.gfx_family) {
+        uint32_t n = sl_comp < qfp[comp_family].queueCount ? sl_comp : qfp[comp_family].queueCount;
+        qi[nqi++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                              .queueFamilyIndex = comp_family, .queueCount = n, .pQueuePriorities = prio};
+    }
+    free(qfp);
     vk_dlaa_device_exts(ep, ne, ext, &n_ext, 48);   // KarPur TOTK_DLAA: what NGX needs
+    slfg_device_exts(ep, ne, ext, &n_ext, 48);      // KarPur TOTK_FRAMEGEN: what Streamline's features need
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
@@ -336,6 +360,7 @@ static int create_device(void) {
                                  .pDeviceMemoryCallbacks = vk_headroom_callbacks()};
     if ((r = vmaCreateAllocator(&ai, &g_vk.vma)) != VK_SUCCESS) { rt_log("vk: vmaCreateAllocator failed (%d)", (int)r); return 0; }
     vk_dlaa_init(g_vk.instance, g_vk.phys, g_vk.device);   // KarPur TOTK_DLAA (logged)
+    slfg_device_ready(g_vk.instance, g_vk.phys, g_vk.device, g_vk.gfx_family, 1, comp_family, comp_index);   // KarPur TOTK_FRAMEGEN
 
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
@@ -399,6 +424,7 @@ static void destroy_all(void) {
     vk_headroom_stop();
     if (g_vk.vma) vmaDestroyAllocator(g_vk.vma);
     if (g_vk.device) vk_dlaa_shutdown(g_vk.device);   // before the device goes: NGX keeps CUDA state on it
+    slfg_shutdown();   // Streamline before the device and instance go
     if (g_vk.device) vkDestroyDevice(g_vk.device, NULL);
     if (g_vk.messenger) {
         PFN_vkDestroyDebugUtilsMessengerEXT f =

@@ -1,4 +1,4 @@
-// totk.ini: file-backed defaults for the TOTK_* environment variables (docs/controls.md, totk.ini.example).
+﻿// totk.ini: file-backed defaults for the TOTK_* environment variables (docs/controls.md, totk.ini.example).
 // Format: "key = value" lines, '#' or ';' at the start of a line begins a comment, [sections] only group. A key is a
 // variable name without "TOTK_" (an optional TOTK_ prefix is accepted), case-insensitive. A value is the rest of the
 // line, trimmed, optionally in double quotes; an empty value counts as unset. The environment wins over the file.
@@ -30,7 +30,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // Every name the runtime reads (and the patch sets in generated/), without the prefix. A file key outside this list is
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line.
 static const char *const known[] = {
-    "AB", "CAM_PROBE", "DLAA", "DLAA_AT", "DLAA_DEPTH_INV", "DLAA_JITTER_BIAS", "DLAA_JX", "DLAA_JY", "DLAA_PRESET", "DLSS_CONVERT", "DLSS_DEBUG", "DLSS_HUD_DIFF", "DLSS_OUT", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AB", "CAM_PROBE", "DLAA", "DLAA_AT", "DLAA_DEPTH_INV", "DLAA_JITTER_BIAS", "DLAA_JX", "DLAA_JY", "DLAA_PRESET", "DLSS_CONVERT", "DLSS_DEBUG", "FRAMEGEN", "FRAMEGEN_FEATURES", "DLSS_HUD_DIFF", "DLSS_OUT", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
