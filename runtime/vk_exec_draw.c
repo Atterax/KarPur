@@ -1045,6 +1045,17 @@ static struct {
     uint32_t w, h;                       // depth target size
 } CP[CP_N];
 static int cp_n;
+// The game's last steps into the presented image (where a temporal anti-aliasing would replace its copy): per frame the
+// draws into one colour target, consecutive ones with the same shader and target merged, each with the first texture
+// it samples (tex_info_lookup notes it). At the report, the draws into the presented image and, from the first of them,
+// the chain back: the draw that wrote the texture it samples, and so on.
+#define FC_N 1024
+static struct { const VkTexImage *dst, *src[4]; uint32_t fs, ntex, n, nsrc; uint8_t depth; } FC[FC_N];
+static int fc_n, fc_cur = -1;
+// c5 +0x180 of the G-buffer pass against +0: this frame's +0, last frame's +0, or neither, in frames the camera moved
+static float cam0[16], cam180[16], cam0_prev[16];
+static int cam_have, cam_have_prev;
+static uint64_t cam_moved, cam_same_now, cam_same_prev, cam_neither;
 
 static int cp_on(void) {
     static int on = -1;
@@ -1083,10 +1094,31 @@ static int cp_perspective(const float *in, int col, float *fov, float *aspect) {
     return 1;
 }
 
-static void cp_draw(const VkExec *ex, const GfxShader *vs) {
-    if (!ex->depth.image) return;
+static void cp_draw(const VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
     int nc = 0;
     for (int i = 0; i < 8; i++) nc += ex->color[i].image != VK_NULL_HANDLE;
+    fc_cur = -1;
+    if (nc == 1 && ex->color[0].img) {
+        uint32_t id = 0;
+        const GfxShaderRes *tr;
+        if (fs) memcpy(&id, gfx_shader_input_id(fs), sizeof id);
+        if (fc_n && FC[fc_n - 1].dst == ex->color[0].img && FC[fc_n - 1].fs == id) FC[fc_n - 1].n++;
+        else if (fc_n < FC_N) {
+            FC[fc_n] = (typeof(FC[0])){.dst = ex->color[0].img, .fs = id, .ntex = fs ? (uint32_t)gfx_shader_resources(fs, GFX_RES_TEX, &tr) : 0,
+                                       .n = 1, .depth = ex->depth.image != VK_NULL_HANDLE};
+            fc_cur = fc_n++;
+        }
+    }
+    if (!ex->depth.image) return;
+    if (nc >= 4 && !cam_have) {
+        const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][2];
+        VkMemSpan sp;
+        if (u->addr && u->size >= 0x1c0 && vk_mem_resolve(u->addr, 0x1c0, &sp)) {
+            if (!upd_read(ex, u->addr, cam0, 64)) memcpy(cam0, (const void *)(uintptr_t)u->addr, 64);
+            if (!upd_read(ex, u->addr + 0x180, cam180, 64)) memcpy(cam180, (const void *)(uintptr_t)(u->addr + 0x180), 64);
+            cam_have = 1;
+        }
+    }
     const GfxShaderRes *res;
     int n = gfx_shader_resources(vs, GFX_RES_UBO, &res);
     for (int k = 0; k < n; k++) {
@@ -1130,8 +1162,62 @@ static void cp_draw(const VkExec *ex, const GfxShader *vs) {
     }
 }
 
-void vk_cam_probe_frame(uint64_t frame) {
+static void fc_desc(char *b, size_t cap, const VkTexImage *t) {
+    if (t) snprintf(b, cap, "%ux%u format %d, %u levels", t->width, t->height, (int)t->format, t->levels);
+    else snprintf(b, cap, "nothing");
+}
+
+// From the presented image back: the draw runs into it (up to 8, in order), then the same for the largest texture the
+// first of them samples, 4 levels deep. The first run into an image is where its content starts; the later ones draw over
+// it (the HUD over the scene).
+static void fc_report(uint64_t frame, const VkTexImage *shown) {
+    char d[96];
+    fc_desc(d, sizeof d, shown);
+    rt_log("cam_probe: frame %llu: presented image %s; %d draw runs into one colour target this frame", (unsigned long long)frame, d, fc_n);
+    const VkTexImage *img = shown;
+    for (int level = 0; level < 4 && img; level++) {
+        int first = -1, runs = 0;
+        for (int i = 0; i < fc_n; i++) {
+            if (FC[i].dst != img) continue;
+            if (first < 0) first = i;
+            if (runs++ >= 8) continue;
+            char t[4][48] = {"", "", "", ""};
+            for (uint32_t k = 0; k < FC[i].nsrc; k++)
+                snprintf(t[k], sizeof t[k], " %ux%u/f%d/L%u", FC[i].src[k]->width, FC[i].src[k]->height, (int)FC[i].src[k]->format,
+                         FC[i].src[k]->levels);
+            rt_log("cam_probe:   level %d run %d: fragment shader %08x, %u draws, %u textures, %s, samples%s%s%s%s", level, i, FC[i].fs,
+                   FC[i].n, FC[i].ntex, FC[i].depth ? "with depth" : "no depth", t[0], t[1], t[2], t[3]);
+        }
+        fc_desc(d, sizeof d, img);
+        if (first < 0) { rt_log("cam_probe:   level %d: no draw into %s this frame (a copy or a dispatch fills it)", level, d); break; }
+        rt_log("cam_probe:   level %d: %d runs into %s", level, runs, d);
+        const VkTexImage *next = NULL;
+        for (uint32_t k = 0; k < FC[first].nsrc; k++)
+            if (!next || (uint64_t)FC[first].src[k]->width * FC[first].src[k]->height > (uint64_t)next->width * next->height)
+                next = FC[first].src[k];
+        img = next;
+    }
+}
+
+void vk_cam_probe_frame(const tex_t *shown, uint64_t frame) {
     if (!cp_on()) return;
+    if (cam_have) {
+        if (cam_have_prev && memcmp(cam0, cam0_prev, 64)) {
+            cam_moved++;
+            if (!memcmp(cam180, cam0, 64)) cam_same_now++;
+            else if (!memcmp(cam180, cam0_prev, 64)) cam_same_prev++;
+            else cam_neither++;
+        }
+        memcpy(cam0_prev, cam0, 64), cam_have_prev = 1, cam_have = 0;
+    }
+    if (frame && frame % 600 == 0) {
+        fc_report(frame, shown ? vk_texture_get(shown) : NULL);
+        rt_log("cam_probe: c5 +0x180 in the %llu frames the camera moved: this frame's +0 %llu, last frame's +0 %llu, neither %llu",
+               (unsigned long long)cam_moved, (unsigned long long)cam_same_now, (unsigned long long)cam_same_prev,
+               (unsigned long long)cam_neither);
+        cam_moved = cam_same_now = cam_same_prev = cam_neither = 0;
+    }
+    fc_n = 0, fc_cur = -1;
     for (int e = 0; e < cp_n; e++) {
         typeof(CP[0]) *c = &CP[e];
         if (!c->has_first) continue;
@@ -1563,6 +1649,12 @@ static struct {
 
 static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
                             VkDescriptorImageInfo *out) {
+    if (fc_cur >= 0 && h && !storage && FC[fc_cur].nsrc < 4) {   // TOTK_CAM_PROBE: the first 4 textures this draw samples
+        const VkTexImage *im = vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
+        int dup = !im;
+        for (uint32_t i = 0; i < FC[fc_cur].nsrc; i++) dup |= FC[fc_cur].src[i] == im;
+        if (!dup) FC[fc_cur].src[FC[fc_cur].nsrc++] = im;
+    }
     if (fs_desc && h) {   // TOTK_SKIP_FS: what the named shader's draws sample (texture lock held)
         view_t v;
         int hv;
@@ -2797,7 +2889,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (!vs || (has_fs && !fs)) return skip_note(SK_SHADER_FAIL);
     if (fs && shader_skipped(fs, &vk_exec_last_fs)) return 0;
     vk_exec_hazard_draw(ex, vs, fs);   // barrier tracking: may restart the pass behind a full barrier
-    if (cp_on()) cp_draw(ex, vs);      // KarPur TOTK_CAM_PROBE (diagnostic)
+    if (cp_on()) cp_draw(ex, vs, fs);  // KarPur TOTK_CAM_PROBE (diagnostic)
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
@@ -3132,6 +3224,7 @@ void vk_exec_dispatch_report(uint64_t a, uint64_t n) {
 }
 
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
+    fc_cur = -1;   // (TOTK_CAM_PROBE: a dispatch's textures are not a draw's)
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     cb_res(ex);
@@ -3160,6 +3253,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
 // DispatchComputeIndirect: vkCmdDispatchIndirect from the pool buffer. The shader reads the group counts from c0 0x200,
 // so they are copied there on the GPU, into a c0 range no other dispatch uses, before the dispatch.
 static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
+    fc_cur = -1;   // (TOTK_CAM_PROBE, as op_dispatch)
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     VkMemSpan ip;
     if (!vk_mem_resolve(d->ind, sizeof(VkDispatchIndirectCommand), &ip) || ip.offset % 4)

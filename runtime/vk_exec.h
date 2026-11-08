@@ -181,7 +181,7 @@ void vk_exec_hazard_draw(VkExec *ex, const GfxShader *vs, const GfxShader *fs); 
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
 uint64_t vk_exec_recording_fence(void);                        // fence of the submission this thread records, else 0
 void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
-void vk_cam_probe_frame(uint64_t frame);   // vk_exec_draw.c, KarPur TOTK_CAM_PROBE=1: camera matrix candidates
+void vk_cam_probe_frame(const tex_t *shown, uint64_t frame);   // vk_exec_draw.c, KarPur TOTK_CAM_PROBE=1: camera matrix candidates
 
 // TOTK_DUMP=<frame> (vk_dump.c): between presents frame-1 and frame, every pass's targets and every dispatch's storage
 // images are copied out and written as PNGs to TOTK_DUMP_DIR (default "dump"), with passes.txt (targets, pipelines,
