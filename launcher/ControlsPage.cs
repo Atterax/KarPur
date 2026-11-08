@@ -40,7 +40,7 @@ partial class MainForm
     readonly Label deadzoneValue = Theme.Label(""), mouseSensValue = Theme.Label(""), rumbleValue = Theme.Label("");
     readonly CheckBox motion = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Motion controls (gyro)", BackColor = Theme.Card };
     readonly CheckBox rumbleTriggers = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Rumble in the triggers too", BackColor = Theme.Card };
-    readonly ComboBox[] keyBoxes = new ComboBox[Actions.Length];
+    readonly KeyButton[] keyButtons = new KeyButton[Actions.Length];
     readonly Button saveControls = Theme.Button("Save controls", true, "");
     readonly Button defaultKeys = Theme.Button("Default keys", glyph: "");
     readonly Label controlsNote = Theme.Label("", 9.5f, muted: true);
@@ -61,6 +61,7 @@ partial class MainForm
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Fill(padLayout, PadLayouts);
+        padLayout.Width = 360;
         SettingRow(grid, "Controller layout", padLayout);
         SettingRow(grid, "Stick deadzone", Slider(deadzone, deadzoneValue));
         SettingRow(grid, "Mouse sensitivity", Slider(mouseSens, mouseSensValue));
@@ -71,22 +72,55 @@ partial class MainForm
         mouseSens.ValueChanged += (_, _) => mouseSensValue.Text = (mouseSens.Value / 10.0).ToString("0.0");
         rumble.ValueChanged += (_, _) => rumbleValue.Text = $"{rumble.Value} %";
 
-        var keys = Grid(2);
-        keys.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        keys.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        // the keys in four groups, two side by side: label and key button per row
+        var keys = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, BackColor = Theme.Card };
+        keys.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        keys.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        (string Title, string[] Actions)[] groups =
+        {
+            ("Move", new[] { "LSTICK_UP", "LSTICK_LEFT", "LSTICK_DOWN", "LSTICK_RIGHT" }),
+            ("Camera", new[] { "RSTICK_UP", "RSTICK_LEFT", "RSTICK_DOWN", "RSTICK_RIGHT" }),
+            ("Buttons", new[] { "A", "B", "X", "Y", "L", "R", "ZL", "ZR", "LCLICK", "RCLICK" }),
+            ("D-pad and menu", new[] { "UP", "LEFT", "DOWN", "RIGHT", "PLUS", "MINUS" }),
+        };
         for (int i = 0; i < Actions.Length; i++)
         {
-            var box = Combo();
-            box.Width = 240;
-            var items = new List<(string, string)> { ("default", $"Default ({Actions[i].Default})"), ("none", "None") };
-            items.AddRange(KeyNames.Select(k => (k, k)));
-            Fill(box, items.ToArray());
-            keyBoxes[i] = box;
-            SettingRow(keys, Actions[i].Name, box);
+            int idx = i;
+            keyButtons[i] = new KeyButton(Actions[i].Default);
+            keyButtons[i].KeyChosen += (_, _) => controlsNote.Text = "Press Save controls to keep it.";
         }
+        Control Group((string Title, string[] Actions) g)
+        {
+            var t = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, BackColor = Theme.Card, Dock = DockStyle.Top, Margin = new Padding(0, 0, 24, 12) };
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            var title = Theme.Label(g.Title, 10.5f, style: FontStyle.Bold);
+            title.Margin = new Padding(0, 4, 0, 6);
+            t.Controls.Add(title, 0, 0);
+            t.SetColumnSpan(title, 2);
+            int row = 1;
+            foreach (string a in g.Actions)
+            {
+                int i = Array.FindIndex(Actions, x => x.Action == a);
+                var l = Theme.Label(Actions[i].Name);
+                l.Margin = new Padding(0, 11, 16, 0);
+                l.MinimumSize = new Size(150, 0);
+                t.Controls.Add(l, 0, row);
+                t.Controls.Add(keyButtons[i], 1, row);
+                row++;
+            }
+            return t;
+        }
+        keys.Controls.Add(Group(groups[0]), 0, 0);
+        keys.Controls.Add(Group(groups[1]), 1, 0);
+        keys.Controls.Add(Group(groups[2]), 0, 1);
+        keys.Controls.Add(Group(groups[3]), 1, 1);
         var keysTitle = Theme.Label("Keyboard and mouse", 12f, style: FontStyle.Bold);
         keysTitle.Dock = DockStyle.Top;
-        keysTitle.Padding = new Padding(0, 0, 0, 8);
+        keysTitle.Padding = new Padding(0, 0, 0, 4);
+        var keysHint = Theme.Label("Click a key, then press the key or mouse button you want. Esc cancels; right-click for Default or None.", 9.5f, muted: true);
+        keysHint.Dock = DockStyle.Top;
+        keysHint.Padding = new Padding(0, 0, 0, 10);
 
         var bottom = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = Theme.Back };
         controlsNote.Margin = new Padding(6, 10, 0, 0);
@@ -94,12 +128,12 @@ partial class MainForm
         bottom.Controls.Add(defaultKeys);
         bottom.Controls.Add(controlsNote);
         saveControls.Click += (_, _) => SaveControls();
-        defaultKeys.Click += (_, _) => { foreach (var b in keyBoxes) Select(b, "default", "default"); controlsNote.Text = "Press Save controls to keep it."; };
+        defaultKeys.Click += (_, _) => { foreach (var b in keyButtons) b.Key = "default"; controlsNote.Text = "Press Save controls to keep it."; };
 
         page.Controls.Add(bottom);
         page.Controls.Add(Spacer(14));
         page.Controls.Add(CardOf(keys));
-        page.Controls.Add(Spacer(6));
+        page.Controls.Add(keysHint);
         page.Controls.Add(keysTitle);
         page.Controls.Add(Spacer(14));
         page.Controls.Add(CardOf(grid));
@@ -136,10 +170,10 @@ partial class MainForm
         mouseSensValue.Text = (mouseSens.Value / 10.0).ToString("0.0");
         rumbleValue.Text = $"{rumble.Value} %";
         for (int i = 0; i < Actions.Length; i++)
-            Select(keyBoxes[i], built ? KeyOf(ini.Get("bind_" + Actions[i].Action.ToLowerInvariant())) : null, "default");
+            keyButtons[i].Key = built ? KeyOf(ini.Get("bind_" + Actions[i].Action.ToLowerInvariant())) : "default";
         foreach (Control c in new Control[] { padLayout, deadzone, mouseSens, rumble, rumbleTriggers, motion, saveControls, defaultKeys })
             c.Enabled = built;
-        foreach (var b in keyBoxes) b.Enabled = built;
+        foreach (var b in keyButtons) b.Enabled = built;
         controlsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
     }
 
@@ -156,7 +190,7 @@ partial class MainForm
             ini.Set("input", "motion", motion.Checked ? "1" : "0");
             for (int i = 0; i < Actions.Length; i++)
             {
-                string k = Value(keyBoxes[i]);
+                string k = keyButtons[i].Key;
                 // the gamepad keeps its own buttons; the stick directions take keys only
                 bool stick = Actions[i].Action.Contains("STICK_");
                 string pad = stick ? "" : ", pad:default";

@@ -199,6 +199,7 @@ partial class MainForm : Form
     {
         page.Dock = DockStyle.Fill;
         if (page is ScrollableControl sc) sc.AutoScroll = true;   // pages taller than the window scroll
+        DarkScroll.Apply(page);   // ... with Windows' dark scrollbars
         page.Visible = false;
         content.Controls.Add(page);
         pages[name] = (pages[name].Nav, page);
@@ -239,11 +240,7 @@ partial class MainForm : Form
         return p;
     }
 
-    static ComboBox Combo() => new()
-    {
-        DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, BackColor = Theme.Field, ForeColor = Theme.Text,
-        Width = 320, Font = new Font("Segoe UI", 10f),
-    };
+    static ComboBox Combo() => new RoundCombo { Width = 320 };   // rounded, dark (Controls2.cs)
 
     Control SetupPage()
     {
