@@ -26,7 +26,9 @@ class MainForm : Form
     // Settings
     readonly CheckBox fullscreen = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
     readonly ComboBox windowSize = Combo(), fpsLimit = Combo(), present = Combo(), upscaler = Combo(), overlay = Combo(),
-                      population = Combo(), colour = Combo();
+                      population = Combo(), colour = Combo(), antiAliasing = Combo();
+    readonly Button addDlss = Theme.Button("Add nvngx_dlss.dll", glyph: Theme.GlyphFolder);
+    readonly Label dlssNote = Theme.Label("", 9.5f, muted: true);
     readonly TrackBar sharpness = new() { Minimum = 0, Maximum = 100, TickFrequency = 10, Width = 280, BackColor = Theme.Card };
     readonly Label sharpnessValue = Theme.Label("80");
     readonly Label settingsNote = Theme.Label("", 9.5f, muted: true);
@@ -60,6 +62,7 @@ class MainForm : Form
     static readonly (string, string)[] Presents =
         { ("mailbox", "Smooth, no tearing (mailbox)"), ("fifo", "V-Sync (fifo)"), ("immediate", "Off, lowest latency (immediate)") };
     static readonly (string, string)[] Upscalers = { ("fsr", "AMD FSR"), ("bilinear", "Bilinear") };
+    static readonly (string, string)[] AntiAliasings = { ("0", "Game's own"), ("1", "NVIDIA DLAA (RTX)") };
     static readonly (string, string)[] Overlays = { ("off", "Off"), ("fps", "FPS only"), ("full", "Full") };
     static readonly (string, string)[] Populations =
         { ("switch", "Switch (15, default)"), ("switch2", "Switch 2 (40)"), ("enhanced", "Enhanced (80)"),
@@ -97,6 +100,8 @@ class MainForm : Form
         targetBox.TextChanged += (_, _) => Refresh_();
         sharpness.ValueChanged += (_, _) => sharpnessValue.Text = sharpness.Value.ToString();
         saveSettings.Click += (_, _) => SaveGameSettings();
+        addDlss.Click += (_, _) => AddDlss();
+        antiAliasing.SelectedIndexChanged += (_, _) => DlssStatus();
         colour.SelectedIndexChanged += (_, _) => { ApplyColour(); if (!loading) SaveSettings(); };
         checkUpdate.Click += async (_, _) => await CheckUpdate();
         installUpdate.Click += async (_, _) => await InstallUpdate();
@@ -258,6 +263,7 @@ class MainForm : Form
         Fill(fpsLimit, Fps);
         Fill(present, Presents);
         Fill(upscaler, Upscalers);
+        Fill(antiAliasing, AntiAliasings);
         Fill(overlay, Overlays);
         Fill(population, Populations);
         Fill(colour, Colours);
@@ -271,6 +277,15 @@ class MainForm : Form
         SettingRow(grid, "Frame sync", present);
         SettingRow(grid, "Upscaling", upscaler);
         SettingRow(grid, "Sharpness", sharp);
+        var aa = new FlowLayoutPanel { AutoSize = true, BackColor = Theme.Card, Margin = new Padding(0), WrapContents = false };
+        antiAliasing.Margin = new Padding(0, 3, 10, 0);
+        addDlss.Margin = new Padding(0);
+        aa.Controls.Add(antiAliasing);
+        aa.Controls.Add(addDlss);
+        SettingRow(grid, "Anti-aliasing", aa);
+        dlssNote.MaximumSize = new Size(560, 0);
+        dlssNote.AutoSize = true;
+        SettingRow(grid, "", dlssNote);
         SettingRow(grid, "Performance overlay", overlay);
         SettingRow(grid, "Wild Pokémon", population);
         var look = Grid(2);
@@ -581,12 +596,61 @@ class MainForm : Form
         Select(fpsLimit, built ? ini.Get("fps_limit") : null, "60");
         Select(present, built ? ini.Get("vk_present") : null, "mailbox");
         Select(upscaler, built ? ini.Get("upscaler") : null, "fsr");
+        Select(antiAliasing, built ? ini.Get("dlaa") : null, "0");
         Select(overlay, built ? ini.Get("perf_overlay") : null, "off");
         Select(population, built ? ini.Get("population") : null, "switch");
         sharpness.Value = int.TryParse(built ? ini.Get("sharpness") : null, out int s) ? Math.Clamp(s, 0, 100) : 80;
-        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, overlay, population, sharpness, saveSettings })
+        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, overlay, population, sharpness, saveSettings })
             c.Enabled = built;
         settingsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
+        DlssStatus();
+    }
+
+    // ---- NVIDIA DLAA: nvngx_dlss.dll is NVIDIA's and not part of KarPur; the player adds their own copy next to
+    // karpur.exe (from a game that ships it, or NVIDIA's DLSS SDK). The runtime loads it through the driver.
+
+    string DlssPath() => Path.Combine(Path.GetDirectoryName(Builder.Exe(targetBox.Text))!, "nvngx_dlss.dll");
+
+    void DlssStatus()
+    {
+        if (targetBox.Text == "" || !File.Exists(Builder.Exe(targetBox.Text))) { dlssNote.Text = ""; return; }
+        string dll = DlssPath();
+        if (File.Exists(dll))
+            dlssNote.Text = $"nvngx_dlss.dll {FileVersionInfo.GetVersionInfo(dll).FileVersion?.Replace(',', '.')} is in place. "
+                          + "DLAA smooths edges on NVIDIA RTX cards (about 1 ms per frame).";
+        else
+            dlssNote.Text = Value(antiAliasing) == "1"
+                ? "DLAA needs NVIDIA's nvngx_dlss.dll, which KarPur cannot ship: add your own copy (games with DLSS have it). "
+                  + "Without it the game starts with its own anti-aliasing."
+                : "NVIDIA DLAA needs an RTX card and NVIDIA's nvngx_dlss.dll (add your own copy).";
+    }
+
+    void AddDlss()
+    {
+        using var dlg = new OpenFileDialog { Title = "Choose nvngx_dlss.dll", Filter = "NVIDIA DLSS|nvngx_dlss.dll" };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            // a check against picking the wrong file, not a trust decision: the name in the Authenticode certificate
+            // (CreateFromSignedFile reads it without verifying the chain; .NET has no successor for signed files) and the
+            // file's own description; the NVIDIA driver loads and checks the DLL itself
+            string signer;
+#pragma warning disable SYSLIB0057
+            try { signer = System.Security.Cryptography.X509Certificates.X509Certificate.CreateFromSignedFile(dlg.FileName).Subject; }
+            catch { signer = ""; }
+#pragma warning restore SYSLIB0057
+            var info = FileVersionInfo.GetVersionInfo(dlg.FileName);
+            if (!signer.Contains("NVIDIA Corporation") || !(info.FileDescription ?? "").Contains("DLSS"))
+            {
+                dlssNote.Text = "That file is not NVIDIA's signed nvngx_dlss.dll.";
+                return;
+            }
+            File.Copy(dlg.FileName, DlssPath(), true);
+            Select(antiAliasing, "1", "0");
+            DlssStatus();
+            settingsNote.Text = "Press Save settings to use DLAA.";
+        }
+        catch (Exception e) { dlssNote.Text = "Could not copy it: " + e.Message; }
     }
 
     void SaveGameSettings()
@@ -599,6 +663,7 @@ class MainForm : Form
             ini.Set("frame rate", "fps_limit", Value(fpsLimit));
             ini.Set("display", "vk_present", Value(present));
             ini.Set("display", "upscaler", Value(upscaler));
+            ini.Set("display", "dlaa", Value(antiAliasing));
             ini.Set("display", "sharpness", sharpness.Value.ToString());
             ini.Set("display", "perf_overlay", Value(overlay));
             ini.Set("display", "population", Value(population));
