@@ -5,7 +5,7 @@ namespace KarPurLauncher;
 
 // The launcher window: a sidebar (name, version, Setup / Settings / Update, Play) and one page at a time. The paths and
 // the colour choice are remembered in %LOCALAPPDATA%\KarPur\launcher.json (paths only, never file contents).
-class MainForm : Form
+partial class MainForm : Form
 {
     // Setup
     readonly TextBox baseBox = Theme.TextBox(), updateBox = Theme.TextBox(), dlcBox = Theme.TextBox(),
@@ -99,6 +99,7 @@ class MainForm : Form
         Controls.Add(Sidebar());
         AddPage("Setup", SetupPage());
         AddPage("Settings", SettingsPage());
+        AddPage("Controls", ControlsPage());
         AddPage("Update", UpdatePage());
         AddPage("Feedback", FeedbackPage());
 
@@ -177,7 +178,7 @@ class MainForm : Form
         side.Controls.Add(title);
         side.Controls.Add(version);
         int y = 104;
-        foreach (var (name, glyph) in new[] { ("Setup", Theme.GlyphSetup), ("Settings", Theme.GlyphSettings), ("Update", Theme.GlyphUpdate), ("Feedback", "") })
+        foreach (var (name, glyph) in new[] { ("Setup", Theme.GlyphSetup), ("Settings", Theme.GlyphSettings), ("Controls", ""), ("Update", Theme.GlyphUpdate), ("Feedback", "") })
         {
             var b = new NavButton { Text = name, Glyph = glyph, Width = side.Width, Location = new Point(0, y) };
             b.Click += (_, _) => Show(name);
@@ -211,6 +212,7 @@ class MainForm : Form
             nav.Selected = key == name;
         }
         if (name == "Settings") LoadGameSettings();
+        if (name == "Controls") LoadControls();
         if (name == "Feedback") _ = FillFeedback();
     }
 

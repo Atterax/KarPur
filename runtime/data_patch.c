@@ -344,8 +344,11 @@ void data_patch_init(void) {
         if (fp) fputs("# double 1/30 found by TOTK_DATA_FIND (karpur); apply with TOTK_MOD_VALUES=game/data_find.txt\n", fp), fclose(fp);
         rt_log("data find: looking for double 1/30 in RomFS reads and Oodle decodes; lines go to game/data_find.txt");
     }
+    // The PC settings page in the game's main menu (in the downloadable-content button's place) only with TOTK_UI_PATCH=1
+    // or a list's path: off by default since 2026-11-08 - the maintainer wanted the game's DLC entry back, and the
+    // launcher has the settings now (F1 / Esc open the Controls page, ui/menu.cpp)
     const char *ui = cfg_get("TOTK_UI_PATCH");
-    int uis = !(ui && !strcmp(ui, "0"));
+    int uis = ui && *ui && strcmp(ui, "0");
     const char *level = cfg_value("TOTK_POPULATION");
     int wild = !strcmp(level, "switch2") ? 40 : !strcmp(level, "enhanced") ? 80 : !strcmp(level, "extreme") ? 120 : 0;
     if (wild) {

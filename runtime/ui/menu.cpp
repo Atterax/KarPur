@@ -93,8 +93,16 @@ static int g_failed_flag();
 extern "C" int menu_is_open(void) { return g_open.load(std::memory_order_relaxed); }
 static std::atomic<int> g_locked;
 extern "C" void menu_lock(void) { g_locked.store(1); }
+extern "C" int rt_knob(const char *name, const char *def);
+extern "C" void menu_open_controls(void);
+// F1 / Esc: the Controls page (key mapping, controller, rumble, mouse), the settings being the launcher's; TOTK_MENU_LOCK=0
+// opens the whole old menu instead
 extern "C" void menu_toggle(void) {
-    if (g_failed_flag() || (g_locked.load() && !menu_is_open())) return;
+    if (g_failed_flag()) return;
+    static int lock = -1;
+    if (lock < 0) lock = rt_knob("MENU_LOCK", "1");
+    if (lock) g_locked.store(1);
+    if (g_locked.load() && !menu_is_open()) { menu_open_controls(); return; }
     change_open(-1);
 }
 
