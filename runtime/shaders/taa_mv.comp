@@ -1,0 +1,24 @@
+// KarPur temporal anti-aliasing (vk_taa.c): the camera's motion vectors from the scene depth. Each pixel's point is
+// rebuilt from its depth and moved into the last frame's view: reproj = last frame's view-projection x the inverse of
+// this frame's (both unjittered). The result is in pixels, current to previous, as DLSS takes it; 0 where the point lies
+// behind the last frame's camera. As ZA Recomp's fsr2_mv.frag (MIT).
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D dep;
+layout(set = 0, binding = 1, rg16f) uniform writeonly image2D mv;
+// jit.xy: the jitter in pixels; jit.z: 1 when clip-space depth is -w..w (the depth buffer holds z/w * 0.5 + 0.5).
+// sz: 1/width, 1/height, width, height.
+layout(push_constant) uniform P { mat4 reproj; vec4 jit; vec4 sz; } u;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(u.sz.z) || p.y >= int(u.sz.w)) return;
+    float d = texelFetch(dep, p, 0).r;
+    float z = u.jit.z > 0.5 ? d * 2.0 - 1.0 : d;
+    vec2 uv = (vec2(p) + 0.5 - u.jit.xy) * u.sz.xy;
+    // NDC +y is row 0 (the replay's viewports are y-flipped: vk_pipeline.c)
+    vec4 c = u.reproj * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
+    vec2 puv = vec2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
+    vec2 m = c.w > 0.0 ? (puv - uv) * u.sz.zw : vec2(0.0);
+    imageStore(mv, p, vec4(m, 0.0, 0.0));
+}

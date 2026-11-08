@@ -14,6 +14,7 @@ typedef struct {
     uint32_t w, h, ow, oh;
     float jx, jy, dt_ms;
     int reset;                           // the history does not apply (a cut, a new size)
+    int depth_inv;                       // reversed depth (near at 1); read when the feature is made
 } VkTaaFrame;
 
 int vk_dlaa_wanted(void);                // TOTK_DLAA, read once (NGX needs its extensions at instance and device creation)

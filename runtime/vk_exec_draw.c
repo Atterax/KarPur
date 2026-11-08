@@ -31,6 +31,7 @@
 #include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_taa.h"
 #include "platform/platform.h"
 
 #define MAX_BINDINGS 128
@@ -2398,6 +2399,7 @@ static void record_fixed(VkExec *ex) {
         if (ex->has_vp) x = ex->vp[0][0], y = ex->vp[0][1], w = ex->vp[0][2], h = ex->vp[0][3];
         if (w < 1) w = 1;
         if (h < 1) h = 1;
+        if (vk_taa_on()) vk_taa_viewport(ex, &x, &y);   // KarPur TOTK_DLAA: the sub-pixel jitter of scene passes
         VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
         vkCmdSetViewportWithCount(cb, 1, &v);
         ex->recorded++;
@@ -2890,6 +2892,14 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (fs && shader_skipped(fs, &vk_exec_last_fs)) return 0;
     vk_exec_hazard_draw(ex, vs, fs);   // barrier tracking: may restart the pass behind a full barrier
     if (cp_on()) cp_draw(ex, vs, fs);  // KarPur TOTK_CAM_PROBE (diagnostic)
+    if (vk_taa_on() && vk_taa_need_scene() && ex->depth.image && ex->color[3].image) {   // KarPur TOTK_DLAA: the camera
+        const p_bind_buf *u = &ex->ubo[NVN_STAGE_VS][2];   // c5: the view-projection at +0, the projection at +0x80
+        float m[32];
+        VkMemSpan sp;
+        if (u->addr && u->size >= 0xc0 && (upd_read(ex, u->addr, m, 64) || (vk_mem_resolve(u->addr, 64, &sp) && memcpy(m, (const void *)(uintptr_t)u->addr, 64))) &&
+            (upd_read(ex, u->addr + 0x80, m + 16, 64) || (vk_mem_resolve(u->addr + 0x80, 64, &sp) && memcpy(m + 16, (const void *)(uintptr_t)(u->addr + 0x80), 64))))
+            vk_taa_note_scene(ex, m, m + 16);
+    }
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
@@ -3400,8 +3410,13 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         break;
     }
     case OP_UPDATE_UB: op_update_ub(ex, payload); break;
-    case OP_DRAW: op_draw(ex, payload); break;
-    case OP_DRAW_IDX: op_draw_idx(ex, payload); break;
+    case OP_DRAW: case OP_DRAW_IDX: {
+        uint64_t before = vk_exec_frame.draws;
+        if (op == OP_DRAW) op_draw(ex, payload);
+        else op_draw_idx(ex, payload);
+        if (vk_exec_frame.draws != before && vk_taa_on()) vk_taa_after_draw(ex, vk_exec_last_fs);   // KarPur TOTK_DLAA
+        break;
+    }
     case OP_DISPATCH: op_dispatch(ex, payload); break;
     case OP_DRAW_IDX_IND: op_draw_idx_ind(ex, payload); break;
     case OP_DISPATCH_IND: op_dispatch_ind(ex, payload); break;

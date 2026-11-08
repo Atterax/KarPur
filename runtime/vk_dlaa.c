@@ -16,6 +16,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "vk.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -30,8 +31,8 @@ typedef int NgxResult;  // NVSDK_NGX_Result: 1 success, 0xBAD00000 | n failures
 #define NGX_FEATURE_SUPERSAMPLING 1
 #define NGX_PERFQ_MAXQUALITY 2
 #define NGX_PERFQ_DLAA 5
-// NVSDK_NGX_DLSS_Feature_Flags: motion vectors at the render size; reversed depth (near at 1) with TOTK_DLAA_DEPTH_INV=1
-// (Violet's not checked yet); the picture is tone-mapped already (no IsHDR, no auto exposure).
+// NVSDK_NGX_DLSS_Feature_Flags: motion vectors at the render size; reversed depth (near at 1) as vk_taa.c finds it from
+// the projection; the picture is tone-mapped already (no IsHDR, no auto exposure).
 #define NGX_FLAG_MV_LOWRES (1 << 1)
 #define NGX_FLAG_DEPTH_INVERTED (1 << 3)
 
@@ -237,7 +238,9 @@ int vk_dlaa_record(VkDevice dev, VkCommandBuffer cmd, const VkTaaFrame *f) {
     NgxParam *p = N.params;
     int reset = f->reset;
     if (N.feat && (N.fw != f->w || N.fh != f->h)) {   // another size: a new feature
+        vk_queue_lock();   // vkDeviceWaitIdle needs the queue externally synchronized
         vkDeviceWaitIdle(dev);
+        vk_queue_unlock();
         N.release(N.feat);
         N.feat = NULL;
     }
@@ -248,7 +251,7 @@ int vk_dlaa_record(VkDevice dev, VkCommandBuffer cmd, const VkTaaFrame *f) {
         p_setu(p, "Height", f->h);
         p_setu(p, "OutWidth", f->ow);
         p_setu(p, "OutHeight", f->oh);
-        p_seti(p, "DLSS.Feature.Create.Flags", NGX_FLAG_MV_LOWRES | (rt_knob("DLAA_DEPTH_INV", "0") ? NGX_FLAG_DEPTH_INVERTED : 0));
+        p_seti(p, "DLSS.Feature.Create.Flags", NGX_FLAG_MV_LOWRES | (f->depth_inv ? NGX_FLAG_DEPTH_INVERTED : 0));
         p_seti(p, "DLSS.Enable.Output.Subrects", 0);
         // the model: TOTK_DLAA_PRESET=<n> (NVSDK_NGX_DLSS_Hint_Render_Preset: 0 the DLL's default, 6 F, 10 J, 11 K
         // transformer), as a hint for every quality value; default K (an older DLSS ignores what it does not know)
