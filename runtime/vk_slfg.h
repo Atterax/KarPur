@@ -17,6 +17,7 @@ extern "C" {
 #endif
 
 int slfg_active(void);   // Streamline was loaded and initialised (before the instance is made)
+int slfg_manual(void);   // ... in its manual hooking mode (TOTK_FRAMEGEN_MODE=manual)
 // Before vkCreateInstance: loads and initialises Streamline when TOTK_FRAMEGEN asks for it (logged)
 void slfg_start(void);
 // What the loaded features need, added to KarPur's lists: instance extensions; device extensions (those the device has);
@@ -27,7 +28,7 @@ void slfg_extra_queues(uint32_t *graphics, uint32_t *compute);
 // After the device is made: slSetVulkanInfo (Streamline's queues start at these family / index pairs), the swapchain
 // proxies, and whether DLSS-G can run here (logged)
 void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, uint32_t gfx_family, uint32_t gfx_index,
-                       uint32_t compute_family, uint32_t compute_index);
+                       uint32_t compute_family, uint32_t compute_index, uint32_t optical_flow_family);   // UINT32_MAX: none
 void slfg_shutdown(void);   // before the device and instance go
 
 // The functions Streamline intercepts: its proxies while active, Vulkan's own otherwise

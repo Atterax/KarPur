@@ -654,7 +654,7 @@ static void foreign_fault_note(EXCEPTION_POINTERS *ep, const char *what, uintptr
             fprintf(stderr, "[host]   called from karpur+%#llx\n", (unsigned long long)((uintptr_t)f[i] - (uintptr_t)self->lpBaseOfDll)), k++;
     // KarPur: a call through a null pointer (rip 0) leaves no frame to walk: the first 24 stack words that point into
     // a loaded module (return addresses, most likely), with the module's name and offset (Streamline, 2026-11-08)
-    if (rip < 0x10000) {
+    if (rip < 0x10000 || getenv("TOTK_FAULT_STACK")) {   // (TOTK_FAULT_STACK=1: for every foreign fault)
         const uintptr_t *sp = (const uintptr_t *)(uintptr_t)ep->ContextRecord->Rsp;
         for (int i = 0, k = 0; i < 64 && k < 24; i++) {
             HMODULE m = NULL;

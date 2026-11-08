@@ -208,6 +208,7 @@ typedef struct {
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
+    VkPhysicalDeviceOpticalFlowFeaturesNV of;   // KarPur TOTK_FRAMEGEN: DLSS-G's native optical flow
 } FeatureChain;
 
 static void rebar_report(int has_placed);
@@ -270,6 +271,10 @@ static int create_device(void) {
 
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
     // stays on: guest shaders index constant buffers freely and out-of-range reads must stay harmless).
+    // KarPur TOTK_FRAMEGEN: DLSS-G's optical flow runs natively on a queue of its own (in Streamline's interop mode,
+    // without it, the driver faulted while DLSS-G cloned the swapchain's images, 2026-11-08)
+    int want_of = slfg_manual() && has_ext(ep, ne, VK_NV_OPTICAL_FLOW_EXTENSION_NAME);
+    if (want_of) CHAIN(of, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
     vk_caps_driver(g_vk.phys);
     vk_caps_features(&c->f2.features);
@@ -321,7 +326,7 @@ static int create_device(void) {
     uint32_t gfx_count = 1 + sl_gfx + (comp_family == g_vk.gfx_family ? sl_comp : 0);
     if (gfx_count > qfp[g_vk.gfx_family].queueCount) gfx_count = qfp[g_vk.gfx_family].queueCount;
     if (comp_family == g_vk.gfx_family) comp_index = 1 + sl_gfx;
-    VkDeviceQueueCreateInfo qi[3] = {
+    VkDeviceQueueCreateInfo qi[4] = {
         {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = gfx_count,
          .pQueuePriorities = prio}};
     uint32_t nqi = 1;
@@ -330,11 +335,29 @@ static int create_device(void) {
                                           .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = prio};
         nqi = 2;
     }
+    uint32_t of_family = UINT32_MAX;   // the first family with optical flow and neither graphics nor compute
+    for (uint32_t i = 0; want_of && c->of.opticalFlow && i < nqf; i++)
+        if ((qfp[i].queueFlags & VK_QUEUE_OPTICAL_FLOW_BIT_NV) && !(qfp[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
+            of_family = i;
+            break;
+        }
+    if (want_of) {   // (logged: which families the GPU has and what they can do)
+        char fl[256];
+        size_t o = 0;
+        for (uint32_t i = 0; i < nqf && o < sizeof fl - 24; i++)
+            o += (size_t)snprintf(fl + o, sizeof fl - o, " %u:%#x*%u", i, (unsigned)qfp[i].queueFlags, qfp[i].queueCount);
+        rt_log("vk: queue families (index:flags*count):%s; optical flow feature %d, family %d", fl, (int)c->of.opticalFlow,
+               of_family == UINT32_MAX ? -1 : (int)of_family);
+    }
+    if (of_family == UINT32_MAX) c->of.opticalFlow = VK_FALSE;
     if (sl_comp && comp_family != g_vk.gfx_family) {
         uint32_t n = sl_comp < qfp[comp_family].queueCount ? sl_comp : qfp[comp_family].queueCount;
         qi[nqi++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                                               .queueFamilyIndex = comp_family, .queueCount = n, .pQueuePriorities = prio};
     }
+    if (of_family != UINT32_MAX)
+        qi[nqi++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                              .queueFamilyIndex = of_family, .queueCount = 1, .pQueuePriorities = prio};
     free(qfp);
     vk_dlaa_device_exts(ep, ne, ext, &n_ext, 48);   // KarPur TOTK_DLAA: what NGX needs
     slfg_device_exts(ep, ne, ext, &n_ext, 48);      // KarPur TOTK_FRAMEGEN: what Streamline's features need
@@ -360,7 +383,7 @@ static int create_device(void) {
                                  .pDeviceMemoryCallbacks = vk_headroom_callbacks()};
     if ((r = vmaCreateAllocator(&ai, &g_vk.vma)) != VK_SUCCESS) { rt_log("vk: vmaCreateAllocator failed (%d)", (int)r); return 0; }
     vk_dlaa_init(g_vk.instance, g_vk.phys, g_vk.device);   // KarPur TOTK_DLAA (logged)
-    slfg_device_ready(g_vk.instance, g_vk.phys, g_vk.device, g_vk.gfx_family, 1, comp_family, comp_index);   // KarPur TOTK_FRAMEGEN
+    slfg_device_ready(g_vk.instance, g_vk.phys, g_vk.device, g_vk.gfx_family, 1, comp_family, comp_index, of_family);   // KarPur TOTK_FRAMEGEN
 
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};

@@ -30,6 +30,7 @@ extern "C" {
 namespace {
 struct {
     int tried, active, device_ok;
+    int iat;   // the interposer mode: karpur.exe's vulkan-1.dll imports go to sl.interposer.dll
     HMODULE mod;
     PFN_vkGetInstanceProcAddr gipa;   // the interposer's
     PFN_vkGetDeviceProcAddr gdpa;
@@ -87,6 +88,38 @@ sl::Result slGetFeatureFunction(sl::Feature feature, const char *name, void *&fn
 }
 
 extern "C" int slfg_active(void) { return S.active; }
+extern "C" int slfg_manual(void) { return S.active && !S.iat; }
+
+// karpur.exe's imports from vulkan-1.dll pointed at sl.interposer.dll's functions of the same name (it exports the
+// whole API; what it does not intercept it forwards to vulkan-1.dll). This is Streamline's standard integration, an
+// application linking sl.interposer instead of vulkan-1, without relinking: Streamline then sees vkCreateInstance,
+// vkCreateDevice, the command buffers and the swapchain itself. Returns the number of imports redirected.
+static int patch_imports(HMODULE interposer) {
+    uint8_t *base = (uint8_t *)GetModuleHandleW(NULL);
+    auto dos = (IMAGE_DOS_HEADER *)base;
+    auto nt = (IMAGE_NT_HEADERS64 *)(base + dos->e_lfanew);
+    IMAGE_DATA_DIRECTORY dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!dir.VirtualAddress) return 0;
+    int n = 0, missing = 0;
+    for (auto d = (IMAGE_IMPORT_DESCRIPTOR *)(base + dir.VirtualAddress); d->Name; d++) {
+        if (_stricmp((const char *)(base + d->Name), "vulkan-1.dll")) continue;
+        auto names = (IMAGE_THUNK_DATA64 *)(base + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk));
+        auto iat = (IMAGE_THUNK_DATA64 *)(base + d->FirstThunk);
+        for (; names->u1.AddressOfData; names++, iat++) {
+            if (IMAGE_SNAP_BY_ORDINAL64(names->u1.Ordinal)) continue;
+            const char *fn = (const char *)((IMAGE_IMPORT_BY_NAME *)(base + names->u1.AddressOfData))->Name;
+            FARPROC p = GetProcAddress(interposer, fn);
+            if (!p) { missing++; continue; }
+            DWORD old;
+            if (!VirtualProtect(&iat->u1.Function, sizeof iat->u1.Function, PAGE_READWRITE, &old)) continue;
+            iat->u1.Function = (ULONGLONG)(uintptr_t)p;
+            VirtualProtect(&iat->u1.Function, sizeof iat->u1.Function, old, &old);
+            n++;
+        }
+    }
+    rt_log("framegen: %d vulkan-1.dll imports now go through sl.interposer.dll (%d it does not export stay)", n, missing);
+    return n;
+}
 
 extern "C" void slfg_start(void) {
     if (S.tried) return;
@@ -104,6 +137,15 @@ extern "C" void slfg_start(void) {
             rt_log("framegen: %ls is not next to karpur.exe: frame generation off", n);
             return;
         }
+    }
+    // OBS Studio's game capture layers (VK_LAYER_OBS_HOOK, VK_LAYER_WEOBS_HOOK, implicit: in every Vulkan process where
+    // OBS is installed) faulted in the driver when DLSS-G cloned the swapchain's images (2026-11-08: the fault's stack
+    // ran through graphics-hook64.dll and we-graphics-hook64.dll). Their own switch turns them off for this process only;
+    // OBS's window or display capture still works. TOTK_FRAMEGEN_OBS=1 keeps them.
+    if (!rt_knob("FRAMEGEN_OBS", "0")) {
+        SetEnvironmentVariableA("DISABLE_VULKAN_OBS_CAPTURE", "1");
+        _putenv("DISABLE_VULKAN_OBS_CAPTURE=1");
+        rt_log("framegen: OBS's Vulkan capture layers off for this process (they break DLSS-G's swapchain)");
     }
     swprintf(path, MAX_PATH + 32, L"%lssl.interposer.dll", dir);
     S.mod = LoadLibraryW(path);
@@ -138,7 +180,7 @@ extern "C" void slfg_start(void) {
     paths[0] = plugin_dir;
     sl::Preferences p{};
     p.showConsole = false;
-    p.logLevel = sl::LogLevel::eDefault;
+    p.logLevel = rt_knob("FRAMEGEN_VERBOSE", "0") ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;   // (diagnostic)
     p.pathsToPlugins = paths;
     p.numPathsToPlugins = 1;
     // NGX needs a writable data folder: without one its feature query failed with 0xbad00005 (invalid parameter) and
@@ -146,8 +188,14 @@ extern "C" void slfg_start(void) {
     p.pathToLogsAndData = plugin_dir;
     p.logMessageCallback = log_cb;
     // manual hooking; frame-based tagging; no over-the-air downloads; no debug text
-    p.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseManualHooking |
-              sl::PreferenceFlags::eUseFrameBasedResourceTagging | sl::PreferenceFlags::eDisableDebugText;
+    // TOTK_FRAMEGEN_MODE: interposer (default; Streamline's standard integration) or manual (its manual hooking: in
+    // that mode sl.common reported its command buffer hooks unsupported and the driver faulted while DLSS-G cloned the
+    // swapchain's images, 2026-11-08)
+    const char *mode = cfg_get("TOTK_FRAMEGEN_MODE");
+    S.iat = !(mode && !strcmp(mode, "manual"));
+    p.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseFrameBasedResourceTagging |
+              sl::PreferenceFlags::eDisableDebugText;
+    if (!S.iat) p.flags |= sl::PreferenceFlags::eUseManualHooking;
     // TOTK_FRAMEGEN_FEATURES=<n>: load only the first n of DLSS-G, Reflex, PCL (diagnostic; default all 3)
     const char *nf = cfg_get("TOTK_FRAMEGEN_FEATURES");
     p.featuresToLoad = features;
@@ -161,16 +209,21 @@ extern "C" void slfg_start(void) {
         rt_log("framegen: slInit failed (%d, %s): off", (int)r, result_name(r));
         return;
     }
+    if (S.iat && !patch_imports(S.mod)) {
+        rt_log("framegen: no vulkan-1.dll imports to redirect: off");
+        S.shutdown();
+        return;
+    }
     S.active = 1;
-    rt_log("framegen: Streamline initialised (SDK %d.%d.%d headers); it creates the Vulkan instance and device",
-           SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH);
+    rt_log("framegen: Streamline initialised (SDK %d.%d.%d headers), %s", SL_VERSION_MAJOR, SL_VERSION_MINOR, SL_VERSION_PATCH,
+           S.iat ? "as the Vulkan loader (interposer mode)" : "manual hooking");
 }
 
 // The requirements of the loaded features (DLSS-G, Reflex, PCL; a feature Streamline dropped answers with an error)
 static sl::FeatureRequirements g_reqs[3];
 static int g_reqs_ok[3], g_reqs_read;
 static void read_reqs(void) {
-    if (g_reqs_read || !S.active || !S.reqs) return;
+    if (g_reqs_read || !S.active || !S.reqs || S.iat) return;
     g_reqs_read = 1;
     static const sl::Feature f[3] = {sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
     for (int i = 0; i < 3; i++) g_reqs_ok[i] = S.reqs(f[i], g_reqs[i]) == sl::Result::eOk;
@@ -210,27 +263,56 @@ extern "C" void slfg_device_exts(const VkExtensionProperties *have, uint32_t nha
 extern "C" void slfg_extra_queues(uint32_t *graphics, uint32_t *compute) {
     *graphics = *compute = 0;
     read_reqs();
+    static const char *const name[3] = {"DLSS-G", "Reflex", "PCL"};
     for (int i = 0; i < 3; i++)
-        if (g_reqs_ok[i]) *graphics += g_reqs[i].vkNumGraphicsQueuesRequired, *compute += g_reqs[i].vkNumComputeQueuesRequired;
+        if (g_reqs_ok[i]) {
+            *graphics += g_reqs[i].vkNumGraphicsQueuesRequired, *compute += g_reqs[i].vkNumComputeQueuesRequired;
+            rt_log("framegen: %s asks for %u graphics, %u compute and %u optical flow queues, %u device and %u instance extensions",
+                   name[i], g_reqs[i].vkNumGraphicsQueuesRequired, g_reqs[i].vkNumComputeQueuesRequired,
+                   g_reqs[i].vkNumOpticalFlowQueuesRequired, g_reqs[i].vkNumDeviceExtensions, g_reqs[i].vkNumInstanceExtensions);
+            char line[1024];
+            size_t o = 0;
+            line[0] = 0;
+            for (uint32_t k = 0; k < g_reqs[i].vkNumDeviceExtensions && o < sizeof line - 80; k++)
+                o += snprintf(line + o, sizeof line - o, " %s", g_reqs[i].vkDeviceExtensions[k]);
+            for (uint32_t k = 0; k < g_reqs[i].vkNumInstanceExtensions && o < sizeof line - 80; k++)
+                o += snprintf(line + o, sizeof line - o, " (instance) %s", g_reqs[i].vkInstanceExtensions[k]);
+            for (uint32_t k = 0; k < g_reqs[i].vkNumFeatures12 && o < sizeof line - 80; k++)
+                o += snprintf(line + o, sizeof line - o, " (1.2) %s", g_reqs[i].vkFeatures12[k]);
+            for (uint32_t k = 0; k < g_reqs[i].vkNumFeatures13 && o < sizeof line - 80; k++)
+                o += snprintf(line + o, sizeof line - o, " (1.3) %s", g_reqs[i].vkFeatures13[k]);
+            if (o) rt_log("framegen:   %s:%s", name[i], line);
+        }
 }
 
 extern "C" void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, uint32_t gfx_family, uint32_t gfx_index,
-                                  uint32_t compute_family, uint32_t compute_index) {
+                                  uint32_t compute_family, uint32_t compute_index, uint32_t of_family) {
     if (!S.active) return;
+    if (S.iat) {   // Streamline saw the instance and the device being made: only the support check below
+        sl::AdapterInfo ai{};
+        ai.vkPhysicalDevice = phys;
+        sl::Result r = S.supported(sl::kFeatureDLSS_G, ai), rr = S.supported(sl::kFeatureReflex, ai);
+        rt_log("framegen: DLSS-G %s (%s), Reflex %s", r == sl::Result::eOk ? "supported" : "NOT supported", result_name(r),
+               rr == sl::Result::eOk ? "supported" : "not supported");
+        (void)inst, (void)dev, (void)gfx_family, (void)gfx_index, (void)compute_family, (void)compute_index, (void)of_family;
+        return;
+    }
     auto set_info = (PFun_slSetVulkanInfo *)(void *)GetProcAddress(S.mod, "slSetVulkanInfo");
     sl::VulkanInfo vi{};
     vi.device = dev, vi.instance = inst, vi.physicalDevice = phys;
     vi.graphicsQueueFamily = gfx_family, vi.graphicsQueueIndex = gfx_index;
     vi.computeQueueFamily = compute_family, vi.computeQueueIndex = compute_index;
-    vi.useNativeOpticalFlowMode = false;   // (optical flow in interop mode: no queue of its own yet)
+    vi.useNativeOpticalFlowMode = of_family != UINT32_MAX;   // its own queue, index 0 of the first such family
+    vi.opticalFlowQueueFamily = of_family != UINT32_MAX ? of_family : 0, vi.opticalFlowQueueIndex = 0;
     sl::Result sr = set_info ? set_info(vi) : sl::Result::eErrorMissingInputParameter;
     if (sr != sl::Result::eOk) {
         rt_log("framegen: slSetVulkanInfo failed (%d, %s): off", (int)sr, result_name(sr));
         S.active = 0;
         return;
     }
-    rt_log("framegen: Streamline has the device; its queues: graphics family %u from %u, compute family %u from %u",
-           gfx_family, gfx_index, compute_family, compute_index);
+    rt_log("framegen: Streamline has the device; its queues: graphics family %u from %u, compute family %u from %u, "
+           "optical flow %s", gfx_family, gfx_index, compute_family, compute_index,
+           of_family != UINT32_MAX ? "native" : "interop (no optical flow family)");
     S.create_surface = (PFN_vkCreateWin32SurfaceKHR)S.gipa(inst, "vkCreateWin32SurfaceKHR");
     S.destroy_surface = (PFN_vkDestroySurfaceKHR)S.gipa(inst, "vkDestroySurfaceKHR");
     S.create_swapchain = (PFN_vkCreateSwapchainKHR)S.gdpa(dev, "vkCreateSwapchainKHR");
@@ -260,7 +342,7 @@ extern "C" void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevi
 }
 
 extern "C" void slfg_shutdown(void) {
-    if (!S.active) return;
+    if (!S.active) return;   // (interposer mode: the imports stay redirected; the process is ending)
     S.shutdown();
     S.active = 0;
     rt_log("framegen: Streamline shut down");
@@ -300,14 +382,16 @@ extern "C" VkResult slfg_vkDeviceWaitIdle(VkDevice d) {
 #include "vk_slfg.h"
 #undef vkDeviceWaitIdle
 extern "C" int slfg_active(void) { return 0; }
+extern "C" int slfg_manual(void) { return 0; }
 extern "C" void slfg_start(void) {}
 extern "C" void slfg_instance_exts(const char **ext, uint32_t *n, uint32_t max) { (void)ext, (void)n, (void)max; }
 extern "C" void slfg_device_exts(const VkExtensionProperties *have, uint32_t nhave, const char **ext, uint32_t *n, uint32_t max) {
     (void)have, (void)nhave, (void)ext, (void)n, (void)max;
 }
 extern "C" void slfg_extra_queues(uint32_t *g, uint32_t *c) { *g = *c = 0; }
-extern "C" void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, uint32_t gf, uint32_t gi, uint32_t cf, uint32_t ci) {
-    (void)inst, (void)phys, (void)dev, (void)gf, (void)gi, (void)cf, (void)ci;
+extern "C" void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, uint32_t gf, uint32_t gi, uint32_t cf, uint32_t ci,
+                                  uint32_t of) {
+    (void)inst, (void)phys, (void)dev, (void)gf, (void)gi, (void)cf, (void)ci, (void)of;
 }
 extern "C" void slfg_shutdown(void) {}
 extern "C" VkResult slfg_vkCreateWin32SurfaceKHR(VkInstance inst, const void *ci, const VkAllocationCallbacks *a, VkSurfaceKHR *s) {

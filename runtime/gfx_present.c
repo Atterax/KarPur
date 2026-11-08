@@ -331,7 +331,12 @@ static int create_swapchain(void) {
     if (old) slfg_vkDestroySwapchainKHR(c->device, old, NULL);
     g_sc_fmt = sf.format;
     g_sc_ext = ext;
-    g_sc_n = MAX_IMAGES;
+    // The count first, then exactly that many: Streamline's DLSS-G (vk_slfg.cpp) clones as many images as the second
+    // call asks for, and a single call with room for MAX_IMAGES made it clone 8 of a 6-image swapchain - the driver
+    // faulted on the two that do not exist (2026-11-08)
+    g_sc_n = 0;
+    slfg_vkGetSwapchainImagesKHR(c->device, g_sc, &g_sc_n, NULL);
+    if (g_sc_n > MAX_IMAGES) g_sc_n = MAX_IMAGES;
     slfg_vkGetSwapchainImagesKHR(c->device, g_sc, &g_sc_n, g_sc_img);
     VkSemaphoreCreateInfo semi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (uint32_t i = 0; i < g_sc_n; i++) {
