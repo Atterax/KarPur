@@ -14,6 +14,11 @@
 // programs, the programs' offsets in them, the files' sizes and their 4-character tag when it is printable text (a
 // format name such as "BNSH"). No file contents. The process ends when it is written.
 //
+// To plan the extractor it also describes each holder's container (format names only): the SARC entry whose data
+// holds the code (its file name), the nearest "BNSH" before the code and how many the file has, the nearest
+// format-name-like word (4 of A-Z 0-9 _, 4-aligned) before the code, and for the first files of each tag a map of
+// such words (first offset and count). Sums by tag, by pack type and by SARC entry type, and the programs not found.
+//
 // Formats as tools/trpfs.py reads them (FlatBuffers): data.trpfd root {file_hashes [u64], pack_names [string],
 // file_info [..], pack_info [{size u64, file_count u64}]}; data.trpfs "ONEPACK\0", u64 offset of root {pack_hashes
 // [u64], pack_offsets [u64]}; a pack root {file_hashes [u64], files [{?, compression i8, level u8, size u64, data
@@ -139,9 +144,93 @@ static int load_programs(void) {
 }
 
 // ---- results
-typedef struct { uint64_t pack, file, size, first_off, last_off; uint32_t hits, tag; int stored; } Holder;
+typedef struct {
+    uint64_t pack, file, size, first_off, last_off;
+    uint32_t hits, tag;
+    int stored;
+    char inner[64];                 // SARC entry holding the first code start ("" when not a SARC)
+    int inner_count;                // SARC entries holding code
+    uint32_t near_magic;            // the nearest format-name-like word before the first code start
+    uint64_t near_dist;
+    uint32_t bnsh_count;            // "BNSH" words in the file
+    uint64_t bnsh_dist;             // from the nearest "BNSH" before the first code start (~0: none)
+    char map[640];                  // format-name-like words of the file, for the first files of each tag
+} Holder;
 static Holder holders[4096];
 static int nholders;
+
+static int magic_like(const uint8_t *p) {
+    if (p[0] < 'A' || p[0] > 'Z') return 0;
+    for (int k = 1; k < 4; k++)
+        if (!((p[k] >= 'A' && p[k] <= 'Z') || (p[k] >= '0' && p[k] <= '9') || p[k] == '_')) return 0;
+    return 1;
+}
+
+// SARC: the entry whose data holds off (its name copied), and how many entries hold code starts in [first, last]
+static void sarc_entry(const uint8_t *b, uint64_t n, uint64_t off, Holder *hd) {
+    if (n < 0x20 || memcmp(b, "SARC", 4) || memcmp(b + 0x14, "SFAT", 4)) return;
+    uint64_t data = u32(b + 0x0C);
+    uint16_t count;
+    memcpy(&count, b + 0x1A, 2);
+    uint64_t nodes = 0x20, names = nodes + 16ull * count;
+    if (names + 8 > n || memcmp(b + names, "SFNT", 4)) return;
+    for (uint32_t i = 0; i < count; i++) {
+        const uint8_t *e = b + nodes + 16ull * i;
+        uint64_t s0 = data + u32(e + 8), s1 = data + u32(e + 12);
+        if (s1 <= hd->first_off || s0 > hd->last_off) continue;
+        hd->inner_count++;
+        if (off < s0 || off >= s1 || hd->inner[0]) continue;
+        uint32_t attr = u32(e + 4);
+        uint64_t at = names + 8 + 4ull * (attr & 0xFFFFFF);
+        if (!(attr >> 24) || at >= n) { snprintf(hd->inner, sizeof hd->inner, "(entry %u, no name)", i); continue; }
+        size_t k = 0;
+        while (k + 1 < sizeof hd->inner && at + k < n && b[at + k] >= 0x20 && b[at + k] < 0x7f) hd->inner[k] = (char)b[at + k], k++;
+        hd->inner[k] = 0;
+    }
+}
+
+// how many files of this tag were mapped before (the first 3 of each tag get a word map)
+static int map_samples(uint32_t tag) {
+    static uint32_t tags[64];
+    static int counts[64], ntags;
+    for (int i = 0; i < ntags; i++)
+        if (tags[i] == tag) return counts[i]++;
+    if (ntags < 64) tags[ntags] = tag, counts[ntags++] = 1;
+    return 0;
+}
+
+static void describe(const uint8_t *b, uint64_t n, Holder *hd) {
+    sarc_entry(b, n, hd->first_off, hd);
+    hd->bnsh_dist = ~0ull;
+    for (uint64_t i = 0; i + 4 <= n; i++)
+        if (b[i] == 'B' && !memcmp(b + i, "BNSH", 4)) {
+            hd->bnsh_count++;
+            if (i <= hd->first_off) hd->bnsh_dist = hd->first_off - i;
+        }
+    for (uint64_t i = hd->first_off & ~3ull; i >= 4;) {
+        i -= 4;
+        if (magic_like(b + i)) { hd->near_magic = u32(b + i), hd->near_dist = hd->first_off - i; break; }
+    }
+    if (map_samples(hd->tag) >= 3) return;
+    // up to 24 distinct words, in order of first appearance
+    uint32_t w[24], cnt[24];
+    uint64_t first[24];
+    int nw = 0, more = 0;
+    for (uint64_t i = 0; i + 4 <= n; i += 4) {
+        if (!magic_like(b + i)) continue;
+        uint32_t v = u32(b + i);
+        int k = 0;
+        while (k < nw && w[k] != v) k++;
+        if (k < nw) { cnt[k]++; continue; }
+        if (nw == 24) { more++; continue; }
+        w[nw] = v, first[nw] = i, cnt[nw++] = 1;
+    }
+    size_t o = 0;
+    for (int k = 0; k < nw && o + 40 < sizeof hd->map; k++)
+        o += (size_t)snprintf(hd->map + o, sizeof hd->map - o, "%s%.4s@%#llx x%u", k ? ", " : "", (const char *)&w[k],
+                              (unsigned long long)first[k], cnt[k]);
+    if (more && o + 24 < sizeof hd->map) snprintf(hd->map + o, sizeof hd->map - o, ", %d more", more);
+}
 
 static void search(const uint8_t *b, uint64_t n, uint64_t pack, uint64_t file, int stored) {
     if (n < 64) return;
@@ -167,6 +256,7 @@ static void search(const uint8_t *b, uint64_t n, uint64_t pack, uint64_t file, i
             if (start > hd->last_off) hd->last_off = start;
         }
     }
+    if (hd) describe(b, n, hd);
 }
 
 static int printable(uint32_t tag) {
@@ -261,9 +351,9 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
     }
 
     // ---- the report
-    char *rep = malloc(1 << 20);
+    char *rep = malloc(4 << 20);
     size_t o = 0;
-#define PUT(...) (o += (size_t)snprintf(rep + o, o < (1u << 20) ? (1u << 20) - o : 0, __VA_ARGS__))
+#define PUT(...) (o += (size_t)snprintf(rep + o, o < (4u << 20) ? (4u << 20) - o : 0, __VA_ARGS__))
     int found = 0, by_stage[8] = {0}, of_stage[8] = {0};
     for (int i = 0; i < nprogs; i++) {
         if (progs[i].stage < 8) of_stage[progs[i].stage]++;
@@ -276,18 +366,71 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
     PUT("recorded programs found: %d of %d (stage 0: %d of %d, 4: %d of %d, 5: %d of %d)\n", found, nprogs, by_stage[0],
         of_stage[0], by_stage[4], of_stage[4], by_stage[5], of_stage[5]);
     PUT("files holding programs: %d\n", nholders);
-    // by pack name ending (the main file's type) and by tag
+    // sums: by the file's tag, by the pack's type (its name's last ending before .trpak), by the SARC entry's ending
+    struct Sum { char key[24]; int files, progs, bnsh; };
+    static struct Sum sums[3][64];
+    int nsum[3] = {0};
+    for (int i = 0; i < nholders; i++) {
+        Holder *hh = &holders[i];
+        char keys[3][24] = {"----", "?", ""};
+        if (printable(hh->tag)) memcpy(keys[0], &hh->tag, 4), keys[0][4] = 0;
+        uint32_t nl = 0;
+        const char *nm = fb_string(&fd, names_v, hh->pack, &nl);
+        if (nm) {
+            uint32_t e = nl;
+            if (e > 6 && !memcmp(nm + e - 6, ".trpak", 6)) e -= 6;
+            uint32_t d = e;
+            while (d && nm[d - 1] != '.' && nm[d - 1] != '/') d--;
+            snprintf(keys[1], sizeof keys[1], "%.*s", (int)(e - d), nm + d);
+        }
+        if (hh->inner[0]) {
+            const char *dot = strrchr(hh->inner, '.');
+            snprintf(keys[2], sizeof keys[2], "%s", dot ? dot : "(no ending)");
+        }
+        for (int s = 0; s < 3; s++) {
+            if (!keys[s][0]) continue;
+            int k = 0;
+            while (k < nsum[s] && strcmp(sums[s][k].key, keys[s])) k++;
+            if (k == nsum[s]) {
+                if (k == 64) continue;
+                memset(&sums[s][k], 0, sizeof sums[s][k]);
+                strcpy(sums[s][k].key, keys[s]), nsum[s]++;
+            }
+            sums[s][k].files++, sums[s][k].progs += (int)hh->hits, sums[s][k].bnsh += hh->bnsh_count > 0;
+        }
+    }
+    static const char *const sum_name[3] = {"by file tag", "by pack type", "by SARC entry type"};
+    for (int s = 0; s < 3; s++) {
+        PUT("%s:", sum_name[s]);
+        for (int k = 0; k < nsum[s]; k++)
+            PUT("%s %s %d files / %d programs (%d with BNSH)", k ? ";" : "", sums[s][k].key, sums[s][k].files,
+                sums[s][k].progs, sums[s][k].bnsh);
+        PUT("\n");
+    }
+    PUT("all holders (pack, file, programs, size, packing, tag, code starts, SARC entry, BNSH count and distance, nearest word before code):\n");
     for (int i = 0; i < nholders; i++) {
         Holder *hh = &holders[i];
         uint32_t nl = 0;
         const char *nm = fb_string(&fd, names_v, hh->pack, &nl);
-        char tag[5] = "----";
+        char tag[5] = "----", near[5] = "----", bn[48] = "none";
         if (printable(hh->tag)) memcpy(tag, &hh->tag, 4);
-        if (i < 200)
-            PUT("  %-60.*s file %4llu: %5u programs, %9llu bytes, %s, tag %s, code at %#llx..%#llx\n", (int)(nl < 60 ? nl : 60),
-                nm ? nm : "?", (unsigned long long)hh->file, hh->hits, (unsigned long long)hh->size,
-                hh->stored ? "stored" : "Oodle", tag, (unsigned long long)hh->first_off, (unsigned long long)hh->last_off);
+        if (hh->near_magic) memcpy(near, &hh->near_magic, 4);
+        if (hh->bnsh_count && hh->bnsh_dist == ~0ull) snprintf(bn, sizeof bn, "%u, none before", hh->bnsh_count);
+        else if (hh->bnsh_count) snprintf(bn, sizeof bn, "%u, -%#llx", hh->bnsh_count, (unsigned long long)hh->bnsh_dist);
+        PUT("  %-60.*s file %4llu: %5u, %9llu, %s, %s, %#llx..%#llx, %s%s, BNSH %s, %s -%#llx\n", (int)(nl < 60 ? nl : 60),
+            nm ? nm : "?", (unsigned long long)hh->file, hh->hits, (unsigned long long)hh->size,
+            hh->stored ? "stored" : "Oodle", tag, (unsigned long long)hh->first_off, (unsigned long long)hh->last_off,
+            hh->inner[0] ? hh->inner : "-", hh->inner_count > 1 ? " +more" : "", bn, near,
+            (unsigned long long)hh->near_dist);
+        if (hh->map[0]) PUT("      words: %s\n", hh->map);
     }
+    PUT("programs not found:");
+    int nf = 0;
+    for (int i = 0; i < nprogs; i++)
+        if (progs[i].found != 1)
+            PUT("%s #%d stage %u, %u bytes%s", nf++ ? ";" : "", i, progs[i].stage, progs[i].len,
+                progs[i].found < 0 ? " (too short or no anchor)" : "");
+    PUT("%s\n", nf ? "" : " none");
     PUT("==========================================================================\n");
     rt_log("%s", rep);
     plat_file_mkdir_p("game/report");
