@@ -31,6 +31,25 @@ void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, uin
                        uint32_t compute_family, uint32_t compute_index, uint32_t optical_flow_family);   // UINT32_MAX: none
 void slfg_shutdown(void);   // before the device and instance go
 
+// Stage 2: one frame's inputs for DLSS Frame Generation (vk_taa.c fills it at the resolve). Matrices as Violet keeps
+// them (columns; clip = matrix x position), without jitter; depth and motion vectors at the render size w x h, the
+// motion vectors in pixels from this frame to the last; the HUD-less picture at the output size ow x oh (the size of
+// the picture the present shows), in the presented image's encoding. Images in VK_IMAGE_LAYOUT_GENERAL.
+typedef struct {
+    float cur[16], prev[16], proj[16];
+    float jx, jy;                        // the jitter the frame was drawn with, in pixels
+    int reset, depth_inv;
+    VkImage depth, mv, hudless;
+    VkImageView depth_view, mv_view, hudless_view;
+    VkFormat depth_format;
+    uint32_t depth_usage, w, h, ow, oh;
+} SlfgFrame;
+// The present thread, in the present's command buffer before it is submitted: a frame token, Reflex's markers up to the
+// render submission, the tags (copied now) and the camera constants; DLSS-G switched on at the first frame
+// (TOTK_FRAMEGEN=2..4: the presented frames per rendered one)
+void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f);
+void slfg_present_mark(int end);   // around vkQueuePresentKHR: Reflex's present markers of that frame (0 start, 1 end)
+
 // The functions Streamline intercepts: its proxies while active, Vulkan's own otherwise
 VkResult slfg_vkCreateWin32SurfaceKHR(VkInstance inst, const void *ci, const VkAllocationCallbacks *a, VkSurfaceKHR *s);
 void slfg_vkDestroySurfaceKHR(VkInstance inst, VkSurfaceKHR s, const VkAllocationCallbacks *a);

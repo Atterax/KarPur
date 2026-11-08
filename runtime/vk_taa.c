@@ -32,6 +32,7 @@
 #include "taa_mv_spv.h"
 #include "vk.h"
 #include "vk_dlaa.h"
+#include "vk_slfg.h"
 
 static struct {
     int init, ok;                        // pipeline made (ok) or tried
@@ -44,10 +45,12 @@ static struct {
     VkPipelineLayout clayout;
     VkPipeline compose_pipe;
     // at w x h: 0 the picture (RGBA8), 1 motion vectors (RG16F), 3 base: the DLSS picture scaled to the game's size;
-    // at ow x oh: 2 DLSS's output, 4 the composite (RGBA8)
-    VkImage img[5];
-    VmaAllocation alloc[5];
-    VkImageView view[5];
+    // at ow x oh: 2 DLSS's output, 4 the composite, 5 DLSS's picture converted, without the HUD (RGBA8: frame generation)
+    VkImage img[6];
+    VmaAllocation alloc[6];
+    VkImageView view[6];
+    SlfgFrame fg;                        // this frame's inputs for DLSS Frame Generation (vk_slfg.cpp), at its resolve
+    float proj[16];                      // this frame's projection (c5 +0x80)
     uint32_t w, h, ow, oh;               // their sizes
     int fresh;                           // the images were just made (UNDEFINED layout)
     VkImageView shown_view[8];           // the presented image's view per present slot (destroyed when the slot comes again)
@@ -122,6 +125,7 @@ void vk_taa_note_scene(const VkExec *ex, const float vp[16], const float proj[16
     T.have_cur = 1;
     T.depth = ex->depth.img, T.depth_image = ex->depth.image, T.depth_format = ex->depth.format;
     T.dw = ex->depth.width, T.dh = ex->depth.height;
+    memcpy(T.proj, proj, sizeof T.proj);
     depth_order(proj);
 }
 
@@ -207,14 +211,15 @@ static int init(VkCtx *c) {
     // the composite: shown (linear), base, hi, the output
     si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     if (vkCreateSampler(c->device, &si, NULL, &T.linear) != VK_SUCCESS) return 0;
-    static const VkDescriptorType ct[6] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    static const VkDescriptorType ct[7] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-    VkDescriptorSetLayoutBinding cb[6];
-    for (int i = 0; i < 6; i++)
+                                           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                           VK_DESCRIPTOR_TYPE_STORAGE_IMAGE};
+    VkDescriptorSetLayoutBinding cb[7];
+    for (int i = 0; i < 7; i++)
         cb[i] = (VkDescriptorSetLayoutBinding){.binding = (uint32_t)i, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
                                                .descriptorType = ct[i]};
-    dci.bindingCount = 6, dci.pBindings = cb;
+    dci.bindingCount = 7, dci.pBindings = cb;
     for (int i = 0; i < 8; i++) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 32,
                                  .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
@@ -240,7 +245,7 @@ static int init(VkCtx *c) {
 }
 
 static void free_images(VkCtx *c) {
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         if (T.view[i]) vkDestroyImageView(c->device, T.view[i], NULL);
         if (T.img[i]) vmaDestroyImage(c->vma, T.img[i], T.alloc[i]);
         T.view[i] = VK_NULL_HANDLE, T.img[i] = VK_NULL_HANDLE;
@@ -256,10 +261,10 @@ static int ensure_images(VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t
         vk_queue_unlock();
         free_images(c);
     }
-    static const VkFormat fmt[5] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM,
-                                    VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
-    for (int i = 0; i < 5; i++) {
-        int big = i == 2 || i == 4;
+    static const VkFormat fmt[6] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R8G8B8A8_UNORM,
+                                    VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+    for (int i = 0; i < 6; i++) {
+        int big = i == 2 || i == 4 || i == 5;
         VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                                 .format = fmt[i], .extent = {big ? ow : w, big ? oh : h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -295,8 +300,8 @@ static void full_barrier(VkCommandBuffer cb) {
 }
 
 static void to_general(VkCommandBuffer cb) {   // our new images: UNDEFINED -> GENERAL
-    VkImageMemoryBarrier2 b[5];
-    for (int i = 0; i < 5; i++)
+    VkImageMemoryBarrier2 b[6];
+    for (int i = 0; i < 6; i++)
         b[i] = (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -305,7 +310,7 @@ static void to_general(VkCommandBuffer cb) {   // our new images: UNDEFINED -> G
                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = T.img[i],
                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 5, .pImageMemoryBarriers = b};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 6, .pImageMemoryBarriers = b};
     vkCmdPipelineBarrier2(cb, &d);
 }
 
@@ -422,6 +427,12 @@ void vk_taa_after_draw(VkExec *ex, uint32_t fs) {
     if (!ok) return;
     if (up) T.hud_view = vk_exec_target_view(ct->img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1, 0);
     T.resolved = 1, T.upscaled = up && T.hud_view, T.sw = w, T.sh = h, T.resolves++;
+    // DLSS Frame Generation's inputs of this frame (vk_slfg.cpp tags them at the present, in its command buffer)
+    memcpy(T.fg.cur, T.cur, 64), memcpy(T.fg.prev, reset ? T.cur : T.prev, 64), memcpy(T.fg.proj, T.proj, 64);
+    T.fg.jx = f.jx, T.fg.jy = f.jy, T.fg.reset = reset, T.fg.depth_inv = T.depth_inv > 0;
+    T.fg.depth = T.depth_image, T.fg.depth_view = dv, T.fg.depth_format = T.depth_format, T.fg.depth_usage = T.depth->usage;
+    T.fg.mv = T.img[1], T.fg.mv_view = T.view[1], T.fg.w = w, T.fg.h = h;
+    T.fg.hudless = T.img[5], T.fg.hudless_view = T.view[5], T.fg.ow = ow, T.fg.oh = oh;
     float ratio = (float)ow / (float)w;
     T.phases = (uint32_t)ceilf(8.0f * ratio * ratio);
     if (T.resolves == 1 || T.resolves % 3600 == 0)
@@ -462,18 +473,19 @@ int vk_taa_compose(VkCommandBuffer cb, unsigned slot, VkImage shown, VkFormat fm
     }
     vkCmdFillBuffer(cb, T.stats[slot], 0, 32, 0);
     full_barrier(cb);
-    VkDescriptorImageInfo ii[5] = {{T.linear, T.shown_view[slot], VK_IMAGE_LAYOUT_GENERAL},
+    VkDescriptorImageInfo ii[6] = {{T.linear, T.shown_view[slot], VK_IMAGE_LAYOUT_GENERAL},
                                    {T.sampler, T.view[3], VK_IMAGE_LAYOUT_GENERAL},
                                    {T.sampler, T.view[2], VK_IMAGE_LAYOUT_GENERAL},
                                    {VK_NULL_HANDLE, T.view[4], VK_IMAGE_LAYOUT_GENERAL},
-                                   {T.sampler, T.hud_view, VK_IMAGE_LAYOUT_GENERAL}};
+                                   {T.sampler, T.hud_view, VK_IMAGE_LAYOUT_GENERAL},
+                                   {VK_NULL_HANDLE, T.view[5], VK_IMAGE_LAYOUT_GENERAL}};
     VkDescriptorBufferInfo sbi = {T.stats[slot], 0, 32};
-    VkWriteDescriptorSet wr[6];
-    for (int i = 0; i < 6; i++)
+    VkWriteDescriptorSet wr[7];
+    for (int i = 0; i < 7; i++)
         wr[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = (uint32_t)i,
-                                       .descriptorCount = 1, .pImageInfo = i < 5 ? &ii[i] : NULL,
+                                       .descriptorCount = 1, .pImageInfo = i < 5 ? &ii[i] : i == 6 ? &ii[5] : NULL,
                                        .pBufferInfo = i == 5 ? &sbi : NULL,
-                                       .descriptorType = i == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                                       .descriptorType = i == 3 || i == 6 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                                                        : i == 5 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
                                                                 : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
     // TOTK_DLSS_HUD_DIFF: the difference (in 1/255) that counts as HUD; default 3 (a copy through sRGB rounds by 1)
@@ -486,10 +498,11 @@ int vk_taa_compose(VkCommandBuffer cb, unsigned slot, VkImage shown, VkFormat fm
     if (conv < 0) { const char *e = cfg_get("TOTK_DLSS_CONVERT"); conv = e && *e ? atoi(e) : 1; }
     float pc[8] = {(float)T.ow, (float)T.oh, (float)T.w, (float)T.h, eps, rt_knob("DLSS_DEBUG", "0") ? 1.0f : 0.0f, 0, (float)conv};
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, T.compose_pipe);
-    rec_push(T.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, T.clayout, 0, 6, wr);
+    rec_push(T.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, T.clayout, 0, 7, wr);
     vkCmdPushConstants(cb, T.clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
     vkCmdDispatch(cb, (T.ow + 7) / 8, (T.oh + 7) / 8, 1);
     full_barrier(cb);
+    slfg_frame(cb, &T.fg);   // KarPur TOTK_FRAMEGEN: this frame's inputs and camera for DLSS Frame Generation
     *out = T.img[4], *ow = (int)T.ow, *oh = (int)T.oh;
     static int logged;
     if (!logged++) rt_log("dlaa: the present shows DLSS's %ux%u picture with the game's HUD over it", T.ow, T.oh);

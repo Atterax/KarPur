@@ -262,7 +262,9 @@ static void flip_locked(void) {
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
+    slfg_present_mark(0);   // KarPur TOTK_FRAMEGEN: Reflex's present markers of the frame (vk_slfg.cpp)
     VkResult r = slfg_vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
+    slfg_present_mark(1);
     vk_queue_unlock();
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);

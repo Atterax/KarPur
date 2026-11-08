@@ -11,6 +11,7 @@
 #include "vk_slfg.h"
 
 #include <windows.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
@@ -348,6 +349,157 @@ extern "C" void slfg_shutdown(void) {
     rt_log("framegen: Streamline shut down");
 }
 
+// ---- stage 2: frame generation
+static struct {
+    int mult;                            // TOTK_FRAMEGEN: presented frames per rendered one (2..4), 1: Streamline only
+    int options_set, logged, errors;
+    sl::FrameToken *token;               // the frame being presented (slfg_frame -> slfg_present_mark)
+    uint32_t index;
+    uint32_t ow, oh;
+} F;
+
+static void copy_rows(sl::float4x4 &d, const float *m) {   // Violet's column array read as rows: the transpose
+    for (int r = 0; r < 4; r++) d.row[r] = sl::float4(m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]);
+}
+
+static void mul4c(const float *a, const float *b, float *o) {   // column-major o = a x b
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+}
+
+static int inv4c(const float *m, float *o) {   // the 4x4 inverse by cofactors (the same layout in and out)
+    float a[16];
+    a[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    a[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    a[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    a[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    a[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    a[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    a[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    a[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    a[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    a[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    a[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    a[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    a[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    a[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    a[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    a[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+    float det = m[0] * a[0] + m[1] * a[4] + m[2] * a[8] + m[3] * a[12];
+    if (fabsf(det) < 1e-30f) return 0;
+    for (int i = 0; i < 16; i++) o[i] = a[i] / det;
+    return 1;
+}
+
+static sl::Resource image_res(VkImage img, VkImageView view, VkFormat fmt, uint32_t usage, uint32_t w, uint32_t h) {
+    sl::Resource r(sl::ResourceType::eTex2d, (void *)img, nullptr, (void *)view, (uint32_t)VK_IMAGE_LAYOUT_GENERAL);
+    r.width = w, r.height = h, r.nativeFormat = (uint32_t)fmt, r.mipLevels = 1, r.arrayLayers = 1, r.usage = usage;
+    r.flags = 0;
+    return r;
+}
+
+static void fg_fail(const char *what, sl::Result r) {
+    if (F.errors++ < 8) rt_log("framegen: %s failed (%d, %s)", what, (int)r, result_name(r));
+}
+
+extern "C" void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f) {
+    if (!S.active) return;
+    if (!F.mult) {
+        const char *e = cfg_get("TOTK_FRAMEGEN");
+        F.mult = e && *e ? atoi(e) : 1;
+        if (F.mult < 1) F.mult = 1;
+        if (F.mult > 4) F.mult = 4;
+    }
+    if (F.mult < 2) return;   // Streamline only (stage 1)
+    sl::ViewportHandle vp(0);
+    if (!F.options_set || F.ow != f->ow || F.oh != f->oh) {
+        sl::ReflexOptions ro{};
+        ro.mode = sl::ReflexMode::eLowLatency;
+        sl::Result r = slReflexSetOptions(ro);
+        if (r != sl::Result::eOk) fg_fail("slReflexSetOptions", r);
+        sl::DLSSGOptions o{};
+        o.mode = sl::DLSSGMode::eOn;
+        o.numFramesToGenerate = (uint32_t)(F.mult - 1);
+        o.mvecDepthWidth = f->w, o.mvecDepthHeight = f->h, o.colorWidth = f->ow, o.colorHeight = f->oh;
+        r = slDLSSGSetOptions(vp, o);
+        if (r != sl::Result::eOk) fg_fail("slDLSSGSetOptions", r);
+        else rt_log("framegen: DLSS-G on, %d presented frames per rendered one; inputs %ux%u, picture %ux%u", F.mult,
+                    f->w, f->h, f->ow, f->oh);
+        F.options_set = 1, F.ow = f->ow, F.oh = f->oh;
+    }
+    uint32_t idx = ++F.index;
+    sl::Result r = S.frame_token(F.token, &idx);
+    if (r != sl::Result::eOk || !F.token) { fg_fail("slGetNewFrameToken", r); F.token = nullptr; return; }
+    // Reflex markers: the game's simulation and render submission of this frame have happened by now (the present
+    // thread sees the frame only when it is done); they are marked here, in order, so PCL and DLSS-G see a whole frame
+    slPCLSetMarker(sl::PCLMarker::eSimulationStart, *F.token);
+    slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *F.token);
+    slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *F.token);
+    // the tags: copied now, in this command buffer (the game's next frame overwrites the depth)
+    sl::Resource depth = image_res(f->depth, f->depth_view, f->depth_format, f->depth_usage, f->w, f->h);
+    sl::Resource mv = image_res(f->mv, f->mv_view, VK_FORMAT_R16G16_SFLOAT,
+                                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT, f->w, f->h);
+    sl::Resource hl = image_res(f->hudless, f->hudless_view, VK_FORMAT_R8G8B8A8_UNORM,
+                                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT, f->ow, f->oh);
+    sl::Extent er{0, 0, f->w, f->h}, eo{0, 0, f->ow, f->oh};
+    sl::ResourceTag tags[3] = {sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow, &er),
+                               sl::ResourceTag(&mv, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow, &er),
+                               sl::ResourceTag(&hl, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eOnlyValidNow, &eo)};
+    r = S.tag(*F.token, vp, tags, 3, (sl::CommandBuffer *)cb);
+    if (r != sl::Result::eOk) fg_fail("slSetTagForFrame", r);
+    // the camera (row-major, no jitter: Violet's column arrays read as rows are those matrices)
+    sl::Constants k{};
+    float inv_proj[16], inv_cur[16], c2p[16], p2c[16], inv_prev[16], view[16];
+    copy_rows(k.cameraViewToClip, f->proj);
+    if (inv4c(f->proj, inv_proj)) copy_rows(k.clipToCameraView, inv_proj);
+    static const float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    copy_rows(k.clipToLensClip, ident);
+    if (inv4c(f->cur, inv_cur) && inv4c(f->prev, inv_prev)) {
+        mul4c(f->prev, inv_cur, c2p), mul4c(f->cur, inv_prev, p2c);
+        copy_rows(k.clipToPrevClip, c2p), copy_rows(k.prevClipToClip, p2c);
+    }
+    k.jitterOffset = sl::float2(f->jx, f->jy);
+    k.mvecScale = sl::float2(1.0f / (float)f->w, 1.0f / (float)f->h);
+    k.cameraPinholeOffset = sl::float2(0, 0);
+    mul4c(inv_proj, f->cur, view);   // the view matrix: rows 0-2 are the camera's right, up and back axes in the world
+    float px = -(view[0] * view[12] + view[1] * view[13] + view[2] * view[14]);
+    float py = -(view[4] * view[12] + view[5] * view[13] + view[6] * view[14]);
+    float pz = -(view[8] * view[12] + view[9] * view[13] + view[10] * view[14]);
+    k.cameraPos = sl::float3(px, py, pz);
+    k.cameraRight = sl::float3(view[0], view[4], view[8]);
+    k.cameraUp = sl::float3(view[1], view[5], view[9]);
+    k.cameraFwd = sl::float3(-view[2], -view[6], -view[10]);
+    // near and far from the projection: clip depth = p22 / p32 + p23 / w (Violet: reversed, near at 1)
+    float p22 = f->proj[10], p23 = f->proj[14], p32 = f->proj[11];
+    float a = fabsf(p32) > 1e-6f ? p22 / p32 : 0;
+    k.cameraNear = fabsf(1 - a) > 1e-6f ? fabsf(p23 / (1 - a)) : 0.1f;
+    k.cameraFar = fabsf(a) > 1e-9f ? fabsf(p23 / a) : 100000.0f;
+    k.cameraFOV = 2.0f * atanf(1.0f / f->proj[5]);
+    k.cameraAspectRatio = f->proj[5] / f->proj[0];
+    k.depthInverted = f->depth_inv ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    k.cameraMotionIncluded = sl::Boolean::eTrue;
+    k.motionVectors3D = sl::Boolean::eFalse;
+    k.reset = f->reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    k.orthographicProjection = sl::Boolean::eFalse;
+    k.motionVectorsDilated = sl::Boolean::eFalse;
+    k.motionVectorsJittered = sl::Boolean::eFalse;
+    r = S.constants(k, *F.token, vp);
+    if (r != sl::Result::eOk) fg_fail("slSetConstants", r);
+    slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *F.token);
+    if (!F.logged++)
+        rt_log("framegen: first frame tagged: depth and motion vectors %ux%u, HUD-less picture %ux%u; near %.3f far %.1f, fov %.1f deg",
+               f->w, f->h, f->ow, f->oh, k.cameraNear, k.cameraFar, k.cameraFOV * 57.29578f);
+}
+
+extern "C" void slfg_present_mark(int end) {
+    if (!S.active || F.mult < 2 || !F.token) return;
+    slPCLSetMarker(end ? sl::PCLMarker::ePresentEnd : sl::PCLMarker::ePresentStart, *F.token);
+    if (end) F.token = nullptr;
+}
+
 // ---- the intercepted functions
 extern "C" VkResult slfg_vkCreateWin32SurfaceKHR(VkInstance inst, const void *ci, const VkAllocationCallbacks *a, VkSurfaceKHR *s) {
     auto f = S.active && S.create_surface ? S.create_surface
@@ -394,6 +546,8 @@ extern "C" void slfg_device_ready(VkInstance inst, VkPhysicalDevice phys, VkDevi
     (void)inst, (void)phys, (void)dev, (void)gf, (void)gi, (void)cf, (void)ci, (void)of;
 }
 extern "C" void slfg_shutdown(void) {}
+extern "C" void slfg_frame(VkCommandBuffer cb, const SlfgFrame *f) { (void)cb, (void)f; }
+extern "C" void slfg_present_mark(int end) { (void)end; }
 extern "C" VkResult slfg_vkCreateWin32SurfaceKHR(VkInstance inst, const void *ci, const VkAllocationCallbacks *a, VkSurfaceKHR *s) {
     (void)inst, (void)ci, (void)a, (void)s;
     return VK_ERROR_EXTENSION_NOT_PRESENT;
