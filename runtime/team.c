@@ -121,7 +121,14 @@ static uint8_t level_of(uint16_t species, uint32_t exp) {
 }
 
 // The fields the team file names (offsets in the decrypted record; PKHeX's published PK9 layout).
-typedef struct { uint16_t species, form; uint8_t level, stat_level; int shiny; uint16_t hp, max_hp; uint32_t exp; char nick[64]; } Mon;
+typedef struct {
+    uint16_t species, form;
+    uint8_t level, stat_level;
+    int shiny, ot_len;   // ot_len: characters of the original trainer's name (at 0xF8): none for a wild Pokemon
+    uint16_t hp, max_hp;
+    uint32_t exp, tid;
+    char nick[64];
+} Mon;
 
 static void pk_fields(const uint8_t *d, Mon *m) {
     m->species = rd16(d + 0x08);
@@ -143,6 +150,9 @@ static void pk_fields(const uint8_t *d, Mon *m) {
         else m->nick[o++] = (char)(0xE0 | c >> 12), m->nick[o++] = (char)(0x80 | ((c >> 6) & 0x3F)), m->nick[o++] = (char)(0x80 | (c & 0x3F));
     }
     m->nick[o] = 0;
+    m->tid = rd32(d + 0x0C);
+    m->ot_len = 0;
+    while (m->ot_len < 12 && rd16(d + 0xF8 + 2 * m->ot_len)) m->ot_len++;
 }
 
 static int party_like(const Mon *m) { return m->stat_level >= 1 && m->stat_level <= 100 && m->max_hp && m->hp <= m->max_hp; }
@@ -150,9 +160,11 @@ static int party_like(const Mon *m) { return m->stat_level >= 1 && m->stat_level
 // A player's Pokemon as the party slots hold it (test CT): a stored record (no battle stats) with a species, EXP up to the
 // slowest curve's level 100, current HP below 1000 and a name of 1-12 characters (UTF-8: up to 36 bytes).
 #define SLOT 0x150   // the party's slot stride: 0x148 stored bytes, padded
+// The launcher 0.3.0 showed a group of six wild Pokemon (an outbreak) instead of the team: the game keeps the wild ones
+// around the player in the same form. They have no original trainer yet; the player's Pokemon have one.
 static int member_like(const Mon *m) {
     size_t n = strlen(m->nick);
-    return m->species >= 1 && m->species <= 1025 && m->exp <= 1640000 && m->hp < 1000 && n >= 1 && n <= 36;
+    return m->species >= 1 && m->species <= 1025 && m->exp <= 1640000 && m->hp < 1000 && n >= 1 && n <= 36 && m->ot_len > 0;
 }
 
 // ---- the scan
@@ -267,10 +279,10 @@ static void probe_pointers(uint64_t hb, uint64_t hs, uint64_t ab, uint64_t as) {
         pa[np++] = hits[i].addr;
         uint32_t exp;
         memcpy(&exp, (const void *)(uintptr_t)hits[i].addr, 4);   // (the EC; the decrypted EXP is logged below)
-        rt_log("team: record %d at %#llx (%s, shuffle %u): species %u, HP %u, exp %u, party stats %s (level %u, max HP %u), name %zu chars",
+        rt_log("team: record %d at %#llx (%s, shuffle %u): species %u, HP %u, exp %u, party stats %s (level %u, max HP %u), name %zu chars, OT %d chars, TID %#x",
                np - 1, (unsigned long long)hits[i].addr, hits[i].plain ? "plain" : "encrypted",
                (rd32((const uint8_t *)(uintptr_t)hits[i].addr) >> 13) & 31, hits[i].m.species, hits[i].m.hp, hits[i].m.exp,
-               party_like(&hits[i].m) ? "plausible" : "no", hits[i].m.stat_level, hits[i].m.max_hp, strlen(hits[i].m.nick));
+               party_like(&hits[i].m) ? "plausible" : "no", hits[i].m.stat_level, hits[i].m.max_hp, strlen(hits[i].m.nick), hits[i].m.ot_len, hits[i].m.tid);
         (void)exp;
     }
     if (!np) return;
