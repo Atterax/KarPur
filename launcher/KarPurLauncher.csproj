@@ -17,13 +17,16 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <InvariantGlobalization>true</InvariantGlobalization>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <!-- WFO1000: designer serialization of control properties; the launcher builds its controls in code -->
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="pins.json" LogicalName="pins.json" />
+    <!-- The Home banners, drawn by the maintainer (Paint Tool SAI) in the editions' colours; no game art -->
+    <EmbeddedResource Include="assets/banner-violet.jpg" LogicalName="banner-violet.jpg" />
+    <EmbeddedResource Include="assets/banner-scarlet.jpg" LogicalName="banner-scarlet.jpg" />
     <EmbeddedResource Include="$(PayloadZip)" LogicalName="payload.zip" Condition="'$(PayloadZip)' != ''" />
   </ItemGroup>
 </Project>

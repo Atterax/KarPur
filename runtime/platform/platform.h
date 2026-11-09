@@ -232,6 +232,8 @@ void plat_crash_hook(void (*fn)(const PlatCrash *c));
 // the Vulkan recorder's current packet (vk_rec.c). NULL: none. Called on the faulting thread; must not allocate.
 extern void (*plat_fault_extra)(char *buf, size_t n);
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
+int plat_mem_next_readable(uint64_t addr, uint64_t end, uint64_t *base, uint64_t *size);   // the first readable committed
+                                                           // run in [addr, end): 1 with base and size, 0 when none
 int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
 void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure
 void plat_aligned_free(void *p);

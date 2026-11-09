@@ -550,6 +550,7 @@ static uint32_t save_commit(void) {
         if (!quiet++) rt_log("fs commit save: nothing changed (logged once)");
         return 0;
     }
+    team_on_save();   // team.c: the launcher's view of the party, read from the game's memory
     plat_inc32(&save_writers);   // fs_save_busy until the thread is done
     plat_xchg32(&commit_pending, 1);
     if (plat_thread_spawn(commit_main, NULL, "save commit", 0)) {
@@ -595,6 +596,8 @@ static void ready(void) {
     static PlatOnce once = PLAT_ONCE_INIT;
     plat_once(&once, storage_init, NULL);
 }
+
+int fs_profile_dir(char *out, size_t cap) { return profile[0] && snprintf(out, cap, "%s", profile) < (int)cap; }
 
 void fs_host_set_profile(const char *dir) {
     if (plat_cas32(&storage_ready, 0, 0)) rt_fatal("fs_host_set_profile after the first storage use");

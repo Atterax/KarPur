@@ -35,6 +35,7 @@ from pathlib import Path
 
 import romfs_index
 from build_shaders import stale as stale_shaders
+from cpu_march import march
 from check_content import GENERATED_MARKER
 
 WIN = os.name == 'nt'
@@ -766,6 +767,12 @@ def main():
         if not tool.is_file():
             sys.exit(f'{tool} not found: install ' + ('MSYS2 UCRT64 clang, lld and ninja' if WIN else 'clang, lld and ninja')
                      + ' (docs/building.md)')
+    if not args.sysroot:   # a build for this PC: the CPU level it has (a release for others keeps x86-64-v3)
+        level = march(CLANG)
+        for flags in (GEN_FLAGS, RT_FLAGS):
+            flags[:] = [f'-march={level}' if f.startswith('-march=') else f for f in flags]
+        if level != 'x86-64-v3':
+            print(f'cpu: building for {level} (this CPU lacks AVX2, FMA or BMI2)', flush=True)
     if not (gen / 'layout.json').is_file():
         sys.exit(f'{gen / "layout.json"} not found: run the generator first')
 

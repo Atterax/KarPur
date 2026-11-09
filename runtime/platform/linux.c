@@ -1017,6 +1017,18 @@ int plat_mem_read(uint64_t addr, void *out, size_t n) {
     return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)n;
 }
 
+int plat_mem_next_readable(uint64_t addr, uint64_t end, uint64_t *base, uint64_t *size) {
+    // page by page (Linux has no VirtualQuery; /proc/self/maps would be the faster way)
+    for (uint64_t a = addr & ~4095ull; a < end; a += 4096) {
+        if (!plat_mem_readable(a, 1)) continue;
+        uint64_t b = a;
+        while (b < end && plat_mem_readable(b, 1)) b += 4096;
+        *base = a < addr ? addr : a, *size = (b < end ? b : end) - *base;
+        return 1;
+    }
+    return 0;
+}
+
 int plat_mem_readable(uint64_t addr, uint64_t n) {
     uint8_t b;
     uint64_t end = addr + (n ? n : 1);

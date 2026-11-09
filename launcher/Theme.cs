@@ -8,27 +8,75 @@ namespace KarPurLauncher;
 // the game: violet for Violet, red for Scarlet (build/setup_info.json after a build, or the player's choice).
 static class Theme
 {
-    public static readonly Color Back = Color.FromArgb(19, 19, 25);
-    public static readonly Color Panel = Color.FromArgb(28, 28, 36);
-    public static readonly Color Card = Color.FromArgb(33, 33, 43);
-    public static readonly Color Field = Color.FromArgb(44, 44, 56);
-    public static readonly Color Border = Color.FromArgb(62, 62, 78);
-    public static readonly Color Text = Color.FromArgb(236, 236, 244);
-    public static readonly Color Muted = Color.FromArgb(150, 150, 168);
-    public static readonly Color Error = Color.FromArgb(255, 120, 120);
-    public static readonly Color Violet = Color.FromArgb(139, 92, 246);
-    public static readonly Color Scarlet = Color.FromArgb(229, 72, 77);
-    public static Color Accent = Violet;
+    // An edition's palette: page, sidebar, card, field and border colours, text, and two accents (the second for
+    // gradients and highlights). Violet: night indigo with violet and a neon cyan (the future); Scarlet: warm wine with
+    // scarlet and amber (the past); neutral before a build.
+    public record Palette(string Name, Color Back, Color Panel, Color Card, Field_ Fields, Color Text, Color Muted,
+                          Color Accent, Color Accent2, Color Sky1, Color Sky2, Color Glow);
+    public record Field_(Color Field, Color Border);
 
-    public static Color AccentFor(string game) => game == "scarlet" ? Scarlet : Violet;
+    public static readonly Palette VioletPalette = new("violet",
+        Color.FromArgb(15, 13, 28), Color.FromArgb(22, 19, 42), Color.FromArgb(30, 26, 55),
+        new(Color.FromArgb(42, 37, 74), Color.FromArgb(70, 60, 116)), Color.FromArgb(240, 237, 255), Color.FromArgb(160, 152, 196),
+        Color.FromArgb(151, 102, 255), Color.FromArgb(0, 214, 232), Color.FromArgb(12, 10, 40), Color.FromArgb(62, 24, 110),
+        Color.FromArgb(0, 214, 232));
+    public static readonly Palette ScarletPalette = new("scarlet",
+        Color.FromArgb(26, 13, 15), Color.FromArgb(38, 19, 22), Color.FromArgb(50, 25, 29),
+        new(Color.FromArgb(68, 36, 40), Color.FromArgb(108, 58, 62)), Color.FromArgb(255, 240, 236), Color.FromArgb(198, 158, 156),
+        Color.FromArgb(238, 72, 72), Color.FromArgb(255, 176, 64), Color.FromArgb(46, 10, 18), Color.FromArgb(170, 52, 34),
+        Color.FromArgb(255, 176, 64));
+    public static readonly Palette NeutralPalette = new("neutral",
+        Color.FromArgb(19, 19, 25), Color.FromArgb(28, 28, 36), Color.FromArgb(33, 33, 43),
+        new(Color.FromArgb(44, 44, 56), Color.FromArgb(62, 62, 78)), Color.FromArgb(236, 236, 244), Color.FromArgb(150, 150, 168),
+        Color.FromArgb(139, 92, 246), Color.FromArgb(229, 72, 77), Color.FromArgb(18, 18, 30), Color.FromArgb(48, 36, 70),
+        Color.FromArgb(139, 92, 246));
+
+    public static Palette Current = NeutralPalette;
+    public static Color Back = NeutralPalette.Back, Panel = NeutralPalette.Panel, Card = NeutralPalette.Card,
+                        Field = NeutralPalette.Fields.Field, Border = NeutralPalette.Fields.Border, Text = NeutralPalette.Text,
+                        Muted = NeutralPalette.Muted, Accent = NeutralPalette.Accent, Accent2 = NeutralPalette.Accent2;
+    public static readonly Color Error = Color.FromArgb(255, 120, 120);
+    public static readonly Color Good = Color.FromArgb(74, 222, 128);
+    public static readonly Color Violet = VioletPalette.Accent;
+    public static readonly Color Scarlet = ScarletPalette.Accent;
+
+    public static Palette PaletteFor(string game) => game == "scarlet" ? ScarletPalette : game == "violet" ? VioletPalette : NeutralPalette;
+    public static Color AccentFor(string game) => PaletteFor(game).Accent;
     public static Color Mix(Color a, Color b, float t) =>
         Color.FromArgb((int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+    public static Color Alpha(Color c, int a) => Color.FromArgb(Math.Clamp(a, 0, 255), c);
+
+    // Switches the palette: every control whose back or fore colour is one of the old palette's takes the new one
+    // (controls are built with Theme.Card and friends), custom-painted ones read the statics when they paint.
+    public static void SetPalette(Palette p, Control root)
+    {
+        if (p == Current) { root.Invalidate(true); return; }
+        var map = new Dictionary<int, Color>
+        {
+            [Back.ToArgb()] = p.Back, [Panel.ToArgb()] = p.Panel, [Card.ToArgb()] = p.Card, [Field.ToArgb()] = p.Fields.Field,
+            [Border.ToArgb()] = p.Fields.Border, [Text.ToArgb()] = p.Text, [Muted.ToArgb()] = p.Muted,
+        };
+        void Walk(Control c)
+        {
+            if (map.TryGetValue(c.BackColor.ToArgb(), out var nb) && c.BackColor.A == 255) c.BackColor = nb;
+            if (map.TryGetValue(c.ForeColor.ToArgb(), out var nf)) c.ForeColor = nf;
+            foreach (Control k in c.Controls) Walk(k);
+        }
+        Walk(root);
+        Current = p;
+        (Back, Panel, Card, Field, Border, Text, Muted, Accent, Accent2) =
+            (p.Back, p.Panel, p.Card, p.Fields.Field, p.Fields.Border, p.Text, p.Muted, p.Accent, p.Accent2);
+        root.Invalidate(true);
+    }
 
     // Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets (Windows 10): the same code points for these glyphs.
     public static readonly string IconFont = FontFamily.Families.Any(f => f.Name == "Segoe Fluent Icons")
         ? "Segoe Fluent Icons" : "Segoe MDL2 Assets";
     public const string GlyphSetup = "", GlyphSettings = "", GlyphUpdate = "", GlyphPlay = "",
-                        GlyphFolder = "", GlyphRepair = "", GlyphBuild = "", GlyphStop = "";
+                        GlyphFolder = "", GlyphRepair = "", GlyphBuild = "", GlyphStop = "",
+                        GlyphHome = "", GlyphSave = "", GlyphGame = "", GlyphShaders = "",
+                        GlyphCheck = "", GlyphFeedback = "", GlyphExport = "", GlyphImport = "",
+                        GlyphHistory = "";
 
     [DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
@@ -57,7 +105,6 @@ static class Theme
     public static Button Button(string text, bool primary = false, string glyph = "") =>
         new RoundButton { Text = text, Primary = primary, Glyph = glyph };
 
-    public static void Recolor(Control root) => root.Invalidate(true);   // everything paints with the current accent
 
     public static TextBox TextBox() => new()
     {
@@ -104,12 +151,15 @@ class RoundButton : Button
     protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnPaintBackground(PaintEventArgs e) { if (BackColor.A == 255 || FindHero() == null) base.OnPaintBackground(e); }
+    Hero? FindHero() { for (var p = Parent; p != null; p = p.Parent) if (p is Hero h) return h; return null; }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(Parent?.BackColor ?? Theme.Back);
+        if (BackColor.A == 255) g.Clear(Parent?.BackColor ?? Theme.Back);
+        else if (FindHero() is Hero hero) hero.PaintBehind(g, this);   // on the hero: its scene behind the rounded corners
         Color fill = !Enabled ? Theme.Mix(Theme.Field, Theme.Back, 0.4f)
             : Primary ? (hover ? Theme.Mix(Theme.Accent, Color.White, 0.15f) : Theme.Accent)
             : hover ? Theme.Border : Theme.Field;
@@ -117,7 +167,7 @@ class RoundButton : Button
         {
             if (Primary && Enabled)
             {
-                using var grad = new LinearGradientBrush(ClientRectangle, Theme.Mix(fill, Color.White, 0.08f), fill, 90f);
+                using var grad = new LinearGradientBrush(ClientRectangle, Theme.Mix(fill, Color.White, 0.1f), Theme.Mix(fill, Theme.Accent2, 0.35f), 20f);
                 g.FillPath(grad, path);
             }
             else
@@ -138,6 +188,30 @@ class RoundButton : Button
         }
         TextRenderer.DrawText(g, Text, Font, new Rectangle(x + glyphW, 0, textSize.Width + 2, Height), fore,
                               TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+    }
+}
+
+// The launcher's mark in the sidebar: a rounded square in the accent of the chosen edition (a lighter and a darker
+// shade of it, nothing of the other accent) with a white "K".
+class LogoMark : Control
+{
+    public LogoMark()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        g.Clear(Parent?.BackColor ?? Theme.Panel);
+        var r = new RectangleF(0, 0, Width - 1, Height - 1);
+        using var path = Theme.Rounded(r, Width * 0.24f);
+        using (var b = new LinearGradientBrush(r, Theme.Mix(Theme.Accent, Color.White, 0.22f), Theme.Mix(Theme.Accent, Color.Black, 0.25f), 45f))
+            g.FillPath(b, path);
+        using var f = new Font("Segoe UI", Height * 0.5f, FontStyle.Bold, GraphicsUnit.Pixel);
+        TextRenderer.DrawText(g, "K", f, Rectangle.Round(r), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 }
 

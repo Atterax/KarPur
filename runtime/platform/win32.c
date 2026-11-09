@@ -766,6 +766,22 @@ int plat_mem_read(uint64_t addr, void *out, size_t n) {
     return ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)addr, out, n, &got) && got == n;
 }
 
+int plat_mem_next_readable(uint64_t addr, uint64_t end, uint64_t *base, uint64_t *size) {
+    for (uint64_t a = addr; a < end;) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)(uintptr_t)a, &mbi, sizeof mbi)) return 0;
+        uint64_t lo = (uint64_t)(uintptr_t)mbi.BaseAddress, hi = lo + mbi.RegionSize;
+        if (lo < a) lo = a;
+        if (hi > end) hi = end;
+        if (mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) && hi > lo) {
+            *base = lo, *size = hi - lo;
+            return 1;
+        }
+        a = (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    }
+    return 0;
+}
+
 int plat_mem_readable(uint64_t addr, uint64_t n) {
     for (uint64_t a = addr, end = addr + n; a < end || a == addr;) {
         MEMORY_BASIC_INFORMATION mbi;

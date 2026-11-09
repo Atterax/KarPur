@@ -58,10 +58,44 @@ class RoundCombo : ComboBox
                               Theme.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct PAINTSTRUCT
+    {
+        public IntPtr hdc; public int fErase; public int l, t, r, b; public int fRestore, fIncUpdate;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)] public byte[] reserved;
+    }
+    [DllImport("user32.dll")] static extern IntPtr BeginPaint(IntPtr hwnd, out PAINTSTRUCT ps);
+    [DllImport("user32.dll")] static extern bool EndPaint(IntPtr hwnd, ref PAINTSTRUCT ps);
+    const int WM_ERASEBKGND = 0x0014, WM_PRINTCLIENT = 0x0318;
+
+    // The closed face is painted here alone: letting the native control paint first and drawing over it afterwards
+    // showed its square face for a moment on hover (the glitch the maintainer saw). One bitmap, drawn at once.
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WM_ERASEBKGND) { m.Result = (IntPtr)1; return; }
+        if (m.Msg == WM_PAINT && !DroppedDown)
+        {
+            BeginPaint(Handle, out var ps);
+            try
+            {
+                using var g = Graphics.FromHdc(ps.hdc);
+                PaintBuffered(g);
+            }
+            finally { EndPaint(Handle, ref ps); }
+            m.Result = IntPtr.Zero;
+            return;
+        }
+        if (m.Msg == WM_PRINTCLIENT) { using var g = Graphics.FromHdc(m.WParam); PaintBuffered(g); m.Result = IntPtr.Zero; return; }
         base.WndProc(ref m);
-        if (m.Msg == WM_PAINT) { using var g = Graphics.FromHwnd(Handle); PaintFace(g); }
+        if (m.Msg == WM_PAINT) { using var g = Graphics.FromHwnd(Handle); PaintBuffered(g); }
+    }
+
+    void PaintBuffered(Graphics target)
+    {
+        if (Width <= 0 || Height <= 0) return;
+        using var bmp = new Bitmap(Width, Height);
+        using (var g = Graphics.FromImage(bmp)) PaintFace(g);
+        target.DrawImageUnscaled(bmp, 0, 0);
     }
 
     void PaintFace(Graphics g)

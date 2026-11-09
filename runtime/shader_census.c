@@ -276,6 +276,105 @@ static void extract(const uint8_t *b, uint64_t n) {
     }
 }
 
+// ---- growth curves for the launcher's team levels (runtime/team.c)
+// A party slot holds a Pokemon's EXP, not its level; the level follows from the species' growth curve, which the game
+// keeps in its personal table. That table is the player's own game data: the census finds it among the unpacked files
+// and writes only the curve per species number to growth.bin next to karpur.exe (never shared).
+// Recognised without a schema: a FlatBuffer whose root has a vector of 900-4000 tables, one field of them (u16) the
+// species number and another (u8) a value that groups these well-known species alike: medium slow Bulbasaur 1,
+// Charmander 4, Squirtle 7, Hoppip 187, Bounsweet 761; fast Jigglypuff 39, Azumarill 184; slow Magikarp 129, Snorlax
+// 143, Dragonite 149; medium fast Pikachu 25, Eevee 133; erratic Volbeat 313, Feebas 349; fluctuating Shroomish 285,
+// Gulpin 316. growth.bin: "KPGROW1" and a NUL, then one byte per species 0..1100: 0 medium fast, 1 erratic,
+// 2 fluctuating, 3 medium slow, 4 fast, 5 slow, 255 unknown.
+#define GROWTH_N 1101
+static uint8_t growth[GROWTH_N];
+static int growth_found;
+
+static void growth_probe(const uint8_t *b, uint64_t n) {
+    if (growth_found || n < 64 || n > (64u << 20)) return;
+    Fb rt;
+    if (!fb_root(&rt, b, n, 0) || rt.nslots > 16) return;
+    static const struct { uint16_t sp; uint8_t curve; } facts[] = {
+        {1, 3}, {4, 3}, {7, 3}, {187, 3}, {761, 3}, {39, 4}, {184, 4}, {129, 5}, {143, 5}, {149, 5}, {25, 0}, {133, 0},
+        {313, 1}, {349, 1}, {285, 2}, {316, 2},
+    };
+    enum { NF = sizeof facts / sizeof *facts, SLOTS = 48 };
+    for (int v = 0; v < rt.nslots; v++) {
+        uint64_t vs, vn;
+        if (!fb_vec(&rt, v, &vs, &vn) || vn < 900 || vn > 4000) continue;
+        Fb e;
+        if (!fb_table(&rt, vs, 0, &e) || e.nslots < 4) continue;
+        int slots = e.nslots < SLOTS ? e.nslots : SLOTS;
+        // per fact species: the first element whose field s holds it, for every s
+        int at[SLOTS][NF];
+        memset(at, -1, sizeof at);
+        for (uint64_t k = 0; k < vn; k++) {
+            if (!fb_table(&rt, vs, k, &e)) return;
+            for (int sl = 0; sl < slots; sl++) {
+                uint16_t off = fb_slot(&e, sl);
+                if (!off || e.pos + off + 2 > n) continue;
+                uint16_t val = (uint16_t)(b[e.pos + off] | b[e.pos + off + 1] << 8);
+                for (int f = 0; f < NF; f++)
+                    if (val == facts[f].sp && at[sl][f] < 0) at[sl][f] = (int)k;
+            }
+        }
+        for (int sl = 0; sl < slots; sl++) {
+            int all = 1;
+            for (int f = 0; f < NF; f++) all &= at[sl][f] >= 0;
+            if (!all) continue;
+            for (int g = 0; g < slots; g++) {
+                if (g == sl) continue;
+                int val[NF], ok = 1;
+                for (int f = 0; f < NF && ok; f++) {
+                    Fb el;
+                    if (!fb_table(&rt, vs, (uint64_t)at[sl][f], &el)) { ok = 0; break; }
+                    uint16_t off = fb_slot(&el, g);
+                    val[f] = off && el.pos + off < n ? b[el.pos + off] : 0;   // an absent field holds the default 0
+                    ok = val[f] <= 5;
+                }
+                // the same curve gives the same value, different curves different values
+                for (int f = 0; f < NF && ok; f++)
+                    for (int h = 0; h < NF && ok; h++)
+                        ok = (facts[f].curve == facts[h].curve) == (val[f] == val[h]);
+                if (!ok) continue;
+                uint8_t map[6];
+                memset(map, 255, sizeof map);
+                for (int f = 0; f < NF; f++) map[val[f]] = facts[f].curve;
+                memset(growth, 255, sizeof growth);
+                for (uint64_t k = 0; k < vn; k++) {
+                    Fb el;
+                    if (!fb_table(&rt, vs, k, &el)) break;
+                    uint16_t so = fb_slot(&el, sl), go = fb_slot(&el, g);
+                    if (!so || el.pos + so + 2 > n) continue;
+                    uint16_t sp = (uint16_t)(b[el.pos + so] | b[el.pos + so + 1] << 8);
+                    uint8_t gv = go && el.pos + go < n ? b[el.pos + go] : 0;
+                    if (sp < GROWTH_N && growth[sp] == 255 && gv <= 5) growth[sp] = map[gv];   // the first entry: the base form
+                }
+                int known = 0;
+                for (int i = 0; i < GROWTH_N; i++) known += growth[i] != 255;
+                growth_found = 1;
+                rt_log("shader census: growth curves found (a table of %llu entries, species field %d, curve field %d): %d species",
+                       (unsigned long long)vn, sl, g, known);
+                return;
+            }
+        }
+    }
+}
+
+static void growth_write(void) {
+    if (!growth_found) { rt_log("shader census: no growth curve table found (the launcher shows the team without levels)"); return; }
+    char path[1024];
+    int n = plat_exe_path(path, sizeof path - 32);
+    char *cut = n ? plat_last_sep(path) : NULL;
+    if (!cut) return;
+    strcpy(cut + 1, "growth.bin");
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite("KPGROW1", 8, 1, f);
+    fwrite(growth, sizeof growth, 1, f);
+    fclose(f);
+}
+
 static void extract_begin(void) {
     rec_set = calloc(1u << HSET_BITS, sizeof *rec_set), out_set = calloc(1u << HSET_BITS, sizeof *out_set);
     out_buf = malloc(64u << 20);
@@ -557,7 +656,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             if (!fb_table(&pt, fv, k, &e) || !fb_vec(&e, e.nslots - 1, &ds, &dn)) continue;
             int64_t comp = fb_i8(&e, 1, -1);
             uint64_t unpacked = fb_u64(&e, 3);
-            if (comp == -1) { stored_files++; search(pk + ds, dn, p, k, 1); extract(pk + ds, dn); continue; }
+            if (comp == -1) { stored_files++; search(pk + ds, dn, p, k, 1); extract(pk + ds, dn); growth_probe(pk + ds, dn); continue; }
             if (!unpacked || dn + unpacked > BUF_SIZE) { too_big++; continue; }
             uint8_t *in = (uint8_t *)(uintptr_t)gbuf, *outp = in + ((dn + 4095) & ~4095ull);
             memcpy(in, pk + ds, dn);
@@ -568,6 +667,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             out_total += r;
             search(outp, r, p, k, 0);
             extract(outp, r);
+            growth_probe(outp, r);
         }
         free(pk);
         if (!(p % 500))
@@ -654,6 +754,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             if (hh->layout[k][0]) PUT("      program %d: %s\n", k + 1, hh->layout[k]);
     }
     out_flush();
+    growth_write();
     if (out_f) fclose(out_f);
     if (ans_f) fclose(ans_f);
     PUT("extraction: %llu BNSH, %llu shader infos, %llu distinct programs (vertex %llu, tess %llu/%llu, geometry %llu, "

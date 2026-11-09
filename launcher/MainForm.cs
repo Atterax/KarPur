@@ -25,6 +25,10 @@ partial class MainForm : Form
     };
     // Settings
     readonly CheckBox fullscreen = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
+    // submit_defer = 0: every GPU submission goes out at once. Players whose game crashed after the character creation
+    // reported that TOTK_SUBMIT_DEFER=0 fixes it; far trees may flicker a little and the frame rate can drop.
+    readonly CheckBox safeSubmit = new() { AutoSize = true, ForeColor = Theme.Text, BackColor = Theme.Card,
+                                           Text = "Compatibility mode (try it if the game crashes after the character creation)" };
     readonly ComboBox windowSize = Combo(), fpsLimit = Combo(), present = Combo(), upscaler = Combo(), overlay = Combo(),
                       population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssModel = Combo(), frameGen = Combo();
     readonly Dictionary<Control, Label> rowLabels = new();
@@ -97,9 +101,11 @@ partial class MainForm : Form
 
         Controls.Add(content);
         Controls.Add(Sidebar());
+        AddPage("Home", HomePage());
         AddPage("Setup", SetupPage());
         AddPage("Settings", SettingsPage());
         AddPage("Controls", ControlsPage());
+        AddPage("Saves", SavesPage());
         AddPage("Update", UpdatePage());
         AddPage("Feedback", FeedbackPage());
 
@@ -147,7 +153,8 @@ partial class MainForm : Form
         {
             LoadSettings();
             Refresh_();
-            Show(pages.ContainsKey(startTab) ? startTab : "Setup");
+            bool builtNow = targetBox.Text != "" && File.Exists(Builder.Exe(targetBox.Text));
+            Show(pages.ContainsKey(startTab) && startTab != "Setup" ? startTab : builtNow ? "Home" : "Setup");
             if (this.updated && File.Exists(Builder.Exe(targetBox.Text)))
             {
                 status.Text = $"Updated to version {Program.Version}. Rebuilding what changed …";
@@ -168,8 +175,7 @@ partial class MainForm : Form
     Control Sidebar()
     {
         var side = new Panel { Dock = DockStyle.Left, Width = 224, BackColor = Theme.Panel };
-        var logo = new PictureBox { Size = new Size(40, 40), Location = new Point(22, 24), SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Panel };
-        try { logo.Image = new Icon(Icon.ExtractAssociatedIcon(Environment.ProcessPath!)!, 48, 48).ToBitmap(); } catch { }
+        var logo = new LogoMark { Size = new Size(40, 40), Location = new Point(22, 24) };   // the "K" in the edition's accent
         var title = Theme.Label("KarPur", 17f, style: FontStyle.Bold);
         title.Location = new Point(70, 20);
         var version = Theme.Label($"Version {Program.Version}", 9f, muted: true);
@@ -178,7 +184,9 @@ partial class MainForm : Form
         side.Controls.Add(title);
         side.Controls.Add(version);
         int y = 104;
-        foreach (var (name, glyph) in new[] { ("Setup", Theme.GlyphSetup), ("Settings", Theme.GlyphSettings), ("Controls", ""), ("Update", Theme.GlyphUpdate), ("Feedback", "") })
+        foreach (var (name, glyph) in new[] { ("Home", Theme.GlyphHome), ("Setup", Theme.GlyphSetup), ("Settings", Theme.GlyphSettings),
+                                               ("Controls", Theme.GlyphGame), ("Saves", Theme.GlyphSave), ("Update", Theme.GlyphUpdate),
+                                               ("Feedback", Theme.GlyphFeedback) })
         {
             var b = new NavButton { Text = name, Glyph = glyph, Width = side.Width, Location = new Point(0, y) };
             b.Click += (_, _) => Show(name);
@@ -212,6 +220,10 @@ partial class MainForm : Form
             page.Visible = key == name;
             nav.Selected = key == name;
         }
+        if (pages[name].Page is ScrollableControl shown)   // a page opens at its top, not at the control with the focus
+            BeginInvoke(() => shown.AutoScrollPosition = Point.Empty);
+        if (name == "Home") RefreshHome();
+        if (name == "Saves") RefreshSaves();
         if (name == "Settings") LoadGameSettings();
         if (name == "Controls") LoadControls();
         if (name == "Feedback") _ = FillFeedback();
@@ -334,6 +346,7 @@ partial class MainForm : Form
         SettingRow(grid, "", fgNote);
         SettingRow(grid, "Performance overlay", overlay);
         SettingRow(grid, "Wild Pokémon", population);
+        SettingRow(grid, "Compatibility", safeSubmit);
         var look = Grid(2);
         look.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         look.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -629,14 +642,15 @@ partial class MainForm : Form
             status.Text = built ? "Ready to play. Rebuild or Repair only when something is missing or after a change."
                                 : "Choose your files and a target folder, then press Build.";
         ApplyColour();
+        RefreshHome();
     }
 
     void ApplyColour()
     {
         string choice = colour.SelectedIndex >= 0 ? Value(colour) : "auto";
+        if (Program.PreviewColour != null) choice = Program.PreviewColour;   // --colour=scarlet: a look at a palette (design checks)
         string game = choice == "auto" ? (targetBox.Text != "" ? Builder.Game(targetBox.Text) : "unknown") : choice;
-        Theme.Accent = Theme.AccentFor(game);
-        Theme.Recolor(this);
+        Theme.SetPalette(Theme.PaletteFor(game), this);
     }
 
     void Play()
@@ -666,8 +680,9 @@ partial class MainForm : Form
         UpdateRows();
         Select(overlay, built ? ini.Get("perf_overlay") : null, "off");
         Select(population, built ? ini.Get("population") : null, "switch");
+        safeSubmit.Checked = (built ? ini.Get("submit_defer") : null) == "0";
         sharpness.Value = int.TryParse(built ? ini.Get("sharpness") : null, out int s) ? Math.Clamp(s, 0, 100) : 80;
-        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssModel, frameGen, addStreamline, overlay, population, sharpness, saveSettings })
+        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssModel, frameGen, addStreamline, overlay, population, safeSubmit, sharpness, saveSettings })
             c.Enabled = built;
         settingsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
         DlssStatus();
@@ -802,6 +817,7 @@ partial class MainForm : Form
             ini.Set("display", "sharpness", sharpness.Value.ToString());
             ini.Set("display", "perf_overlay", Value(overlay));
             ini.Set("display", "population", Value(population));
+            ini.Set("compatibility", "submit_defer", safeSubmit.Checked ? "0" : "1");
             ini.Save();
             settingsNote.Text = "Saved. They apply the next time the game starts.";
         }

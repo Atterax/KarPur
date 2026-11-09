@@ -125,6 +125,10 @@ def main():
     if not (args.exefs / 'main').is_file():
         sys.exit(f'error: {args.exefs} has no main: run tools\\extract.py first')
     clang, ninja = find_tool('clang', args.clang), find_tool('ninja', args.ninja)
+    sys.path.insert(0, str(ROOT / 'tools'))
+    from cpu_march import march   # the CPU level of this PC (tools/cpu_march.py)
+    level = march(clang)
+    GEN_FLAGS[:] = [f'-march={level}' if f.startswith('-march=') else f for f in GEN_FLAGS]
     free = shutil.disk_usage(ROOT).free
     if free < 8 * 2**30:
         sys.exit(f'error: only {free / 2**30:.1f} GiB free on the drive of {ROOT}; lifting needs about 8 GiB')

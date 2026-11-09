@@ -1,114 +1,224 @@
+<div align="center">
+
 # KarPur
 
-**KarPur** is a fan project that statically recompiles *Pokémon Scarlet & Violet* (Nintendo Switch, 2022) into a native Windows x86-64 application with a Vulkan renderer: real PC code, not emulation.
+**Pokémon Scarlet & Violet, recompiled into a native PC game.**
+
+*Real Windows x86-64 code with a Vulkan renderer, built on your own PC from your own copy of the game. Not an emulator.*
+
+[Download the launcher](https://github.com/Grunttanamo/KarPur/releases) · [Requirements](#requirements) · [Getting started](#getting-started) · [Troubleshooting](#troubleshooting) · [Roadmap](docs/roadmap.md)
+
+</div>
 
 > [!IMPORTANT]
-> **This repository contains no game files and never will.** You need your own legally obtained copy of the game and the keys of your own console. Instructions for obtaining those will not be provided.
+> **This repository contains no game files and never will.** You need your own legally obtained copy of the game and the keys of your own console. Instructions for obtaining them will not be provided.
 >
-> Everything built from the game is built from your files on your machine, for your own use. Do not share it.
+> Everything is built from your files, on your PC, for your own use. Do not share it.
+
+## What is KarPur?
+
+KarPur is a fan project. It takes the ARM64 code of *Pokémon Scarlet & Violet* (Nintendo Switch, 2022) and translates it into C code, which it compiles into a Windows program. The Switch system and its graphics API are replaced by a runtime of our own, and the game draws its pictures through Vulkan.
+
+In practice that means:
+- a steady **60 FPS**
+- **DLSS, DLAA and Frame Generation**
+- **keyboard and mouse**
+- **more wild Pokémon**
+
+The **KarPur Launcher** does all the building for you.
+
+## Requirements
+
+### Your game
+
+| | What you need | Status |
+|---|---|---|
+| 🟢 | ***Pokémon Violet*, base game as `.xci`** (a cartridge dump) | Tested by the maintainer |
+| 🟢 | **Update 4.0.0 as `.nsp`** | Tested; the only supported update |
+| 🟡 | ***Pokémon Scarlet*, base game as `.xci`** | Works according to community reports; not tested by the maintainer |
+| 🟡 | **DLC as `.nsp`** (optional) | Costumes work; the DLC story areas need more testing |
+| 🔴 | **Base game as `.nsp`** (an eShop copy) | **Not supported.** The build stops with an error about the firmware / the *shared fonts* folder: the system fonts come from the cartridge image |
+| 🔴 | Other updates than 4.0.0 | Not tested so not supported |
+
+You also need **`prod.keys`** from the same console.
+
+### Your PC
+
+| | |
+|---|---|
+| **System** | Windows 10 or 11, 64-bit |
+| **Graphics card** | Vulkan 1.3 with a current driver. DLSS, DLAA and Frame Generation need an NVIDIA RTX card |
+| **Processor** | 64-bit x86. CPUs with AVX2 (most from 2015 on) run it best; older ones get a compatible build automatically |
+| **Memory** | 16 GB RAM recommended |
+| **Disk** | About **30 GB free** while building; about 13 GB stay in use afterwards |
+| **Internet** | For the first build (about 250 MB of tools, all checked against fixed checksums) |
+
+### Platforms
+
+| | Platform | Status |
+|---|---|---|
+| 🟢 | Windows 10 / 11 | Tested (Ryzen 7 9800X3D, RTX 5080) |
+| ⚪ | Linux, Steam Deck, Proton / Wine | Not tested. The runtime has a Linux port, but the launcher is a Windows program. Reports are welcome |
 
 ## Status
 
-**Playable, still in development (milestone M5 of 6).** *Pokémon Violet* 4.0.0 runs from the title screen into the open world, with battles, picnics and fast travel, at a stable 60 FPS on the maintainer's PC (Ryzen 7 9800X3D, RTX 5080). Scarlet and other game versions are not tested. The roadmap is in [docs/roadmap.md](docs/roadmap.md), the current state in [docs/progress.md](docs/progress.md).
+**Milestone M6 of 6: PC extras.** The game is playable: from the title screen into the open world, with battles, picnics, fast travel, saving and loading. Now the work is on PC features and polish.
+
+| | Milestone | |
+|---|---|---|
+| ✅ | M0-M3 | Foundation, tools, the code translator, first sign of life |
+| ✅ | M4 | First picture through Vulkan |
+| ✅ | M5 | Playable |
+| 🔄 | **M6** | **PC extras**: 60 FPS ✅, DLSS / DLAA / Frame Generation ✅, launcher ✅, settings ✅, shader pre-build ✅, AMD alternatives, DLC, draw distance |
+
+Details: [docs/roadmap.md](docs/roadmap.md) · daily log: [docs/progress.md](docs/progress.md)
 
 ## Features
 
-- **60 FPS** with the game's speed kept right, smooth effects, and smooth walking indoors. 90, 120 and 144 FPS are available as experimental limits: walking indoors follows them, effects can stutter.
-- **NVIDIA DLAA, DLSS and DLSS Frame Generation** (RTX cards, optional): DLAA smooths the edges of the 3D world; DLSS renders it at your window's size (or at 4K, scaled down) for a sharper picture; Frame Generation shows 2, 3 or 4 frames for each one the game renders (2x on RTX 40, up to 4x on RTX 50). The HUD stays as the game draws it. NVIDIA's files are not part of KarPur: you add your own copies (from a game that ships DLSS) in the launcher. Frame Generation also needs Windows' hardware-accelerated GPU scheduling.
-- **AMD FSR 1** or bilinear scaling of the picture to the window, with sharpness, when DLSS is off.
-- **Pokémon population in four levels**, for how many wild Pokémon roam at once. It takes effect after a restart:
+### 🎮 Smooth play
+- **60 FPS**, with the game's speed kept right, smooth effects and smooth walking indoors. 90, 120 and 144 FPS are available as experimental limits.
+- **All shaders prepared during the build:** about 36,000 shaders from your own game files are translated and handed to the graphics driver ahead of time. New areas, Pokémon and attacks appear without the stutter of first-time shader builds.
 
-  | Level | At once | Good for |
-  |---|---|---|
-  | Switch (default) | 15 | the game as it ships |
-  | Switch 2 | 40 | playing |
-  | Enhanced | 80 | playing |
-  | Extreme | 120 | screenshots; can drop to about 35 FPS |
+### ✨ Picture
+- **NVIDIA DLAA**: smooth edges in the 3D world, at about 1 ms per frame.
+- **NVIDIA DLSS**: the 3D world is rendered at your window's size, or at 4K and then scaled down.
+- **DLSS Frame Generation**: 2× on RTX 40, up to 4× on RTX 50 cards. It needs Windows' hardware-accelerated GPU scheduling.
+- NVIDIA's files are not part of KarPur: you add your own copies (from any game that ships DLSS) in the launcher.
+- **AMD FSR 1** or bilinear scaling, with sharpness, when DLSS is off.
+- The HUD always stays as the game draws it.
 
-  Switch 2 uses the spawn values of the fan mod [Pokémon Compass](https://compass.seri.studio) by Aria Seri and Kas Seri; the higher levels raise only the count. KarPur contains these numbers, none of the mod's files.
-- **Controls page** in the look of the game's menus, opened with **F1** or **Esc**: key and button remapping, button layout, motion controls, vibration, stick dead zone and mouse sensitivity. Its texts are in English, German and Russian, following the Windows language. The launcher's **Controls** tab sets the same, and swaps the sticks or inverts the camera.
-- **PC settings page in the game's menu** (optional, `UI_PATCH=1`): it takes the place of the downloadable-content button, so it is off by default; the launcher has the same settings.
-- **Mouse and keyboard or controller**, with the mouse turning the camera.
+### 🌿 A livelier Paldea
+**More wild Pokémon**, in four levels. The setting takes effect after a restart.
 
-## Known limits
+| Level | Pokémon at once | Good for |
+|---|---|---|
+| Switch (default) | 15 | the game as it ships |
+| Switch 2 | 40 | playing |
+| Enhanced | 80 | playing |
+| Extreme | 120 | screenshots; can drop to about 35 FPS |
 
-- The game image stays at 1920 x 1080; the window scales it. A higher internal resolution is not done yet.
-- Online features are not available, and downloadable content is not reported to the game yet.
-- Some graphics details are still open, see [docs/progress.md](docs/progress.md).
+Switch 2 uses the spawn values of the fan mod [Pokémon Compass](https://compass.seri.studio) by Aria Seri and Kas Seri. The higher levels only raise the count. KarPur contains these numbers, none of the mod's files.
 
-## What you need
+### 🕹️ Controls
+- **Mouse and keyboard or controller**; the mouse turns the camera.
+- **A controls page in the style of the game's own menus**, opened with **F1** or **Esc**. It has:
+  - remapping of every key and button
+  - button layout and motion controls
+  - vibration
+  - stick dead zone and mouse sensitivity
+  
+  Its texts are in English, German and Russian.
 
-- **Your own *Pokémon Violet*** from your own console. Only Violet has been tested; Scarlet may work but is untested.
-  - the **base game as an `.xci`** (a cartridge dump). **An `.nsp` does not work as the base game**: the system fonts come from the cartridge image.
-  - the **update 4.0.0 as an `.nsp`**. Other updates are not supported.
-  - the **DLC as an `.nsp`**, if you have it (optional)
-- **`prod.keys`** from the same console
-- **Windows 10 or 11 (64-bit)** and a graphics card with **Vulkan** and a current driver
-- About **30 GB of free space** while building; about 12.5 GB stay in use afterwards
-- An internet connection for the first build (about 250 MB of tools)
-
-How to dump your game and keys is not covered here.
+### 🧰 The KarPur Launcher
+- **One file**: no installation and no administrator rights.
+- **Home**: a start page in your edition's colours, with Play, the state of your build, your last save and **your current team** (name and level, read when the game saves) at a glance.
+- **Setup**: builds the game from your dumps, shaders included. A stopped build goes on where it stopped.
+- **Settings**: everything from fullscreen to Frame Generation, before you start the game.
+- **Controls**: keyboard, mouse and controller, with swapped sticks and an inverted camera.
+- **Saves**: export your save as a `.zip`, import one, open its folder, or restore one of the last saves.
+- **Repair** and **Update**: only what changed is rebuilt. Your saves and settings stay.
+- **Feedback**: a ready-made report about your system for a GitHub issue.
 
 ## Getting started
 
-### The easy way: the KarPur Launcher
+1. **Download** `KarPur-Launcher.exe` from the [releases page](https://github.com/Grunttanamo/KarPur/releases). Windows may warn that the file is unknown, because it is not signed: choose *More info* → *Run anyway*.
+2. **Choose your files** in the *Setup* tab:
+   - the base game (`.xci`)
+   - the update and DLC (`.nsp`)
+   - `prod.keys`
+   - a **target folder without spaces**
+3. **Press Build.** The first build takes about 30-60 minutes and keeps your PC busy:
+   - the launcher downloads Python and the compiler from their official sources
+   - it translates the game's code
+   - it compiles `karpur.exe`
+   - finally, it prepares all shaders
+4. **Play**: press *Play*, or use the shortcut **Pokémon Violet (KarPur)** that the launcher puts into your target folder.
 
-1. Download **`KarPur-Launcher.exe`** from the [releases page](https://github.com/Grunttanamo/KarPur/releases). It is a single file: no installation, no administrator rights, nothing else to download by hand. Windows may warn that the file is unknown (it is not signed): choose *More info* → *Run anyway*.
-2. In the **Setup** tab, choose your base game (`.xci`), update and DLC (`.nsp`), `prod.keys` and a **target folder** without spaces.
-3. Press **Build**. The first build takes 30-60 minutes and keeps your PC busy. The launcher downloads Python and the compiler from their official sources (every file is checked against a fixed checksum) and builds the game on your PC. You can stop at any time: the next Build goes on where it stopped.
-4. Press **Play**, or use the shortcut **Pokémon Violet (KarPur)** that the launcher puts into your target folder, next to a copy of the launcher.
+Your dumps, your keys and the built game stay on your PC. A guide in German is in [docs/launcher.md](docs/launcher.md). If you want to do everything by hand, see [docs/setup-windows.en.md](docs/setup-windows.en.md) ([Deutsch](docs/setup-windows.md)).
 
-The launcher also has:
-- **Settings:** the game's settings before you start it (fullscreen, window size, FPS limit, frame sync, anti-aliasing (DLAA), upscaling (FSR 1, bilinear, DLSS), sharpness, DLSS model, frame generation, performance overlay, wild Pokémon), the buttons that add your own `nvngx_dlss.dll` and Streamline files, and the launcher's colour, which follows your game.
-- **Controls:** keyboard, mouse and controller: click a button and press the key or controller button you want; controller layout, stick dead zone, swapped sticks, inverted camera, mouse sensitivity, vibration and motion controls.
-- **Repair:** restores the project files, sets up Python again and rebuilds only what is missing or changed. Your saves and settings stay as they are.
-- **Update:** installs new launcher releases and rebuilds only what changed, usually in a few minutes.
-- **Feedback:** see below.
+## Troubleshooting
 
-Your dumps, your keys and the built game stay on your PC. Details (German): [docs/launcher.md](docs/launcher.md).
+<details>
+<summary><b>The build stops with an error about the firmware or the "shared fonts" folder</b></summary>
 
-### Feedback: tell us how it runs
+Your base game is an `.nsp`. KarPur needs the base game as an **`.xci`** (a cartridge dump), because the system fonts come from the cartridge image. Only the update and the DLC are `.nsp` files.
+</details>
 
-KarPur has only been tested on the maintainer's PC, so reports from other systems help a lot. The launcher's **Feedback** tab fills in your launcher version, game, update, DLC, GPU, CPU, RAM and Windows version by itself; you add a few words (and, with *Attach log*, the end of the game's log). **Open on GitHub** opens it as a filled-in [issue](https://github.com/Grunttanamo/KarPur/issues) in your browser, where you check it and submit it. You need a free GitHub account for that; reports are public. Without an account, *Copy report* copies it for anywhere else.
+<details>
+<summary><b>The game crashes right after the character creation</b></summary>
 
-### By hand
+In the launcher, open **Settings** and turn on **Compatibility mode**, then **Save settings**. This sends the game's graphics work to the GPU at once, instead of slightly delayed. Far trees may flicker a little more, and the frame rate can drop a little.
 
-You can also set everything up yourself: [docs/setup-windows.en.md](docs/setup-windows.en.md) ([Deutsch](docs/setup-windows.md)) goes through it step by step. The older full settings menu stays available for troubleshooting with:
+Without the launcher, start the game from PowerShell in the folder of `karpur.exe` like this:
 
+```powershell
+$env:TOTK_SUBMIT_DEFER = "0"
+.\karpur.exe
 ```
-.venv\Scripts\python tools\run_with.py MENU_LOCK=0
-```
+
+Please also send us a report (see below), so we can find the cause.
+</details>
+
+<details>
+<summary><b>The build stops at "Self-test"</b></summary>
+
+Exit code `3221225501` means that the processor lacks an instruction set the build used (AVX2). Current builds detect this and build for your processor. Press **Repair** in the launcher after updating it. If the self-test still fails, please send us the launcher log.
+</details>
+
+<details>
+<summary><b>The game crashes or freezes somewhere else</b></summary>
+
+Use the launcher's **Feedback** tab with **Attach log**, or open an [issue](https://github.com/Grunttanamo/KarPur/issues) and attach the whole `build\game\logs\karpur.log` from your target folder. Please send the whole file: the last lines alone rarely show the cause. Name your graphics card and its driver version too.
+</details>
+
+## Feedback
+
+KarPur is mostly tested on the maintainer's PC, so reports from other systems help a lot. The launcher's **Feedback** tab fills in:
+- your launcher version, game, update and DLC
+- your GPU, CPU, RAM and Windows version
+
+You add a few words, and with *Attach log* the end of the game's log. **Open on GitHub** opens it as a filled-in [issue](https://github.com/Grunttanamo/KarPur/issues). You need a free GitHub account for that, and reports are public. Without an account, *Copy report* copies the report for anywhere else.
+
+## Known limits
+
+- The game renders at 1920 × 1080; DLSS gives a sharper picture at higher window sizes. A higher native resolution is not done yet.
+- Online features (Union Circle, trading, Tera Raid matchmaking) are not available.
+- Of the DLC, only the costumes are confirmed to work so far; the story areas need more testing.
+- Draw distance settings for trees, grass, Pokémon and NPCs are not done yet.
+- No AMD upscaler or frame generation beyond FSR 1 yet.
 
 ## How it works
 
-1. The game's ARM64 executables are translated into C code automatically ("lifting").
-2. A runtime of our own stands in for the Switch operating system: threads, files, input, audio.
-3. The Switch graphics API (NVN) is mapped to Vulkan, and the game's shaders are translated with the Ryujinx shader translator.
-4. Everything is compiled with Clang into an `.exe`, on the player's own machine.
-5. The game's own menus are extended at run time: a script runs in the game's Lua state, and data files are changed as the game unpacks them. Your game files on disk stay untouched.
+1. **Lifting**: the game's ARM64 executables are translated into C code automatically.
+2. **Runtime**: our own code stands in for the Switch operating system, including threads, files, input and audio.
+3. **Graphics**: the Switch graphics API (NVN) is mapped to Vulkan. The game's shaders are translated with the Ryujinx shader translator.
+4. **Build**: Clang compiles everything into an `.exe`, on the player's own PC.
+5. **Run-time patches**: the game's menus and data are extended as the game loads them. Your game files on disk stay untouched.
 
-The foundation is the MIT-licensed [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) and [LAS Recomp](https://github.com/peiikai/LASRecomp). Code taken from other projects is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+KarPur builds on the MIT-licensed [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) and [LAS Recomp](https://github.com/peiikai/LASRecomp). Code taken from other projects is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Built with AI
 
-This project would not exist without AI. Most of the code and documentation is written by an AI coding agent ([Claude Code](https://claude.com/claude-code) by Anthropic), which also plans the work, explains every step and analyzes the reports and crash logs. The maintainer owns the game and the console, runs and tests every build on real hardware, and decides what goes in. The rules the agent works under are in [CLAUDE.md](CLAUDE.md).
+This project would not exist without AI. An AI coding agent ([Claude Code](https://claude.com/claude-code) by Anthropic) writes most of the code and documentation. It also plans the work, explains every step, and analyses the reports and crash logs.
+
+The maintainer owns the game and the console, runs and tests every build on real hardware, and decides what goes in. The rules the agent works under are in [CLAUDE.md](CLAUDE.md).
 
 ## Contributing
 
-Read [CLAUDE.md](CLAUDE.md) first for the project rules. Before every commit, run:
-
-```
-python tools/check_content.py --staged
-```
-
-Enable the protective hook once per clone:
+Read [CLAUDE.md](CLAUDE.md) first for the project rules. Enable the protective hook once per clone:
 
 ```
 git config core.hooksPath .githooks
+```
+
+Before every commit, run:
+
+```
+python tools/check_content.py --staged
 ```
 
 ## License
 
 The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license. The license grants nothing for the game.
 
-KarPur is an independent, non-commercial fan project and is not affiliated with or endorsed by Nintendo, The Pokémon Company, Game Freak or Creatures Inc. *Pokémon*, *Pokémon Scarlet*, *Pokémon Violet* and *Nintendo Switch* are trademarks of their respective owners.
+KarPur is an independent, non-commercial fan project. It is not affiliated with or endorsed by Nintendo, The Pokémon Company, Game Freak or Creatures Inc. *Pokémon*, *Pokémon Scarlet*, *Pokémon Violet* and *Nintendo Switch* are trademarks of their respective owners.
