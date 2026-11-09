@@ -37,6 +37,7 @@ class Builder
         ["lift"] = ("Translating the game code (10-40 minutes)", 55),
         ["build"] = ("Building karpur.exe (about 5 minutes)", 14),
         ["selftest"] = ("Self-test", 1),
+        ["shaders"] = ("Preparing all shaders (about 5 minutes)", 6),
         ["cleanup"] = ("Cleaning up", 1),
     };
     const int SetupShare = 5;   // unpacking the files and setting up Python, before setup_build.py starts

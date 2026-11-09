@@ -2840,7 +2840,7 @@ static void lb_report(const char *how) {
     rt_log("vk_pipeline: stage library prebuild %s: %llu of %zu variants in %.0f ms; kept: vertex %llu built (avg %.1f ms), "
            "%llu there; fragment %llu built (avg %.1f ms), %llu there; compute %llu built (avg %.1f ms), %llu there; driver "
            "cache only: vertex %llu (avg %.1f ms), fragment %llu (avg %.1f ms), compute %llu (avg %.1f ms); %llu failed, %llu not in the shader cache, "
-           "%llu vertex/fragment skipped (graphics pipeline library off); process working set %.0f MB", how, (unsigned long long)LB.done, LB.n,
+           "%llu vertex/fragment not built ahead (graphics pipeline library off or transform feedback); process working set %.0f MB", how, (unsigned long long)LB.done, LB.n,
            now_ms() - LB.t0, (unsigned long long)LB.built[0], LB.built[0] ? LB.ms[0] / LB.built[0] : 0.0,
            (unsigned long long)LB.have[0], (unsigned long long)LB.built[1], LB.built[1] ? LB.ms[1] / LB.built[1] : 0.0,
            (unsigned long long)LB.have[1], (unsigned long long)LB.built[2], LB.built[2] ? LB.ms[2] / LB.built[2] : 0.0,
@@ -2939,12 +2939,36 @@ static void lb_stop(void) {
 }
 
 // Preparation: one prepared variant at a time into the driver's disk cache (private shader copy, nothing kept).
+// Crash guard of the preparation. A driver can crash compiling one shader (NVIDIA 621.12 corrupts its heap on one of
+// Violet's fragment shaders, 0xc0000374, inside vkCreateGraphicsPipelines). Each worker writes the input id it is
+// building into its slot of <dir>/shader-warm-inflight.bin (32 bytes per slot, zero when idle) and flushes it, so a
+// crashed process leaves the variants it was building there. The next run (main.c restarts --prepare-shaders and
+// --warm-shaders after a crash) reads them: a single one goes to shader-warm-skip.bin (never built ahead again; it
+// builds at its first draw, if a draw ever needs it); several are suspects, built first one at a time on one thread,
+// so a second crash names exactly one. The file is removed when a run finishes.
+#define WARM_SLOTS 64
+static struct {
+    PlatMutex lock;
+    FILE *f;
+} WG = {PLAT_MUTEX_INIT};
+
+static void warm_mark(int slot, const uint8_t iid[32]) {
+    static const uint8_t zero[32];
+    if (!WG.f || slot < 0 || slot >= WARM_SLOTS) return;
+    plat_mutex_lock(&WG.lock);
+    fseek(WG.f, (long)slot * 32, SEEK_SET);
+    fwrite(iid ? iid : zero, 32, 1, WG.f);
+    fflush(WG.f);
+    plat_mutex_unlock(&WG.lock);
+}
+
 static void lb_warm_worker(void *arg) {
-    (void)arg;
+    int slot = (int)(intptr_t)arg;
     for (;;) {
         size_t i = (size_t)plat_inc64(&LB.next) - 1;
         if (i >= LB.n) return;
         int owned = 0;
+        warm_mark(slot, LB.e[i].iid);
         if (lb_trace()) {   // TOTK_LIB_WARM_TRACE=1: one thread, each variant named before it is built (crash hunts)
             fprintf(stderr, "lib warm: variant %zu, stage %u, input %02x%02x%02x%02x%02x%02x%02x%02x\n", i, LB.e[i].stage,
                     LB.e[i].iid[0], LB.e[i].iid[1], LB.e[i].iid[2], LB.e[i].iid[3], LB.e[i].iid[4], LB.e[i].iid[5],
@@ -2972,6 +2996,7 @@ static void lb_warm_worker(void *arg) {
             else lb_skip_lib();
         }
         if (owned) gfx_shader_release_private(sh);
+        warm_mark(slot, NULL);
         plat_mutex_lock(&LB.stat);
         uint64_t d = ++LB.done;
         plat_mutex_unlock(&LB.stat);
@@ -2996,21 +3021,73 @@ static void lb_warm_prepared(const char *dir) {
     size_t count = (size_t)atoll(cfg_get("TOTK_LIB_WARM_COUNT") ? cfg_get("TOTK_LIB_WARM_COUNT") : "0");
     if (from > n) from = n;
     if (count && count < n - from) n = from + count;
-    LB.next = from;
-    LB.n = n, LB.idle = 0, LB.t0 = now_ms();
+    if (from) memmove(LB.e, LB.e + from, (n - from) * sizeof *LB.e), n -= from;
+
+    // the crash guard: the skip list, and what a crashed run left in flight
+    char inflight[PLAT_PATH_MAX * 2 + 40], skip_path[PLAT_PATH_MAX * 2 + 40];
+    snprintf(inflight, sizeof inflight, "%s/shader-warm-inflight.bin", dir);
+    snprintf(skip_path, sizeof skip_path, "%s/shader-warm-skip.bin", dir);
+    static const uint8_t zero[32];
+    uint64_t sk = 0, fl = 0;
+    uint8_t *skb = plat_file_read(skip_path, &sk), *flb = plat_file_read(inflight, &fl);
+    size_t n_skip = skb ? (size_t)(sk / 32) : 0, n_flight = 0;
+    uint8_t flight[WARM_SLOTS][32];
+    for (uint64_t o = 0; flb && o + 32 <= fl && n_flight < WARM_SLOTS; o += 32)
+        if (memcmp(flb + o, zero, 32)) memcpy(flight[n_flight++], flb + o, 32);
+    free(flb);
+    if (n_flight == 1) {   // the one variant a crashed run was building: set aside for good
+        uint8_t *all = realloc(skb, (n_skip + 1) * 32);
+        if (all) {
+            skb = all;
+            memcpy(skb + 32 * n_skip++, flight[0], 32);
+            plat_file_write_atomic(skip_path, skb, n_skip * 32);
+        }
+        printf("prepare-shaders: the last run crashed building variant %02x%02x%02x%02x%02x%02x%02x%02x; it is set aside "
+               "(%zu in shader-warm-skip.bin) and builds at its first draw\n", flight[0][0], flight[0][1], flight[0][2],
+               flight[0][3], flight[0][4], flight[0][5], flight[0][6], flight[0][7], n_skip);
+        n_flight = 0;
+    } else if (n_flight) {
+        printf("prepare-shaders: the last run crashed while building %zu variants: they go first, one at a time\n", n_flight);
+    }
+    // the list without the skipped variants, the suspects first
+    size_t m = 0, skipped = 0, solo = 0;
+    typeof(LB.e[0]) *order = calloc(n + 1, sizeof *order);
+    for (int pass = 0; order && pass < 2; pass++)
+        for (size_t i = 0; i < n; i++) {
+            int skip = 0, suspect = 0;
+            for (size_t j = 0; j < n_skip && !skip; j++) skip = !memcmp(LB.e[i].iid, skb + 32 * j, 32);
+            for (size_t j = 0; j < n_flight && !suspect; j++) suspect = !memcmp(LB.e[i].iid, flight[j], 32);
+            if (skip) skipped += pass == 0;
+            else if (suspect == (pass == 0)) order[m++] = LB.e[i];
+            if (pass == 0 && i == n - 1) solo = m;
+        }
+    free(skb);
+    if (order) free(LB.e), LB.e = order, n = m;
+    // in-flight slots, all zero
+    uint8_t zeros[WARM_SLOTS * 32] = {0};
+    if ((WG.f = fopen(inflight, "wb"))) fwrite(zeros, sizeof zeros, 1, WG.f), fflush(WG.f);
+
+    LB.idle = 0, LB.t0 = now_ms();
     static const uint32_t no_pr[16], no_fs[4];
     lb_state(no_pr, no_fs);
+    LB.next = 0, LB.n = solo;
+    lb_warm_worker((void *)(intptr_t)0);   // the suspects, one at a time on this thread
+    LB.next = solo, LB.n = n;
     int cpus = lb_trace() ? 1 : (int)plat_cpu_usable(), k = 0;
-    PlatThread *t[64];
-    for (int i = 0; i < cpus && i < 64; i++)
-        if ((t[k] = plat_thread_new(lb_warm_worker, NULL, "lib warm"))) k++;
-    if (!k) lb_warm_worker(NULL);
+    PlatThread *t[WARM_SLOTS];
+    for (int i = 0; i < cpus && i < WARM_SLOTS; i++)
+        if ((t[k] = plat_thread_new(lb_warm_worker, (void *)(intptr_t)k, "lib warm"))) k++;
+    if (!k) lb_warm_worker((void *)(intptr_t)0);
     for (int i = 0; i < k; i++) plat_thread_join(t[i]);
+    if (WG.f) fclose(WG.f), WG.f = NULL;
+    plat_file_delete(inflight);
+    if (skipped) printf("prepare-shaders: %zu variants set aside (shader-warm-skip.bin): a driver crashed building them\n", skipped);
     lb_report("preparation done");
     // with gpl off only compute variants are built: say so, rather than count the skipped ones as built
     if (LB.nolib)
-        printf("prepare-shaders: %zu variants on %d threads in %.0f ms, %llu vertex/fragment variants skipped (graphics "
-               "pipeline library off, they build at their first draw)\n", n, k, now_ms() - LB.t0, (unsigned long long)LB.nolib);
+        printf("prepare-shaders: %zu variants on %d threads in %.0f ms, %llu vertex/fragment variants not built ahead (%s; "
+               "they build at their first draw)\n", n, k, now_ms() - LB.t0, (unsigned long long)LB.nolib,
+               P.gpl ? "transform feedback" : "graphics pipeline library off");
     else
         printf("prepare-shaders: %zu variants built into the driver cache on %d threads in %.0f ms\n", n, k, now_ms() - LB.t0);
     free(LB.e), LB.e = NULL, LB.n = 0, LB.next = 0, LB.done = 0;

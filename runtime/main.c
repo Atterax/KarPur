@@ -534,6 +534,20 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-astc")) return probe_astc();
     if (!strcmp(mode, "--probe-vkdevice")) return probe_vkdevice();
     if (!strcmp(mode, "--probe-movie")) return probe_movie();
+    if ((!strcmp(mode, "--prepare-shaders") || !strcmp(mode, "--warm-shaders")) && !getenv("TOTK_WARM_CHILD")) {
+        // A driver can crash compiling one shader. The work runs in a child process; after a crash the child is started
+        // again, and the preparation's crash guard (vk_pipeline.c, shader-warm-inflight.bin) sets the culprit aside.
+        // Each restart finds at least one culprit; at most 20 restarts.
+        plat_setenv("TOTK_WARM_CHILD", "1");
+        int code = 0;
+        for (int run = 0; run <= 20; run++) {
+            code = plat_spawn_self();
+            if (code == 0 || code == 1 || code == 2) break;   // done, or a failure of our own (no device, no files)
+            printf("prepare-shaders: the process ended with code %#x (a driver crash); starting again\n", (unsigned)code);
+            fflush(stdout);
+        }
+        return code;
+    }
     if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
     if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }

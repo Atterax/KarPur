@@ -137,7 +137,10 @@ static int load_programs(void) {
     strcpy(cut + 1, "shader-programs.bin");
     uint64_t size = 0;
     uint8_t *b = plat_file_read(path, &size);
-    if (!b || size < 16 || memcmp(b, "TOTKSPRG", 8)) { rt_log("shader census: no %s (play a little first)", path); return 0; }
+    if (!b || size < 16 || memcmp(b, "TOTKSPRG", 8)) {   // a fresh install: extraction only, nothing to compare with
+        rt_log("shader census: no %s: the extraction runs, the search for recorded programs does not", path);
+        return 0;
+    }
     int cap = 1024;
     progs = calloc((size_t)cap, sizeof *progs);
     for (uint64_t o = 16; size - o >= PRG_HEAD;) {
@@ -171,7 +174,7 @@ static int load_programs(void) {
 #define HSET_BITS 20
 typedef struct { uint8_t h[32]; uint8_t used; } HSlot;
 static HSlot *rec_set, *out_set;          // recorded code hashes, extracted ones
-static uint64_t n_bnsh, n_triples, n_out, n_out_stage[6], n_reproduced, n_stage_wrong, out_bytes, n_hash_fail;
+static uint64_t n_not_shader, n_bnsh, n_triples, n_out, n_out_stage[6], n_reproduced, n_stage_wrong, out_bytes, n_hash_fail;
 static uint64_t conf[6][6];               // [recorded stage][guessed stage] for programs reproduced under any stage
 static FILE *out_f, *ans_f;
 static uint8_t *out_buf;
@@ -209,6 +212,14 @@ static void out_flush(void) {
 
 static void extract_program(const uint8_t *ctrl, const uint8_t *code, uint32_t len) {
     int g = guess_stage(code, len);
+    if (g == GFX_STAGE_CS) {   // no shader program header: compute only with a sane local size (test CL: the 146
+        uint64_t total = 1;    // others had sizes like 37054 x 0 x 36, failed to translate and are no shaders)
+        for (int k = 0; k < 3; k++) {
+            uint32_t l = u32(ctrl + 0x748 + 4 * k);
+            total *= l > 1024 ? 1u << 20 : l ? l : 1;
+        }
+        if (total > 1024) { n_not_shader++; return; }
+    }
     uint8_t h[32];
     if (!gfx_shader_code_hash(g, ctrl, code, h)) { n_hash_fail++; return; }
     if (n_out >= (7u << HSET_BITS) / 8) { n_hash_fail++; return; }   // the set is full: counted, not kept
@@ -445,7 +456,7 @@ static void describe(const uint8_t *b, uint64_t n, Holder *hd) {
 }
 
 static void search(const uint8_t *b, uint64_t n, uint64_t pack, uint64_t file, int stored) {
-    if (n < 64) return;
+    if (n < 64 || !nprogs) return;
     Holder *hd = NULL;
     for (uint64_t i = 0; i + 8 <= n; i++) {
         uint64_t v = u64(b + i), h = mix(v);
@@ -493,7 +504,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
     if (__atomic_exchange_n(&ran, 1, __ATOMIC_ACQ_REL)) return;
     uint64_t t0 = plat_now_ns();
     rt_log("shader census: start (this run ends when it is done)");
-    if (!load_programs()) exit(2);
+    load_programs();
     extract_begin();
     // a guest-visible buffer: reserved at a free address below RT_ADDRESS_LIMIT
     uint64_t gbuf = 0;
@@ -646,11 +657,12 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
     if (out_f) fclose(out_f);
     if (ans_f) fclose(ans_f);
     PUT("extraction: %llu BNSH, %llu shader infos, %llu distinct programs (vertex %llu, tess %llu/%llu, geometry %llu, "
-        "fragment %llu, compute %llu), %.1f MiB in seed-programs.bin (+ seed-answers.bin); hash failures %llu\n",
+        "fragment %llu, compute %llu), %.1f MiB in seed-programs.bin (+ seed-answers.bin); %llu left out (no shader "
+        "program header and no sane compute local size); hash failures %llu\n",
         (unsigned long long)n_bnsh, (unsigned long long)n_triples, (unsigned long long)n_out,
         (unsigned long long)n_out_stage[0], (unsigned long long)n_out_stage[1], (unsigned long long)n_out_stage[2],
         (unsigned long long)n_out_stage[3], (unsigned long long)n_out_stage[4], (unsigned long long)n_out_stage[5],
-        out_bytes / 1048576.0, (unsigned long long)n_hash_fail);
+        out_bytes / 1048576.0, (unsigned long long)n_not_shader, (unsigned long long)n_hash_fail);
     PUT("extraction vs recorded: %llu of %d recorded programs reproduced exactly; %llu more only under another stage;"
         " stage (recorded > guessed):", (unsigned long long)n_reproduced, nprogs, (unsigned long long)n_stage_wrong);
     for (int r = 0; r < 6; r++)

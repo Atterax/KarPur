@@ -209,6 +209,9 @@ int plat_write_watch(uint64_t page, int reads, void (*fn)(uint64_t addr, uintptr
 // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);
+// Runs this program again with the same arguments as a child (output passed through), waits, and returns its exit code (a crash: the exception
+// code on Windows, 128 + the signal on Linux; -1 when it cannot start). Environment changes before the call pass on.
+int plat_spawn_self(void);
 
 // A crash in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
 // overflow) goes to fn, which reports it and must end the process. Faults in other modules (drivers) are left to the

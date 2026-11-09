@@ -35,7 +35,8 @@ XLATE = ROOT / 'build' / 'xlate' / 'totk_xlate.exe'
 MSYS = ROOT / 'toolchain' / 'msys2'
 FREE_GB = 30   # docs/setup-windows.md: about 30 GB during the setup
 
-STEPS = ['check', 'toolchain', 'extract', 'fonts', 'romfs', 'menu', 'fps', 'icon', 'lift', 'build', 'selftest', 'cleanup']
+STEPS = ['check', 'toolchain', 'extract', 'fonts', 'romfs', 'menu', 'fps', 'icon', 'lift', 'build', 'selftest', 'shaders',
+         'cleanup']
 UI_LIST = ROOT / 'tools' / 'data' / 'ui_patch_violet_4.0.0.txt'
 
 
@@ -126,6 +127,34 @@ def lift_progress(line):
     return 100 * int(m.group(1)) // int(m.group(2)) if m else None
 
 
+SHADER_PHASES = [   # (pattern of a progress line, share of the step where its phase begins, its share)
+    (re.compile(r'shader census: (\d+) of (\d+) packs'), 0, 25),
+    (re.compile(r'gfx_shader: prepare: (\d+) of (\d+) pairs'), 25, 60),
+    (re.compile(r'preparation progress: (\d+) of (\d+) variants'), 85, 15),
+]
+
+
+def shader_progress(line):
+    for pat, at, share in SHADER_PHASES:
+        m = pat.search(line)
+        if m and int(m.group(2)):
+            return at + share * int(m.group(1)) // int(m.group(2))
+    return None
+
+
+def shaders(env):
+    """Every shader of the game, prepared ahead (docs/progress.md, shader pre-build): the shader census unpacks the
+    game's data with its own decoder and writes the seed (all programs of its BNSH containers, the player's own data,
+    next to karpur.exe); karpur.exe --prepare-shaders translates them and builds them into the driver's cache, restarting
+    itself if the driver crashes on one. The game still runs without it (shaders then build at their first draw), so a
+    failure here is logged and the build goes on."""
+    try:
+        run('shaders', [EXE], dict(env, TOTK_SHADER_CENSUS='1'), shader_progress)
+        run('shaders', [EXE, '--prepare-shaders'], env, shader_progress)
+    except StepError as e:
+        out(f'LOG shader preparation failed, the shaders build while playing instead: {e}')
+
+
 def ninja_progress(line):
     m = re.match(r'\[(\d+)/(\d+)\]', line)
     return 100 * int(m.group(1)) // int(m.group(2)) if m else None
@@ -150,6 +179,7 @@ STEP_OUTPUTS = {
     'menu': ['game/ui_patch.txt'],
     'fps': ['build/fps_patches.txt'],
     'build': ['build/game/karpur.exe'],
+    'shaders': ['build/game/shader-prepared.bin'],
 }
 DEPENDENTS = {
     'extract': ['fps', 'lift', 'build', 'selftest'],
@@ -157,7 +187,7 @@ DEPENDENTS = {
     'fps': ['lift', 'build', 'selftest'],
     'icon': ['build', 'selftest'],
     'lift': ['build', 'selftest'],
-    'build': ['selftest'],
+    'build': ['selftest', 'shaders'],
 }
 INFO = ROOT / 'build' / 'setup_info.json'
 GAMES = {'01008F6008C5E000': 'violet', '0100A3D008C5C000': 'scarlet'}
@@ -248,6 +278,7 @@ def main():
         'lift': lambda: run('lift', [py, 'tools/lift.py'], env, lift_progress),
         'build': lambda: run('build', [py, 'tools/build_game.py'], env, ninja_progress),
         'selftest': lambda: run('selftest', [EXE, '--selftest'], env),
+        'shaders': lambda: shaders(env),
         'cleanup': lambda: None if a.keep else cleanup(),
     }
     steps = plan(state)
