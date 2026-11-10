@@ -22,12 +22,13 @@ Every milestone has a clear goal that can be checked. A milestone counts as done
 | ✅ | More wild Pokémon (four levels) | Done |
 | ✅ | NVIDIA DLAA, DLSS, DLSS Frame Generation | Done |
 | ✅ | All shaders prepared during the build | Done (about 36,000; crash-safe against driver faults) |
-| 🔄 | Stability on other PCs | Older CPUs without AVX2; a crash after the character creation on some PCs (compatibility mode as a workaround) |
+| 🔄 | Stability on other PCs | Older CPUs without AVX2: builds and starts, faster math since 0.3.2, a test run that needs reports; a crash after the character creation on some PCs (compatibility mode as a workaround) |
 | ⬜ | AMD alternatives | FSR 2/3 upscaling and frame generation for AMD and other cards |
 | ⬜ | DLC | Costumes work; the story areas need testing and fixes |
 | ⬜ | Draw distance | Real distance settings for trees, bushes, grass, Pokémon and NPCs inside and outside towns |
-| ⬜ | Launcher extras | A livelier look per game, a Saves tab (export, import, open folder), the current team shown from the save |
+| ✅ | Launcher extras | A look per edition, the current team with icons from the player's own game, a Saves tab, a Mods tab (experimental; files a mod adds and code mods not yet) |
 | ⬜ | Higher internal resolution | Beyond DLSS's output size |
+| ⬜ | Linux and Steam Deck | Planned, after M6's other parts (feature request: native Linux, an AppImage launcher). The runtime already has a Linux port (SDL3 window and input, Wayland and X11) and the lifter and build scripts have Linux branches, all untested for Violet. Stage 1: `setup_build.py` with the system's clang, ninja, SDL3, Vulkan and Opus instead of MSYS2, Linux build instructions, checked on the maintainer's Steam Deck. Stage 2: the launcher on a cross-platform UI (Avalonia, C#) as an AppImage. |
 
 ## How we work
 

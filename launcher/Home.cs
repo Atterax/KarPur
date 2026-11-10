@@ -55,6 +55,7 @@ class Hero : Panel
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(Parent?.BackColor ?? Theme.Back);
+        if (Width < 40 || Height < 40) return;   // a minimised window: GDI+ refuses paths and brushes of no size
         var p = Theme.Current;
         var r = new RectangleF(0, 0, Width - 1, Height - 1);
         using var clip = Theme.Rounded(r, 18);
@@ -270,6 +271,7 @@ class TeamCard : Control
 {
     public string Nick = "", Level = "";
     public bool Shiny;
+    public Image? Icon;   // the Pokemon's icon from the player's own game files (build\game\icons), else the monogram
 
     public TeamCard()
     {
@@ -292,10 +294,25 @@ class TeamCard : Control
             g.DrawPath(pen, path);
         }
         var circle = new RectangleF(Width / 2f - 28, 14, 56, 56);
-        using (var grad = new LinearGradientBrush(circle, Theme.Accent, Theme.Accent2, 45f)) g.FillEllipse(grad, circle);
-        string letter = Nick.Length > 0 ? Nick[..1].ToUpperInvariant() : "?";
-        using (var lf = new Font("Segoe UI", 20f, FontStyle.Bold))
+        if (Icon != null)
+        {
+            // a soft glow in the edition's colours behind the icon, the icon a little larger than the circle
+            using (var halo = new System.Drawing.Drawing2D.GraphicsPath())
+            {
+                halo.AddEllipse(circle.X - 6, circle.Y - 6, circle.Width + 12, circle.Height + 12);
+                using var hb = new PathGradientBrush(halo) { CenterColor = Theme.Alpha(Theme.Accent, 110), SurroundColors = new[] { Theme.Alpha(Theme.Accent2, 0) } };
+                g.FillPath(hb, halo);
+            }
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.DrawImage(Icon, new RectangleF(Width / 2f - 48, -10, 96, 96));   // the icons carry a margin of their own
+        }
+        else
+        {
+            using (var grad = new LinearGradientBrush(circle, Theme.Accent, Theme.Accent2, 45f)) g.FillEllipse(grad, circle);
+            string letter = Nick.Length > 0 ? Nick[..1].ToUpperInvariant() : "?";
+            using var lf = new Font("Segoe UI", 20f, FontStyle.Bold);
             TextRenderer.DrawText(g, letter, lf, Rectangle.Round(circle), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
         if (Shiny)
         {
             using var sf = new Font(Theme.IconFont, 11f);
@@ -441,18 +458,53 @@ partial class MainForm
             string file = profile != null ? Path.Combine(profile, "team.json") : "";
             if (built && File.Exists(file))
             {
+                var icons = IconCatalog();
                 using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
                 foreach (var m in doc.RootElement.GetProperty("team").EnumerateArray())
+                {
+                    int species = m.GetProperty("species").GetInt32(), form = m.TryGetProperty("form", out var fm) ? fm.GetInt32() : 0;
                     team.Add(new TeamCard
                     {
                         Nick = m.GetProperty("nickname").GetString() ?? "", Level = m.GetProperty("level").GetInt32() is int lv && lv > 0 ? $"Lv. {lv}" : "",
                         Shiny = m.TryGetProperty("shiny", out var sh) && sh.GetBoolean(),
+                        Icon = LoadIcon(icons, species, form),
                     });
+                }
             }
         }
         catch { team.Clear(); }
         teamTitle.Visible = teamRow.Visible = team.Count > 0;
         teamRow.Controls.AddRange(team.ToArray());
+    }
+
+    // build\game\icons\catalog.txt (the shader census: "species form folder" per line) and the folder's PNG
+    Dictionary<(int, int), string> IconCatalog()
+    {
+        var map = new Dictionary<(int, int), string>();
+        try
+        {
+            string dir = Path.Combine(Builder.Root(targetBox.Text), "build", "game", "icons");
+            foreach (var line in File.ReadAllLines(Path.Combine(dir, "catalog.txt")))
+            {
+                var p = line.Split(' ');
+                if (p.Length == 3 && int.TryParse(p[0], out int sp) && int.TryParse(p[1], out int fo))
+                    map.TryAdd((sp, fo), Path.Combine(dir, p[2] + ".png"));
+            }
+        }
+        catch { }
+        return map;
+    }
+
+    static Image? LoadIcon(Dictionary<(int, int), string> icons, int species, int form)
+    {
+        if (!icons.TryGetValue((species, form), out var file) && !icons.TryGetValue((species, 0), out file)) return null;
+        try
+        {
+            if (!File.Exists(file)) return null;
+            using var img = Image.FromFile(file);
+            return new Bitmap(img);   // a copy: the file stays free for the next build
+        }
+        catch { return null; }
     }
 
     int PreparedShaders()

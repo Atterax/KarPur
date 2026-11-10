@@ -25,6 +25,26 @@ typedef __uint128_t u128;
 SIMD_VT(vu8, uint8_t) SIMD_VT(vs8, int8_t) SIMD_VT(vu16, uint16_t) SIMD_VT(vs16, int16_t)
 SIMD_VT(vu32, uint32_t) SIMD_VT(vs32, int32_t) SIMD_VT(vu64, uint64_t) SIMD_VT(vs64, int64_t)
 SIMD_VT(vf32, float) SIMD_VT(vf64, double)
+
+// Fused multiply-add for the FP helpers (simd_fp.h). With the CPU's FMA (x86-64-v3 builds) one instruction. Without
+// it (x86-64-v2 builds for CPUs that lack AVX2/FMA, tools/cpu_march.py) __builtin_elementwise_fma became a call into
+// the C library's software fma, per lane for vectors; ARM code uses FMADD/FMLA everywhere, and a player's game ran at
+// 1.5-16 FPS (issue #15). There: a float product is exact in double (24 + 24 bits < 53), so a*b+c in double rounded
+// once to float differs from the fused result only when that double sum itself rounds (rare, at most one float ulp);
+// doubles are multiplied and added unfused (the game's double math is rare).
+#if defined(__FMA__)
+#define KFMA(x, y, z) __builtin_elementwise_fma(x, y, z)
+#else
+typedef double simd_vd4 __attribute__((vector_size(32)));
+static inline __attribute__((always_inline)) float kfma_f(float a, float b, float c) { return (float)((double)a * (double)b + (double)c); }
+static inline __attribute__((always_inline)) double kfma_d(double a, double b, double c) { return a * b + c; }
+static inline __attribute__((always_inline)) vf32 kfma_vf(vf32 a, vf32 b, vf32 c) {
+    simd_vd4 r = __builtin_convertvector(a, simd_vd4) * __builtin_convertvector(b, simd_vd4) + __builtin_convertvector(c, simd_vd4);
+    return __builtin_convertvector(r, vf32);
+}
+static inline __attribute__((always_inline)) vf64 kfma_vd(vf64 a, vf64 b, vf64 c) { return a * b + c; }
+#define KFMA(x, y, z) _Generic((x), float: kfma_f, double: kfma_d, vf32: kfma_vf, vf64: kfma_vd)(x, y, z)
+#endif
 typedef uint16_t __attribute__((may_alias)) sa16;
 typedef uint32_t __attribute__((may_alias)) sa32;
 typedef uint64_t __attribute__((may_alias)) sa64;

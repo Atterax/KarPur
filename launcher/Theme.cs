@@ -94,6 +94,12 @@ static class Theme
     {
         var p = new GraphicsPath();
         float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
+        if (d <= 1 || r.Width <= 1 || r.Height <= 1)
+        {
+            // no room for arcs (a control of no size while the window is minimised): GDI+ throws on an arc of size 0
+            p.AddRectangle(new RectangleF(r.X, r.Y, Math.Max(r.Width, 1), Math.Max(r.Height, 1)));
+            return p;
+        }
         p.AddArc(r.X, r.Y, d, d, 180, 90);
         p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
         p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);

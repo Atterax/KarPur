@@ -260,17 +260,38 @@ static double now_s(void) { return (double)plat_now_ns() / 1e9; }
 static volatile int host_probe_hits;
 static void host_probe(Cpu *c) { host_probe_hits++; c->x[0] = 42; }
 
+// The instruction set extensions this build was compiled with (tools/cpu_march.py: x86-64-v3, or the build PC's own
+// CPU) must be present on the CPU it runs on: each one the compiler defined is checked.
+static void cpu_need(char *used, char *missing, size_t cap, const char *feat, int has) {
+    size_t u = strlen(used), m = strlen(missing);
+    snprintf(used + u, cap - u, "%s%s", u ? " " : "", feat);
+    if (!has) snprintf(missing + m, cap - m, " %s", feat);
+}
+
 static void check_cpu(void) {
     __builtin_cpu_init();
-#if defined(__AVX2__)   // the level tools/cpu_march.py chose for this build
-    int ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
-    printf("cpu: x86-64-v3 (AVX2, FMA, BMI2) %s\n", ok ? "present" : "MISSING");
-    CHECK(ok, "the lifted code is built for x86-64-v3");
-#else
-    int ok = __builtin_cpu_supports("sse4.2") && __builtin_cpu_supports("popcnt");
-    printf("cpu: x86-64-v2 (SSE4.2, POPCNT) %s\n", ok ? "present" : "MISSING");
-    CHECK(ok, "the lifted code is built for x86-64-v2");
+    char used[160] = "", missing[160] = "";
+#if defined(__SSE4_2__)
+    cpu_need(used, missing, sizeof used, "sse4.2", __builtin_cpu_supports("sse4.2"));
 #endif
+#if defined(__POPCNT__)
+    cpu_need(used, missing, sizeof used, "popcnt", __builtin_cpu_supports("popcnt"));
+#endif
+#if defined(__AVX__)
+    cpu_need(used, missing, sizeof used, "avx", __builtin_cpu_supports("avx"));
+#endif
+#if defined(__AVX2__)
+    cpu_need(used, missing, sizeof used, "avx2", __builtin_cpu_supports("avx2"));
+#endif
+#if defined(__FMA__)
+    cpu_need(used, missing, sizeof used, "fma", __builtin_cpu_supports("fma"));
+#endif
+#if defined(__BMI2__)
+    cpu_need(used, missing, sizeof used, "bmi2", __builtin_cpu_supports("bmi2"));
+#endif
+    printf("cpu: built for %s: %s\n", used[0] ? used : "the x86-64 baseline", missing[0] ? "MISSING" : "present");
+    if (missing[0]) printf("cpu: missing:%s\n", missing);
+    CHECK(!missing[0], "the lifted code needs instructions this CPU lacks");
 }
 
 // Layout: ascending, no overlap, below 2^39, and inside the window mem_init reserved.

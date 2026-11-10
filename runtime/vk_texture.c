@@ -342,10 +342,12 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     // KarPur: Violet samples a square 2D array of 6 layers (its 32x32 ambient light cube) through a cube view; without
     // the flag the replay bound a black stand-in (no ambient light in shade, black metal). Square arrays of 6n layers get
-    // it too, except on AMD (the layout issue above).
+    // it too. On AMD only small ones (up to 128x128: the light probes): the layout issue above came from large terrain
+    // material arrays, and without the flag at all every surface in shade was black there (issue #12, RX 6750 XT and
+    // RX 6900 XT; reproduced on the maintainer's RDNA 2 iGPU).
     int cube_ok = 0;
-    if (!(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && !vk_caps.amd && type == VK_IMAGE_TYPE_2D && layers >= 6 &&
-        layers % 6 == 0 && w == h && samples == 1)
+    if (!(flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && (!vk_caps.amd || w <= 128) && type == VK_IMAGE_TYPE_2D &&
+        layers >= 6 && layers % 6 == 0 && w == h && samples == 1)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT, cube_ok = 1;
     // NVN renders into a 3D texture slice by slice (a view's min layer is the depth plane, nvn_mtl.m), e.g. the
     // grading LUT of the menu background blur. Vulkan needs a 2D view of the slice for that.

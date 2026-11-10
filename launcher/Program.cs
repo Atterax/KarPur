@@ -9,6 +9,7 @@ static class Program
     public static string Version => $"{Current.Major}.{Current.Minor}.{Current.Build}";
 
     public static string? PreviewColour;
+    public static bool DesignCheck;   // --shot: a picture of the window only, nothing else runs
 
     [STAThread]
     static void Main(string[] args)
@@ -20,6 +21,7 @@ static class Program
         var form = new MainForm(updated: args.Contains("--updated"), tab);
         // --shot=<png>: a picture of the window a moment after it opened, then exit (a check of the design)
         string? shot = args.FirstOrDefault(a => a.StartsWith("--shot="))?[7..];
+        DesignCheck = shot != null;
         if (shot != null)
             form.Shown += async (_, _) =>
             {

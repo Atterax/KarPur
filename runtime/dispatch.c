@@ -52,6 +52,11 @@ void rt_fatal(const char *fmt, ...) {
     double proc, used, limit;
     plat_commit_info(&proc, &used, &limit);
     rt_log("fatal: memory commit: this process %.0f MB, the system %.0f of %.0f MB", proc, used, limit);
+    // In plain words for the player: issue #14 (16 GB of RAM, the system at 22676 of 22680 MB) read as a game bug.
+    if (limit > 0 && used >= limit * 0.97)
+        rt_log("fatal: Windows ran out of memory (RAM and page file are full). Close other programs (browsers, launchers, "
+               "recording software) before playing, or let Windows manage the page file size: Settings > System > About > "
+               "Advanced system settings > Performance > Settings > Advanced > Virtual memory > \"Automatically manage\".");
     fflush(stdout);
     fflush(stderr);
     _Exit(70);

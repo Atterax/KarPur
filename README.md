@@ -39,7 +39,7 @@ The **KarPur Launcher** does all the building for you.
 | 🟢 | **Update 4.0.0 as `.nsp`** | Tested; the only supported update |
 | 🟡 | ***Pokémon Scarlet*, base game as `.xci`** | Works according to community reports; not tested by the maintainer |
 | 🟡 | **DLC as `.nsp`** (optional) | Costumes work; the DLC story areas need more testing |
-| 🔴 | **Base game as `.nsp`** (an eShop copy) | **Not supported.** The build stops with an error about the firmware / the *shared fonts* folder: the system fonts come from the cartridge image |
+| 🟡 | **Base game as `.nsp`** (an eShop copy, or an `.xci` converted from one) | Works with a **firmware folder**: the system fonts come from the cartridge image, so an eShop copy needs your console's system files for them (the launcher's *Firmware folder*) |
 | 🔴 | Other updates than 4.0.0 | Not tested so not supported |
 
 You also need **`prod.keys`** from the same console.
@@ -50,7 +50,7 @@ You also need **`prod.keys`** from the same console.
 |---|---|
 | **System** | Windows 10 or 11, 64-bit |
 | **Graphics card** | Vulkan 1.3 with a current driver. DLSS, DLAA and Frame Generation need an NVIDIA RTX card |
-| **Processor** | 64-bit x86. CPUs with AVX2 (most from 2015 on) run it best; older ones get a compatible build automatically |
+| **Processor** | 64-bit x86 with AVX2 (most CPUs from 2015 on). Older CPUs get a build of their own automatically; how well the game runs on them is still being tested: reports are very welcome |
 | **Memory** | 16 GB RAM recommended |
 | **Disk** | About **30 GB free** while building; about 13 GB stay in use afterwards |
 | **Internet** | For the first build (about 250 MB of tools, all checked against fixed checksums) |
@@ -118,6 +118,7 @@ Switch 2 uses the spawn values of the fan mod [Pokémon Compass](https://compass
 - **Settings**: everything from fullscreen to Frame Generation, before you start the game.
 - **Controls**: keyboard, mouse and controller, with swapped sticks and an inverted camera.
 - **Saves**: export your save as a `.zip`, import one, open its folder, or restore one of the last saves.
+- **Mods** (experimental, only a few mods tried so far): add your own mods (a folder or a `.zip`, for example from NexusMods) and switch each on or off. Nothing of your game is replaced: KarPur gives the game a mod's file as it loads the original. Mods that only change files work; files a mod adds and a mod's code (`exefs`) are not supported yet, and the tab says so per mod.
 - **Repair** and **Update**: only what changed is rebuilt. Your saves and settings stay.
 - **Feedback**: a ready-made report about your system for a GitHub issue.
 
@@ -143,7 +144,7 @@ Your dumps, your keys and the built game stay on your PC. A guide in German is i
 <details>
 <summary><b>The build stops with an error about the firmware or the "shared fonts" folder</b></summary>
 
-Your base game is an `.nsp`. KarPur needs the base game as an **`.xci`** (a cartridge dump), because the system fonts come from the cartridge image. Only the update and the DLC are `.nsp` files.
+Your base game is an `.nsp`, or an `.xci` converted from one. The game's system fonts come from the cartridge image, which an eShop copy does not have. In the launcher's *Setup*, choose your console's system files as **Firmware folder**: the folder with the `.nca` files of your console's system, for example an emulator's `nand\system\Contents\registered`. Then press **Build** again. A cartridge dump (`.xci`) needs no firmware folder.
 </details>
 
 <details>
@@ -164,7 +165,7 @@ Please also send us a report (see below), so we can find the cause.
 <details>
 <summary><b>The build stops at "Self-test"</b></summary>
 
-Exit code `3221225501` means that the processor lacks an instruction set the build used (AVX2). Current builds detect this and build for your processor. Press **Repair** in the launcher after updating it. If the self-test still fails, please send us the launcher log.
+Exit code `3221225501` means that the processor lacks an instruction set the build used (AVX2). Current builds detect this and build for your processor. Support for CPUs without AVX2 is **a test run**: the game builds and starts, and launcher 0.3.2 makes its math much faster there, but it has hardly been tried. Please tell us in a report how it runs (your CPU and the FPS). Press **Repair** in the launcher after updating it. If the self-test still fails, please send us the launcher log.
 </details>
 
 <details>

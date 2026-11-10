@@ -8,7 +8,7 @@ using System.Text.Json;
 namespace KarPurLauncher;
 
 // The inputs the player chose. Dlc is empty when they have none.
-record Inputs(string Base, string Update, string Dlc, string Keys, string Target);
+record Inputs(string Base, string Update, string Dlc, string Keys, string Target, string Firmware = "");
 
 // Everything a build does outside the window: unpack the repository files, set up Python, run tools/setup_build.py,
 // then put the launcher and a shortcut into the target folder. Progress comes back through the callbacks on a worker
@@ -66,6 +66,8 @@ class Builder
                                   "--keys", inp.Keys })
             psi.ArgumentList.Add(a);
         if (inp.Dlc != "") { psi.ArgumentList.Add("--dlc"); psi.ArgumentList.Add(inp.Dlc); }
+        // the shared fonts from the console's system files: a base game as NSP, or an XCI converted from one (issue #18)
+        if (inp.Firmware != "") { psi.ArgumentList.Add("--firmware"); psi.ArgumentList.Add(inp.Firmware); }
         psi.Environment["PYTHONIOENCODING"] = "utf-8";
         psi.Environment["PYTHONUNBUFFERED"] = "1";
 
@@ -145,6 +147,20 @@ class Builder
     }
 
     // "violet", "scarlet" or "unknown": the game a build was made from (tools/setup_build.py, build/setup_info.json).
+    // The launcher version that last finished a build of this target (build\launcher_version.txt): a launcher replaced by
+    // hand (downloaded, copied) is not started with --updated, and the game stayed built from the older files.
+    public static string BuiltWith(string target)
+    {
+        try { return File.ReadAllText(Path.Combine(Root(target), "build", "launcher_version.txt")).Trim(); }
+        catch { return ""; }
+    }
+
+    public static void NoteBuilt(string target)
+    {
+        try { File.WriteAllText(Path.Combine(Root(target), "build", "launcher_version.txt"), Program.Version); }
+        catch { }
+    }
+
     public static string Game(string target)
     {
         try

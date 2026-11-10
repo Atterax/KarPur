@@ -353,12 +353,327 @@ static void growth_probe(const uint8_t *b, uint64_t n) {
                 int known = 0;
                 for (int i = 0; i < GROWTH_N; i++) known += growth[i] != 255;
                 growth_found = 1;
+                // Probe (icons): fields that equal the species number up to 905 and differ beyond (a development
+                // number, as the icon packs pmNNNN of Paldea's Pokemon are named): for each, how many entries agree
+                // and the values it holds for a few species of 906 and later
+                for (int f2 = 0; f2 < slots; f2++) {
+                    if (f2 == sl) continue;
+                    int same = 0, low = 0, high = 0;
+                    char ex[160];
+                    size_t eo = 0;
+                    for (uint64_t k = 0; k < vn; k++) {
+                        Fb el;
+                        if (!fb_table(&rt, vs, k, &el)) break;
+                        uint16_t so = fb_slot(&el, sl), fo = fb_slot(&el, f2);
+                        if (!so || !fo || el.pos + so + 2 > n || el.pos + fo + 2 > n) continue;
+                        uint16_t sp = (uint16_t)(b[el.pos + so] | b[el.pos + so + 1] << 8);
+                        uint16_t fv = (uint16_t)(b[el.pos + fo] | b[el.pos + fo + 1] << 8);
+                        if (sp >= 1 && sp <= 905) low++, same += fv == sp;
+                        if (sp >= 906 && sp <= 1025) {
+                            high++;
+                            if ((sp == 906 || sp == 908 || sp == 915 || sp == 1000 || sp == 1025) && eo < sizeof ex - 24)
+                                eo += (size_t)snprintf(ex + eo, sizeof ex - eo, " %u->%u", sp, fv);
+                        }
+                    }
+                    ex[eo] = 0;
+                    if (low && same * 10 >= low * 9)
+                        rt_log("shader census: icon probe: field %d equals the species on %d of %d entries up to 905; %d later:%s",
+                               f2, same, low, high, ex);
+                }
                 rt_log("shader census: growth curves found (a table of %llu entries, species field %d, curve field %d): %d species",
                        (unsigned long long)vn, sl, g, known);
                 return;
             }
         }
     }
+}
+
+// Probe (icons): for the icon packs of a few species (pokemon/data/pmNNNN/.../icon/pmNNNN_FF_GG_VV.bntx), each packed
+// file's size and tag, and for a BNTX the u32 words of its header and of its texture info block (BRTI): format, size,
+// tiling (numbers only, no pixels).
+static int icon_logged;
+static void icon_probe(const char *nm, uint32_t nl, uint64_t k, const uint8_t *b, uint64_t n) {
+    static const char *const want[] = {"iconpm0025_00_00_00", "iconpm0184_00_00_00", "iconpm0039_00_00_00",
+                                       "iconpm0001_00_00_00"};
+    int hit = 0;
+    for (size_t w = 0; w < sizeof want / sizeof *want && !hit; w++) {
+        size_t wl = strlen(want[w]);
+        for (uint32_t i = 0; i + wl <= nl && !hit; i++) hit = !memcmp(nm + i, want[w], wl);
+    }
+    if (!hit || icon_logged > 12 || n < 16) return;
+    icon_logged++;
+    char tag[5] = "----";
+    if (n >= 4) for (int c = 0; c < 4; c++) tag[c] = b[c] >= 0x20 && b[c] < 0x7f ? (char)b[c] : '.';
+    rt_log("shader census: icon probe: %.*s file %llu: %llu bytes, tag %s", (int)nl, nm, (unsigned long long)k,
+           (unsigned long long)n, tag);
+    if (memcmp(b, "BNTX", 4)) return;
+    char w[700];
+    size_t o = 0;
+    for (int i = 0; i < 16 && 4 * i + 4 <= (int)n; i++) o += (size_t)snprintf(w + o, sizeof w - o, " %#x", u32(b + 4 * i));
+    rt_log("shader census: icon probe:   BNTX words:%s", w);
+    for (uint64_t at = 0; at + 4 <= n; at += 4)
+        if (!memcmp(b + at, "BRTI", 4)) {
+            o = 0;
+            for (int i = 0; i < 40 && at + 4 * i + 4 <= n; i++)
+                o += (size_t)snprintf(w + o, sizeof w - o, " %#x", u32(b + at + 4 * i));
+            rt_log("shader census: icon probe:   BRTI at %#llx words:%s", (unsigned long long)at, w);
+            break;
+        }
+}
+
+// Probe (icons): pokemon/catalog/poke_resource_table.trpmcatalog, the game's table from a Pokemon to its model and icon
+// folder (pokemon/data/pmNNNN/...). Walked as a FlatBuffer without a schema: the root's vectors of tables; for an entry,
+// each field as a string (a path: a name, not content), a nested table (its first u16 fields) or a scalar. Logged: the
+// first three entries and every entry that holds the numbers 184, 908 or 915 (Azumarill, Meowscarada, Lechonk).
+static void fb_field_text(const Fb *t, int sl, char *o, size_t cap, int *has) {
+    uint16_t off = fb_slot(t, sl);
+    o[0] = 0;
+    if (!off || t->pos + off + 4 > t->n) { snprintf(o, cap, "-"); return; }
+    uint64_t at = t->pos + off;
+    uint32_t rel = u32(t->b + at);
+    uint64_t tg = at + rel;
+    // a string: length, then that many printable bytes
+    if (rel && tg + 4 < t->n) {
+        uint32_t len = u32(t->b + tg);
+        int ok = len > 0 && len < 200 && tg + 4 + len <= t->n;
+        for (uint32_t i = 0; ok && i < len; i++) ok = t->b[tg + 4 + i] >= 0x20 && t->b[tg + 4 + i] < 0x7f;
+        if (ok) { snprintf(o, cap, "\"%.*s\"", (int)len, (const char *)t->b + tg + 4); return; }
+    }
+    // a nested table: its first u16 fields
+    Fb sub;
+    if (rel && tg + 4 < t->n && fb_at(&sub, t->b, t->n, tg) && sub.nslots > 0 && sub.nslots < 16) {
+        size_t w = (size_t)snprintf(o, cap, "{");
+        for (int i = 0; i < sub.nslots && w + 12 < cap; i++) {
+            uint16_t so = fb_slot(&sub, i);
+            uint16_t v = so && sub.pos + so + 2 <= t->n ? (uint16_t)(t->b[sub.pos + so] | t->b[sub.pos + so + 1] << 8) : 0;
+            if (v == 184 || v == 908 || v == 915) *has = 1;
+            w += (size_t)snprintf(o + w, cap - w, "%s%u", i ? " " : "", v);
+        }
+        snprintf(o + w, cap - w, "}");
+        return;
+    }
+    uint16_t v = (uint16_t)(t->b[at] | t->b[at + 1] << 8);
+    if (v == 184 || v == 908 || v == 915) *has = 1;
+    snprintf(o, cap, "%u", v);
+}
+
+static void catalog_probe(const char *nm, uint32_t nl, const uint8_t *b, uint64_t n) {
+    static const char key[] = "poke_resource_table";
+    int hit = 0;
+    for (uint32_t i = 0; i + sizeof key - 1 <= nl && !hit; i++) hit = !memcmp(nm + i, key, sizeof key - 1);
+    Fb rt;
+    if (!hit || !fb_root(&rt, b, n, 0)) return;
+    rt_log("shader census: catalog probe: %llu bytes, root fields %d", (unsigned long long)n, rt.nslots);
+    int logged = 0;
+    for (int v = 0; v < rt.nslots; v++) {
+        uint64_t vs, vn;
+        if (!fb_vec(&rt, v, &vs, &vn) || !vn || vn > 100000) continue;
+        rt_log("shader census: catalog probe: root field %d: a vector of %llu", v, (unsigned long long)vn);
+        for (uint64_t k = 0; k < vn && logged < 60; k++) {
+            Fb e;
+            if (!fb_table(&rt, vs, k, &e)) break;
+            char line[900], f[200];
+            size_t o = 0;
+            int has = 0;
+            for (int sl = 0; sl < e.nslots && sl < 12 && o + 210 < sizeof line; sl++) {
+                fb_field_text(&e, sl, f, sizeof f, &has);
+                o += (size_t)snprintf(line + o, sizeof line - o, " [%d] %s", sl, f);
+            }
+            if (k < 3 || has) {
+                rt_log("shader census: catalog probe: entry %llu:%s", (unsigned long long)k, line);
+                logged++;
+            }
+        }
+    }
+}
+
+// ---- team icons for the launcher's Home page (the player's own game data, written next to karpur.exe, never shared)
+// Each Pokemon's icon is a pack pokemon/data/pmNNNN/pmNNNN_FF_GG/icon/pmNNNN_FF_GG_00.bntx (the trpfd names it without
+// slashes) holding two BNTX textures, 100x100 and 256x256, BC2 in the Tegra block-linear layout (test CZ: format 0x1b01,
+// block height 4 and 8 GOBs). The 100x100 one is decoded to icons/pmNNNN_FF_GG.png. The game's poke_resource_table
+// (test DA) names each species and form's folder: Paldea's Pokemon have folders of their own numbers (Meowscarada 908
+// in pm1012). icons/catalog.txt lists "species form folder" per entry for the launcher.
+static char (*icon_dirs)[16];   // per catalog entry: its folder name
+static uint16_t (*icon_keys)[2];
+static int n_catalog, n_icons;
+
+static void png_write(const char *path, const uint8_t *rgba, int w, int h) {
+    static uint32_t crc_t[256];
+    if (!crc_t[1])
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            crc_t[i] = c;
+        }
+    size_t raw_n = (size_t)h * (1 + (size_t)w * 4);
+    uint8_t *raw = malloc(raw_n);
+    if (!raw) return;
+    for (int y = 0; y < h; y++) raw[y * (1 + w * 4)] = 0, memcpy(raw + y * (1 + w * 4) + 1, rgba + (size_t)y * w * 4, (size_t)w * 4);
+    size_t nblk = (raw_n + 65534) / 65535, z_n = 2 + raw_n + 5 * nblk + 4;
+    uint8_t *z = malloc(z_n);
+    if (!z) { free(raw); return; }
+    size_t o = 0;
+    z[o++] = 0x78, z[o++] = 0x01;   // zlib, stored blocks (the icons are small)
+    for (size_t at = 0; at < raw_n;) {
+        size_t len = raw_n - at < 65535 ? raw_n - at : 65535;
+        z[o++] = at + len == raw_n;
+        z[o++] = (uint8_t)len, z[o++] = (uint8_t)(len >> 8), z[o++] = (uint8_t)~len, z[o++] = (uint8_t)(~len >> 8);
+        memcpy(z + o, raw + at, len), o += len, at += len;
+    }
+    uint32_t a = 1, b2 = 0;
+    for (size_t i = 0; i < raw_n; i++) a = (a + raw[i]) % 65521, b2 = (b2 + a) % 65521;
+    uint32_t ad = b2 << 16 | a;
+    z[o++] = (uint8_t)(ad >> 24), z[o++] = (uint8_t)(ad >> 16), z[o++] = (uint8_t)(ad >> 8), z[o++] = (uint8_t)ad;
+    FILE *f = fopen(path, "wb");
+    if (f) {
+        static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+        fwrite(sig, 8, 1, f);
+        uint8_t ihdr[13] = {(uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w, (uint8_t)(h >> 24),
+                            (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h, 8, 6, 0, 0, 0};
+        const struct { const char *type; const uint8_t *d; size_t n; } ch[3] = {{"IHDR", ihdr, 13}, {"IDAT", z, o}, {"IEND", NULL, 0}};
+        for (int c = 0; c < 3; c++) {
+            uint8_t be[4] = {(uint8_t)(ch[c].n >> 24), (uint8_t)(ch[c].n >> 16), (uint8_t)(ch[c].n >> 8), (uint8_t)ch[c].n};
+            fwrite(be, 4, 1, f), fwrite(ch[c].type, 4, 1, f);
+            if (ch[c].n) fwrite(ch[c].d, ch[c].n, 1, f);
+            uint32_t crc = 0xFFFFFFFFu;
+            for (int i = 0; i < 4; i++) crc = crc_t[(crc ^ (uint8_t)ch[c].type[i]) & 0xFF] ^ (crc >> 8);
+            for (size_t i = 0; i < ch[c].n; i++) crc = crc_t[(crc ^ ch[c].d[i]) & 0xFF] ^ (crc >> 8);
+            crc = ~crc;
+            uint8_t cb[4] = {(uint8_t)(crc >> 24), (uint8_t)(crc >> 16), (uint8_t)(crc >> 8), (uint8_t)crc};
+            fwrite(cb, 4, 1, f);
+        }
+        fclose(f);
+    }
+    free(z), free(raw);
+}
+
+// The byte offset of (x bytes, y rows) in a Tegra block-linear surface of the given row pitch in GOBs and block height.
+static uint64_t gob_offset(uint32_t x, uint32_t y, uint32_t gobs_per_row, uint32_t block_h) {
+    uint32_t rows = 8 * block_h;
+    uint64_t block = (uint64_t)(y / rows) * gobs_per_row + x / 64;
+    return block * 512 * block_h + (uint64_t)((y % rows) / 8) * 512 + ((x % 64) / 32) * 256 + ((y % 8) / 2) * 64 +
+           ((x % 32) / 16) * 32 + (y % 2) * 16 + (x % 16);
+}
+
+static void rgb565(uint16_t c, int *r, int *g, int *b) {
+    *r = (c >> 11 & 31) * 255 / 31, *g = (c >> 5 & 63) * 255 / 63, *b = (c & 31) * 255 / 31;
+}
+
+// One BC1 colour block (4-colour mode, as BC2 and BC3 use it) and the alpha of BC2 (explicit 4 bit) or BC3 (interpolated)
+// into a 4x4 RGBA tile.
+static void bc_block(const uint8_t *blk, int fmt, uint8_t out[16][4]) {
+    const uint8_t *cb = blk + 8;
+    uint16_t c0 = (uint16_t)(cb[0] | cb[1] << 8), c1 = (uint16_t)(cb[2] | cb[3] << 8);
+    int pal[4][3];
+    rgb565(c0, &pal[0][0], &pal[0][1], &pal[0][2]);
+    rgb565(c1, &pal[1][0], &pal[1][1], &pal[1][2]);
+    for (int k = 0; k < 3; k++) pal[2][k] = (2 * pal[0][k] + pal[1][k]) / 3, pal[3][k] = (pal[0][k] + 2 * pal[1][k]) / 3;
+    uint32_t idx = u32(cb + 4);
+    uint8_t al[8] = {0};
+    if (fmt == 0x1c) {   // BC3 alpha
+        al[0] = blk[0], al[1] = blk[1];
+        for (int k = 2; k < 8; k++)
+            al[k] = al[0] > al[1] ? (uint8_t)(((8 - k) * al[0] + (k - 1) * al[1]) / 7)
+                                  : k < 6 ? (uint8_t)(((6 - k) * al[0] + (k - 1) * al[1]) / 5) : k == 6 ? 0 : 255;
+    }
+    uint64_t abits = 0;
+    for (int k = 0; k < 8; k++) abits |= (uint64_t)blk[k] << (8 * k);
+    for (int i = 0; i < 16; i++) {
+        int c = idx >> (2 * i) & 3;
+        out[i][0] = (uint8_t)pal[c][0], out[i][1] = (uint8_t)pal[c][1], out[i][2] = (uint8_t)pal[c][2];
+        out[i][3] = fmt == 0x1b ? (uint8_t)((abits >> (4 * i) & 15) * 17) : fmt == 0x1c ? al[(abits >> (16 + 3 * i)) & 7] : 255;
+    }
+}
+
+static void icon_take(const char *nm, uint32_t nl, const uint8_t *b, uint64_t n) {
+    // the folder name: the text after "icon" up to "_00.bntx" (pmNNNN_FF_GG)
+    static const char key[] = "iconpm";
+    uint32_t at = 0;
+    while (at + sizeof key - 1 <= nl && memcmp(nm + at, key, sizeof key - 1)) at++;
+    if (at + 4 + 12 + 8 > nl || memcmp(nm + at + 4 + 12, "_00.bntx", 8) || n < 0x40 || memcmp(b, "BNTX", 4)) return;
+    char dir[16];
+    memcpy(dir, nm + at + 4, 12), dir[12] = 0;
+    uint64_t brti = 0, brtd = 0;
+    for (uint64_t i = 0; i + 4 <= n && (!brti || !brtd); i += 4) {
+        if (!brti && !memcmp(b + i, "BRTI", 4)) brti = i;
+        if (!brtd && !memcmp(b + i, "BRTD", 4)) brtd = i;
+    }
+    if (!brti || !brtd || brti + 0x58 > n) return;
+    uint32_t fmt = u32(b + brti + 0x1C) >> 8, w = u32(b + brti + 0x24), h = u32(b + brti + 0x28);
+    uint32_t bh = 1u << u32(b + brti + 0x34), size = u32(b + brti + 0x50);
+    if (w != 100 || h != 100 || (fmt != 0x1a && fmt != 0x1b && fmt != 0x1c) || brtd + 0x10 + size > n) return;
+    const uint8_t *data = b + brtd + 0x10;
+    uint32_t bw = (w + 3) / 4, bhh = (h + 3) / 4, bpb = fmt == 0x1a ? 8 : 16, gobs = (bw * bpb + 63) / 64;
+    uint8_t *rgba = calloc((size_t)w * h, 4);
+    if (!rgba) return;
+    for (uint32_t by = 0; by < bhh; by++)
+        for (uint32_t bx = 0; bx < bw; bx++) {
+            uint64_t off = gob_offset(bx * bpb, by, gobs, bh);
+            if (off + bpb > size) continue;
+            uint8_t tile[16][4], blk[16];
+            if (bpb == 8) memset(blk, 0xFF, 8), memcpy(blk + 8, data + off, 8);
+            else memcpy(blk, data + off, 16);
+            bc_block(blk, bpb == 8 ? 0 : (int)fmt, tile);
+            for (int i = 0; i < 16; i++) {
+                uint32_t x = bx * 4 + (uint32_t)(i % 4), y = by * 4 + (uint32_t)(i / 4);
+                if (x < w && y < h) memcpy(rgba + ((size_t)y * w + x) * 4, tile[i], 4);
+            }
+        }
+    char path[1024];
+    int pn = plat_exe_path(path, sizeof path - 64);
+    char *cut = pn ? plat_last_sep(path) : NULL;
+    if (cut) {
+        strcpy(cut + 1, "icons");
+        plat_file_mkdir_p(path);
+        snprintf(cut + 1, sizeof path - (size_t)(cut + 1 - path), "icons/%s.png", dir);
+        png_write(path, rgba, (int)w, (int)h);
+        n_icons++;
+    }
+    free(rgba);
+}
+
+static void catalog_take(const char *nm, uint32_t nl, const uint8_t *b, uint64_t n) {
+    static const char key[] = "poke_resource_table";
+    int hit = 0;
+    for (uint32_t i = 0; i + sizeof key - 1 <= nl && !hit; i++) hit = !memcmp(nm + i, key, sizeof key - 1);
+    Fb rt, e, sub;
+    uint64_t vs, vn;
+    if (!hit || n_catalog || !fb_root(&rt, b, n, 0) || !fb_vec(&rt, 1, &vs, &vn) || !vn || vn > 100000) return;
+    icon_dirs = calloc(vn, sizeof *icon_dirs), icon_keys = calloc(vn, sizeof *icon_keys);
+    if (!icon_dirs || !icon_keys) return;
+    for (uint64_t k = 0; k < vn; k++) {
+        if (!fb_table(&rt, vs, k, &e)) break;
+        uint16_t ko = fb_slot(&e, 0), po = fb_slot(&e, 1);
+        if (!ko || !po || e.pos + ko + 4 > n || e.pos + po + 4 > n) continue;
+        uint64_t kt = e.pos + ko + u32(b + e.pos + ko), pt = e.pos + po + u32(b + e.pos + po);
+        if (!fb_at(&sub, b, n, kt) || pt + 4 + 12 > n) continue;
+        uint16_t so = fb_slot(&sub, 0), fo = fb_slot(&sub, 1);
+        uint16_t sp = so && sub.pos + so + 2 <= n ? (uint16_t)(b[sub.pos + so] | b[sub.pos + so + 1] << 8) : 0;
+        uint16_t form = fo && sub.pos + fo + 2 <= n ? (uint16_t)(b[sub.pos + fo] | b[sub.pos + fo + 1] << 8) : 0;
+        // the model path "pmNNNN/pmNNNN_FF_GG/...": the folder is its second part
+        uint32_t len = u32(b + pt);
+        const char *path = (const char *)b + pt + 4;
+        if (len < 20 || pt + 4 + len > n || path[6] != '/' || memcmp(path, "pm", 2)) continue;
+        memcpy(icon_dirs[n_catalog], path + 7, 12), icon_dirs[n_catalog][12] = 0;
+        icon_keys[n_catalog][0] = sp, icon_keys[n_catalog][1] = form;
+        n_catalog++;
+    }
+}
+
+static void icons_write(void) {
+    char path[1024];
+    int pn = plat_exe_path(path, sizeof path - 64);
+    char *cut = pn ? plat_last_sep(path) : NULL;
+    if (!cut || !n_catalog) {
+        rt_log("shader census: team icons: %d written, no catalog found", n_icons);
+        return;
+    }
+    snprintf(cut + 1, sizeof path - (size_t)(cut + 1 - path), "icons/catalog.txt");
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    for (int i = 0; i < n_catalog; i++) fprintf(f, "%u %u %s\n", icon_keys[i][0], icon_keys[i][1], icon_dirs[i]);
+    fclose(f);
+    rt_log("shader census: team icons: %d written to icons/, catalog of %d species and forms", n_icons, n_catalog);
 }
 
 static void growth_write(void) {
@@ -656,7 +971,17 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             if (!fb_table(&pt, fv, k, &e) || !fb_vec(&e, e.nslots - 1, &ds, &dn)) continue;
             int64_t comp = fb_i8(&e, 1, -1);
             uint64_t unpacked = fb_u64(&e, 3);
-            if (comp == -1) { stored_files++; search(pk + ds, dn, p, k, 1); extract(pk + ds, dn); growth_probe(pk + ds, dn); continue; }
+            if (comp == -1) {
+                stored_files++;
+                search(pk + ds, dn, p, k, 1);
+                extract(pk + ds, dn);
+                growth_probe(pk + ds, dn);
+                icon_probe(nm, nl, k, pk + ds, dn);
+                catalog_probe(nm, nl, pk + ds, dn);
+                icon_take(nm, nl, pk + ds, dn);
+                catalog_take(nm, nl, pk + ds, dn);
+                continue;
+            }
             if (!unpacked || dn + unpacked > BUF_SIZE) { too_big++; continue; }
             uint8_t *in = (uint8_t *)(uintptr_t)gbuf, *outp = in + ((dn + 4095) & ~4095ull);
             memcpy(in, pk + ds, dn);
@@ -668,6 +993,10 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
             search(outp, r, p, k, 0);
             extract(outp, r);
             growth_probe(outp, r);
+            icon_probe(nm, nl, k, outp, r);
+            catalog_probe(nm, nl, outp, r);
+            icon_take(nm, nl, outp, r);
+            catalog_take(nm, nl, outp, r);
         }
         free(pk);
         if (!(p % 500))
@@ -755,6 +1084,7 @@ void shader_census_run(Cpu *c, uint64_t decoder, const uint64_t a[8]) {
     }
     out_flush();
     growth_write();
+    icons_write();
     if (out_f) fclose(out_f);
     if (ans_f) fclose(ans_f);
     PUT("extraction: %llu BNSH, %llu shader infos, %llu distinct programs (vertex %llu, tess %llu/%llu, geometry %llu, "

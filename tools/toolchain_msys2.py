@@ -12,6 +12,9 @@ and SHA-256 in tools/data/toolchain_msys2.json, so a download that changed is re
 import argparse
 import hashlib
 import json
+import os
+import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -57,30 +60,72 @@ def pin():
     print(f'{PINS}: {len(pins)} packages, {sum(p["size"] for p in pins) / 2**20:.0f} MiB to download')
 
 
+def _python_get(url, part, progress, strict=True):
+    """url into part with Python's own TLS. strict=False clears VERIFY_X509_STRICT (on by default since Python 3.13):
+    the certificate chain is still checked against the system's roots, only the stricter X.509 rules are off."""
+    ctx = ssl.create_default_context()
+    if not strict and hasattr(ssl, 'VERIFY_X509_STRICT'):
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    with urllib.request.urlopen(url, timeout=60, context=ctx) as r, open(part, 'wb') as f:
+        got = 0
+        while block := r.read(1 << 20):
+            f.write(block)
+            got += len(block)
+            progress(got)
+
+
+def _windows_get(url, part):
+    """url into part through Windows' own TLS (curl.exe of Windows 10/11 uses Schannel): it trusts what Windows and the
+    browsers trust, including the certificates antivirus programs put in front of HTTPS (issue #20)."""
+    curl = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'curl.exe'
+    if not curl.is_file():
+        curl = shutil.which('curl.exe') or shutil.which('curl')
+    if not curl:
+        raise OSError('curl.exe not found')
+    r = subprocess.run([str(curl), '-fsSL', '--retry', '2', '--connect-timeout', '30', '-o', str(part), url],
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise OSError(f'curl.exe exit code {r.returncode}: {r.stderr.strip()[:200]}')
+
+
 def download(file, size, digest, dest, progress):
-    """dest/<file> with the pinned hash, fetched from the first mirror that has it."""
+    """dest/<file> with the pinned hash, fetched from the first mirror that has it. Python's TLS first; when it rejects
+    the certificate (antivirus HTTPS scanning, a root Windows has not fetched yet: issue #20), the same file again with
+    the strict X.509 rules off and then through Windows' TLS. Every way ends at the pinned SHA-256, so a file that
+    changed on the way is refused whichever way it came."""
     out = dest / file
     if out.is_file() and out.stat().st_size == size and sha256(out) == digest:
         return out
     part = out.with_suffix(out.suffix + '.part')
     last = None
+    ways = [('python', lambda url: _python_get(url, part, progress)),
+            ('python, X.509 strict off', lambda url: _python_get(url, part, progress, strict=False))]
+    if os.name == 'nt':
+        ways.append(('Windows TLS (curl.exe)', lambda url: _windows_get(url, part)))
     for mirror in MIRRORS:
-        try:
-            with urllib.request.urlopen(mirror + file, timeout=60) as r, open(part, 'wb') as f:
-                got = 0
-                while block := r.read(1 << 20):
-                    f.write(block)
-                    got += len(block)
-                    progress(got)
-        except OSError as e:
-            last = e
-            continue
-        if part.stat().st_size == size and sha256(part) == digest:
-            part.replace(out)
-            return out
-        last = f'{file} from {mirror} does not match the pinned SHA-256'
+        for name, get in ways:
+            try:
+                get(mirror + file)
+            except (OSError, ssl.SSLError) as e:
+                last = e
+                cert = 'CERTIFICATE' in str(e).upper() or isinstance(getattr(e, 'reason', None), ssl.SSLError)
+                if name == 'python' and not cert:
+                    break   # not a certificate problem: the next mirror, not another way
+                continue
+            if part.stat().st_size == size and sha256(part) == digest:
+                part.replace(out)
+                if name != 'python':
+                    print(f'LOG {file}: downloaded with {name} (Python rejected the certificate)', flush=True)
+                return out
+            last = f'{file} from {mirror} does not match the pinned SHA-256'
+            break
     part.unlink(missing_ok=True)
-    raise RuntimeError(f'{file}: download failed ({last})')
+    hint = ''
+    if 'CERTIFICATE' in str(last).upper():
+        hint = (' The secure connection was refused. An antivirus program that scans HTTPS (Kaspersky, Avast, AVG, ESET, '
+                'Bitdefender) can cause this: turn its HTTPS or web scanning off for the build, or open '
+                'https://mirror.msys2.org once in Microsoft Edge, then press Build again.')
+    raise RuntimeError(f'{file}: download failed ({last}).{hint}')
 
 
 def unpack(archive, dest):

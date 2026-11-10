@@ -9,7 +9,7 @@ partial class MainForm : Form
 {
     // Setup
     readonly TextBox baseBox = Theme.TextBox(), updateBox = Theme.TextBox(), dlcBox = Theme.TextBox(),
-                     keysBox = Theme.TextBox(), targetBox = Theme.TextBox();
+                     keysBox = Theme.TextBox(), targetBox = Theme.TextBox(), firmwareBox = Theme.TextBox();
     readonly Button buildButton = Theme.Button("Build", true, Theme.GlyphBuild),
                     repairButton = Theme.Button("Repair", glyph: Theme.GlyphRepair),
                     cancelButton = Theme.Button("Cancel", glyph: Theme.GlyphStop),
@@ -106,6 +106,7 @@ partial class MainForm : Form
         AddPage("Settings", SettingsPage());
         AddPage("Controls", ControlsPage());
         AddPage("Saves", SavesPage());
+        AddPage("Mods", ModsPage());
         AddPage("Update", UpdatePage());
         AddPage("Feedback", FeedbackPage());
 
@@ -155,7 +156,10 @@ partial class MainForm : Form
             Refresh_();
             bool builtNow = targetBox.Text != "" && File.Exists(Builder.Exe(targetBox.Text));
             Show(pages.ContainsKey(startTab) && startTab != "Setup" ? startTab : builtNow ? "Home" : "Setup");
-            if (this.updated && File.Exists(Builder.Exe(targetBox.Text)))
+            // After an update, through the Update tab (--updated) or a launcher replaced by hand: the game's files and
+            // build follow this launcher's version (only what changed is rebuilt).
+            string builtWith = builtNow ? Builder.BuiltWith(targetBox.Text) : "";
+            if (builtNow && !Program.DesignCheck && (this.updated || builtWith != Program.Version))
             {
                 status.Text = $"Updated to version {Program.Version}. Rebuilding what changed …";
                 await Build(repair: false);
@@ -185,7 +189,8 @@ partial class MainForm : Form
         side.Controls.Add(version);
         int y = 104;
         foreach (var (name, glyph) in new[] { ("Home", Theme.GlyphHome), ("Setup", Theme.GlyphSetup), ("Settings", Theme.GlyphSettings),
-                                               ("Controls", Theme.GlyphGame), ("Saves", Theme.GlyphSave), ("Update", Theme.GlyphUpdate),
+                                               ("Controls", Theme.GlyphGame), ("Saves", Theme.GlyphSave),
+                                               ("Mods", ""), ("Update", Theme.GlyphUpdate),
                                                ("Feedback", Theme.GlyphFeedback) })
         {
             var b = new NavButton { Text = name, Glyph = glyph, Width = side.Width, Location = new Point(0, y) };
@@ -222,8 +227,9 @@ partial class MainForm : Form
         }
         if (pages[name].Page is ScrollableControl shown)   // a page opens at its top, not at the control with the focus
             BeginInvoke(() => shown.AutoScrollPosition = Point.Empty);
-        if (name == "Home") RefreshHome();
+        if (name == "Home") { RefreshHome(); WatchTeam(); }
         if (name == "Saves") RefreshSaves();
+        if (name == "Mods") LoadMods();
         if (name == "Settings") LoadGameSettings();
         if (name == "Controls") LoadControls();
         if (name == "Feedback") _ = FillFeedback();
@@ -261,10 +267,13 @@ partial class MainForm : Form
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        FileRow(grid, "Base game (.xci)", baseBox, () => PickFile(baseBox, "Base game as XCI|*.xci"));
+        FileRow(grid, "Base game (.xci)", baseBox, () => PickFile(baseBox, "Base game as XCI|*.xci|Base game as NSP (needs a firmware folder)|*.nsp"));
         FileRow(grid, "Update (.nsp)", updateBox, () => PickFile(updateBox, "Update as NSP|*.nsp"));
         FileRow(grid, "DLC (.nsp, optional)", dlcBox, () => PickFile(dlcBox, "DLC as NSP|*.nsp"));
         FileRow(grid, "prod.keys", keysBox, () => PickFile(keysBox, "Keys|*.keys|All files|*.*"));
+        // Optional: the console's system NCAs for the shared fonts, when the base game is an NSP or an XCI converted from
+        // one, which lacks them (issue #18).
+        FileRow(grid, "Firmware folder (optional)", firmwareBox, PickFirmware);
         FileRow(grid, "Target folder", targetBox, PickFolder);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = Theme.Card, Margin = new Padding(0) };
@@ -557,6 +566,18 @@ partial class MainForm : Form
         if (d.ShowDialog(this) == DialogResult.OK) box.Text = d.FileName;
     }
 
+    void PickFirmware()
+    {
+        using var d = new FolderBrowserDialog
+        {
+            Description = "The folder with your console's system files (.nca), e.g. an emulator's nand\\system\\Contents\\registered. " +
+                          "Only needed when your base game is an .nsp or was converted from one.",
+            UseDescriptionForTitle = true,
+        };
+        if (Directory.Exists(firmwareBox.Text)) d.InitialDirectory = firmwareBox.Text;
+        if (d.ShowDialog(this) == DialogResult.OK) firmwareBox.Text = d.SelectedPath;
+    }
+
     void PickFolder()
     {
         using var d = new FolderBrowserDialog { Description = "Where should the game go?", UseDescriptionForTitle = true };
@@ -568,8 +589,14 @@ partial class MainForm : Form
     string? CheckInputs()
     {
         if (!File.Exists(baseBox.Text)) return "Please choose your base game (.xci).";
-        if (!baseBox.Text.EndsWith(".xci", StringComparison.OrdinalIgnoreCase))
-            return "The base game must be an .xci file. An .nsp does not work as the base game.";
+        bool nsp = baseBox.Text.EndsWith(".nsp", StringComparison.OrdinalIgnoreCase);
+        if (!baseBox.Text.EndsWith(".xci", StringComparison.OrdinalIgnoreCase) && !nsp)
+            return "The base game must be an .xci file (or an .nsp together with a firmware folder).";
+        if (firmwareBox.Text != "" && !Directory.Exists(firmwareBox.Text))
+            return "The firmware folder was not found. Leave the field empty if your base game is a cartridge dump (.xci).";
+        if (nsp && firmwareBox.Text == "")
+            return "A base game as .nsp lacks the system fonts that a cartridge dump (.xci) carries. Choose the folder with your " +
+                   "console's system files (.nca) as \"Firmware folder\", or use an .xci.";
         if (!File.Exists(updateBox.Text) || !updateBox.Text.EndsWith(".nsp", StringComparison.OrdinalIgnoreCase))
             return "Please choose the update (.nsp).";
         if (dlcBox.Text != "" && (!File.Exists(dlcBox.Text) || !dlcBox.Text.EndsWith(".nsp", StringComparison.OrdinalIgnoreCase)))
@@ -590,7 +617,7 @@ partial class MainForm : Form
             return;
         }
         SaveSettings();
-        var inputs = new Inputs(baseBox.Text, updateBox.Text, dlcBox.Text, keysBox.Text, targetBox.Text);
+        var inputs = new Inputs(baseBox.Text, updateBox.Text, dlcBox.Text, keysBox.Text, targetBox.Text, firmwareBox.Text);
         cancel = new CancellationTokenSource();
         SetBusy(true);
         log.Clear();
@@ -610,6 +637,7 @@ partial class MainForm : Form
         Refresh_();
         if (error == null)
         {
+            Builder.NoteBuilt(targetBox.Text);
             status.Text = "Done! Press Play, or use the shortcut in your target folder.";
             status.ForeColor = Theme.Text;
         }
@@ -657,7 +685,34 @@ partial class MainForm : Form
     {
         string exe = Builder.Exe(targetBox.Text);
         if (!File.Exists(exe)) return;
-        Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = Builder.Root(targetBox.Text), UseShellExecute = true });
+        var game = Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = Builder.Root(targetBox.Text), UseShellExecute = true });
+        if (game != null)
+        {
+            // the Home page follows the game: its save and team when it ends (the watcher covers saves while it runs)
+            game.EnableRaisingEvents = true;
+            game.Exited += (_, _) => BeginInvoke(() => { RefreshHome(); RefreshSaves(); });
+        }
+        WatchTeam();
+    }
+
+    // <profile>	eam.json changes whenever the game saves: the Home page shows the new team at once, without a tab switch.
+    FileSystemWatcher? teamWatch;
+    void WatchTeam()
+    {
+        string? profile = ProfileDir();
+        if (profile == null || !Directory.Exists(profile)) return;
+        if (teamWatch != null && teamWatch.Path == profile) return;
+        teamWatch?.Dispose();
+        teamWatch = new FileSystemWatcher(profile, "team.json") { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName };
+        FileSystemEventHandler changed = (_, _) => BeginInvoke(async () =>
+        {
+            await Task.Delay(300);   // the game writes the file and renames it into place
+            RefreshHome();
+        });
+        teamWatch.Changed += changed;
+        teamWatch.Created += changed;
+        teamWatch.Renamed += (s, e) => changed(s, e);
+        teamWatch.EnableRaisingEvents = true;
     }
 
     // ---- Settings (karpur.ini next to karpur.exe)
@@ -867,7 +922,7 @@ partial class MainForm : Form
 
     // ---- remembered choices
 
-    record Saved(string Base, string Update, string Dlc, string Keys, string Target, string? Colour);
+    record Saved(string Base, string Update, string Dlc, string Keys, string Target, string? Colour, string? Firmware = null);
 
     bool loading;   // LoadSettings fills the controls: their change events must not save half-filled settings
 
@@ -881,6 +936,7 @@ partial class MainForm : Form
             if (s != null)
             {
                 (baseBox.Text, updateBox.Text, dlcBox.Text, keysBox.Text, targetBox.Text) = (s.Base, s.Update, s.Dlc, s.Keys, s.Target);
+                firmwareBox.Text = s.Firmware ?? "";
                 Select(colour, s.Colour, "auto");
             }
         }
@@ -897,7 +953,8 @@ partial class MainForm : Form
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile)!);
             File.WriteAllText(SettingsFile, JsonSerializer.Serialize(new Saved(baseBox.Text, updateBox.Text, dlcBox.Text,
-                                                                                 keysBox.Text, targetBox.Text, Value(colour))));
+                                                                                 keysBox.Text, targetBox.Text, Value(colour),
+                                                                                 firmwareBox.Text)));
         }
         catch { }
     }

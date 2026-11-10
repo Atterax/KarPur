@@ -72,7 +72,7 @@
 
 double gfx_window_refresh_hz(void);   // ui/menu.h, which is for the menu's C++ side too
 
-#define MAX_FIELDS 1024
+#define MAX_FIELDS 16384   // a large mod (Pokemon Compass: 2032 files) raises one size field per file
 
 typedef struct {
     uint64_t at;   // byte offset in romfs.bin, or in the unpacked file (decoded)
@@ -116,15 +116,17 @@ static int by_offset(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
-#define MAX_MOD_FILES 64
+// A mod's files (the launcher's Mods tab lists every enabled mod; a large one has thousands): kept as paths and sizes,
+// read from disk when the game unpacks the original (the mod stays in its folder, nothing is copied or replaced on
+// disk), sorted by the original's packed size for the lookup at each decode.
 typedef struct {
     uint64_t packed, unpacked, print;   // the original file: its packed bytes
-    uint8_t *data;                      // the mod's file
+    char *path;                         // the mod's file
     uint64_t n;
     int used;
 } ModFile;
-static ModFile mod_files[MAX_MOD_FILES];
-static int nmod_files, mod_file_failed;
+static ModFile *mod_files;
+static int nmod_files, cap_mod_files, mod_file_failed, mod_files_sorted;
 
 // object_generation_range_array.bin of Violet 4.0.0: its packed and unpacked size and fingerprint, so another file or
 // game version is left alone; then offset, type and value of each field.
@@ -189,15 +191,23 @@ static int load_mod_file(const char *line) {
     unsigned long long packed, unpacked, print;
     int at = 0;
     if (sscanf(line, "modfile %llu %llu %llx %n", &packed, &unpacked, &print, &at) != 3 || !at) return 0;
-    uint64_t size = 0;
-    uint8_t *data = (uint8_t *)plat_file_read(line + at, &size);
-    if (!data || !size || nmod_files >= MAX_MOD_FILES) {
+    int64_t size = plat_file_size(line + at);
+    if (size <= 0) {
         rt_log("data patch: mod file not used: %s", line + at);
-        free(data);
         mod_file_failed = 1;
         return 1;
     }
-    mod_files[nmod_files++] = (ModFile){packed, unpacked, print, data, size, 0};
+    if (nmod_files == cap_mod_files) {
+        int cap = cap_mod_files ? cap_mod_files * 2 : 256;
+        ModFile *n = realloc(mod_files, (size_t)cap * sizeof *n);
+        if (!n) { mod_file_failed = 1; return 1; }
+        mod_files = n, cap_mod_files = cap;
+    }
+    char *path = malloc(strlen(line + at) + 1);
+    if (!path) { mod_file_failed = 1; return 1; }
+    strcpy(path, line + at);
+    mod_files[nmod_files++] = (ModFile){packed, unpacked, print, path, (uint64_t)size, 0};
+    mod_files_sorted = 0;
     return 1;
 }
 
@@ -397,7 +407,7 @@ void data_patch_init(void) {
             for (int i = 0; i < nfields; i++)
                 if (strncmp(fields[i].name, "modsize:", 8)) fields[kept++] = fields[i];
             nfields = kept;
-            for (int i = 0; i < nmod_files; i++) free(mod_files[i].data);
+            for (int i = 0; i < nmod_files; i++) free(mod_files[i].path);
             nmod_files = 0;
             rt_log("data patch: a mod file could not be read: no mod file is replaced");
         }
@@ -520,18 +530,48 @@ void data_patch_read(uint64_t off, void *buf, uint64_t n) {
 
 // The game asks its Oodle decoder for out_n bytes at out from packed_n bytes at packed (data_watch.c host_oodle): when
 // those bytes are a mod's file, writes the mod's file there and returns its size; else 0, and the decoder runs.
+static int mod_cmp(const void *a, const void *b) {
+    uint64_t x = ((const ModFile *)a)->packed, y = ((const ModFile *)b)->packed;
+    return x < y ? -1 : x > y;
+}
+
 uint64_t data_patch_replace(const uint8_t *packed, uint64_t packed_n, uint8_t *out, uint64_t out_n) {
-    for (int i = 0; i < nmod_files; i++) {
+    if (!nmod_files) return 0;
+    if (!__atomic_load_n(&mod_files_sorted, __ATOMIC_ACQUIRE)) {   // the list is complete before the first decode
+        static PlatMutex sort_lock = PLAT_MUTEX_INIT;
+        plat_mutex_lock(&sort_lock);
+        if (!mod_files_sorted) qsort(mod_files, (size_t)nmod_files, sizeof *mod_files, mod_cmp), __atomic_store_n(&mod_files_sorted, 1, __ATOMIC_RELEASE);
+        plat_mutex_unlock(&sort_lock);
+    }
+    // the entries for files of this packed size (the game decodes a file from all of its packed bytes)
+    int lo = 0, hi = nmod_files;
+    while (lo < hi) {
+        int m = (lo + hi) / 2;
+        if (mod_files[m].packed < packed_n) lo = m + 1;
+        else hi = m;
+    }
+    uint64_t print = 0;
+    for (int i = lo; i < nmod_files && mod_files[i].packed == packed_n; i++) {
         ModFile *m = &mod_files[i];
         uint64_t head = m->packed < 4096 ? m->packed : 4096;
-        if ((out_n != m->n && out_n != m->unpacked) || packed_n < head || fnv1a64(packed, head) != m->print) continue;
+        if (out_n != m->n && out_n != m->unpacked) continue;
+        if (!print) print = fnv1a64(packed, head);
+        if (print != m->print) continue;
         int first = !__atomic_exchange_n(&m->used, 1, __ATOMIC_RELAXED);
         if (out_n < m->n) {   // the size in the pack's table was not read from there: the file would not fit
             if (first) rt_log("data patch: the game reserves %llu bytes for a mod file of %llu: original kept",
                               (unsigned long long)out_n, (unsigned long long)m->n);
             return 0;
         }
-        memcpy(out, m->data, m->n);
+        uint64_t got = 0;
+        uint8_t *data = (uint8_t *)plat_file_read(m->path, &got);
+        if (!data || got != m->n) {
+            if (first) rt_log("data patch: mod file changed or gone since the start: %s: original kept", m->path);
+            free(data);
+            return 0;
+        }
+        memcpy(out, data, m->n);
+        free(data);
         if (first) rt_log("data patch: mod file used: %llu bytes instead of %llu", (unsigned long long)m->n,
                           (unsigned long long)m->unpacked);
         return m->n;

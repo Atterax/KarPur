@@ -61,8 +61,14 @@ def check(a):
     """The inputs are what they claim to be; nothing is read from them beyond a few header bytes."""
     if not a.base.is_file():
         raise StepError(f'base game not found: {a.base}')
-    if a.base.suffix.lower() != '.xci' or not magic(a.base, 0x100, b'HEAD'):
-        raise StepError('the base game must be an XCI dump (its system fonts come from the cartridge image)')
+    is_xci = a.base.suffix.lower() == '.xci' and magic(a.base, 0x100, b'HEAD')
+    is_nsp = a.base.suffix.lower() == '.nsp' and magic(a.base, 0, b'PFS0')
+    if a.firmware and not a.firmware.is_dir():
+        raise StepError(f'firmware folder not found: {a.firmware}')
+    if not is_xci and not (is_nsp and a.firmware):
+        raise StepError('the base game must be an XCI dump (its system fonts come from the cartridge image); a base game '
+                        'as NSP needs a firmware folder too (the launcher\'s "Firmware folder": the folder of your '
+                        'console\'s system NCA files, e.g. an emulator\'s nand/system/Contents/registered)')
     for kind, p in [('update', a.update)] + [('dlc', d) for d in a.dlc]:
         if not p.is_file():
             raise StepError(f'{kind} not found: {p}')
@@ -223,6 +229,8 @@ def cleanup():
 
 def fingerprint(a):
     parts = [str(p.resolve()) + ':' + str(p.stat().st_size) for p in [a.base, a.update, *a.dlc, a.keys] if p.is_file()]
+    if a.firmware:
+        parts.append('firmware:' + str(a.firmware.resolve()))
     return hashlib.sha256('\n'.join(parts).encode()).hexdigest()
 
 
@@ -254,6 +262,8 @@ def main():
     ap.add_argument('--update', type=Path, required=True, help='update NSP')
     ap.add_argument('--dlc', type=Path, action='append', default=[], help='DLC NSP (repeatable, optional)')
     ap.add_argument('--keys', type=Path, required=True, help='prod.keys')
+    ap.add_argument('--firmware', type=Path, help="folder of the console's system NCAs, for the shared fonts: needed with "
+                    'a base game as NSP or an XCI without them (a converted eShop dump), optional otherwise')
     ap.add_argument('--keep', action='store_true', help='keep the toolchain and the temporary files')
     a = ap.parse_args()
 
@@ -270,7 +280,7 @@ def main():
         'check': lambda: check(a),
         'toolchain': lambda: toolchain_msys2.fetch(MSYS, log=out),
         'extract': lambda: run('extract', [py, 'tools/extract.py'], env),
-        'fonts': lambda: run('fonts', [py, 'tools/extract_fonts.py'], env),
+        'fonts': lambda: run('fonts', [py, 'tools/extract_fonts.py'] + (['--firmware', a.firmware] if a.firmware else []), env),
         'romfs': lambda: run('romfs', [py, 'tools/extract_romfs.py'], env),
         'menu': menu,
         'fps': lambda: run('fps', [py, 'tools/fps_patches.py'], env),
