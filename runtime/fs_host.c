@@ -1181,8 +1181,42 @@ static void ov_get_fs_context(Cpu *c) {
     ret_x(c, v ? v : (uint64_t)(uintptr_t)fs_context_default);
 }
 static void ov_set_fs_context(Cpu *c) { __atomic_store_n(&fs_context, arg_x(c, 0), __ATOMIC_RELEASE); }
-// Add-on content: nn::aoc lists none (ov_system.c), so there is nothing to mount.
-static void ov_mount_aoc(Cpu *c) { (void)c; ret_x(c, FS_R_TARGET_NOT_FOUND); }
+// Add-on content (the player's DLC): tools/extract_dlc.py unpacks each add-on content's RomFS into
+// <romfs>/../dlc/<index>/ (Violet's index 1 holds keyfile.dat, the proof of ownership; the expansions' data is in the
+// update). nn::aoc lists those indices (ov_system.c fs_aoc_indices) and MountAddOnContent mounts the folder read-only.
+// TOTK_DLC=0 hides them.
+static int dlc_on(void) {
+    static int v = -1;
+    if (v < 0) v = rt_knob("DLC", "1");
+    return v;
+}
+
+static void dlc_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/../dlc/%d", rt_config()->romfs, index); }
+
+int fs_aoc_indices(int *out, int cap) {
+    int n = 0;
+    if (!dlc_on()) return 0;
+    for (int i = 1; i < 0x1000 && n < cap; i++) {
+        char p[PATH_CAP];
+        dlc_dir(i, p, sizeof p);
+        if (plat_dir_exists(p)) out[n++] = i;
+    }
+    return n;
+}
+
+// Result MountAddOnContent(const char *name, AddOnContentIndex index, void *cache, size_t cache_size)
+static void ov_mount_aoc(Cpu *c) {
+    const char *name = arg_p(c, 0);
+    int index = (int)arg_x(c, 1);
+    char p[PATH_CAP];
+    dlc_dir(index, p, sizeof p);
+    if (!dlc_on() || index <= 0 || !plat_dir_exists(p)) {
+        rt_log("fs: MountAddOnContent(%s, %d): no such add-on content", name ? name : "(null)", index);
+        ret_x(c, FS_R_TARGET_NOT_FOUND);
+        return;
+    }
+    ret_x(c, mount_add(name, M_SAVE_RO, p));   // read-only, as on the console
+}
 static void ov_query_aoc_cache(Cpu *c) {
     uint64_t *out = arg_p(c, 0);
     if (out) *out = 0;

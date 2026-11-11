@@ -64,8 +64,30 @@ NVN_API(nvnTextureBuilderSetDefaults) {
 NVN_API(nvnTextureBuilderSetDevice) { TB(c)->dev = arg_p(c, 1); }
 NVN_API(nvnTextureBuilderSetFlags) { TB(c)->d.flags = (int)arg_x(c, 1); }
 NVN_API(nvnTextureBuilderSetTarget) { TB(c)->d.target = (int)arg_x(c, 1); }
-NVN_API(nvnTextureBuilderSetWidth) { TB(c)->d.width = (uint32_t)arg_x(c, 1); }
-NVN_API(nvnTextureBuilderSetHeight) { TB(c)->d.height = (uint32_t)arg_x(c, 1); }
+// TOTK_RES_PROBE=1 (diagnostic, off): resolution.c has no "output"/"scene" patch set for Violet yet, so the game's
+// fixed 1920x1080 output and 1600x900 scene cannot be resized. Logs the first call from each distinct caller and API
+// that builds a texture matching one of those sizes, to find the function(s) that set them. A lone width or height
+// (SetWidth / SetHeight) is logged on its own, since the scene may be built that way instead of one SetSize2D call.
+static void res_probe_note(Cpu *c, const char *api, uint32_t w, uint32_t h) {
+    if (!rt_knob("RES_PROBE", "0")) return;
+    if (w != 1920 && w != 1080 && w != 1600 && w != 900 && h != 1920 && h != 1080 && h != 1600 && h != 900) return;
+    static struct { uint64_t lr; const char *api; } seen[64];
+    static int n;
+    uint64_t lr = c->x[30] - 4;
+    for (int i = 0; i < n; i++)
+        if (seen[i].lr == lr && seen[i].api == api) return;
+    if (n < (int)(sizeof seen / sizeof *seen)) seen[n++] = (typeof(seen[0])){lr, api};
+    char from[160];
+    rt_log("res probe: %s %ux%u from %s", api, w, h, ldr_describe(lr, from, sizeof from));
+}
+NVN_API(nvnTextureBuilderSetWidth) {
+    TB(c)->d.width = (uint32_t)arg_x(c, 1);
+    res_probe_note(c, "SetWidth", TB(c)->d.width, 0);
+}
+NVN_API(nvnTextureBuilderSetHeight) {
+    TB(c)->d.height = (uint32_t)arg_x(c, 1);
+    res_probe_note(c, "SetHeight", 0, TB(c)->d.height);
+}
 NVN_API(nvnTextureBuilderSetDepth) { TB(c)->d.depth = (uint32_t)arg_x(c, 1); }
 NVN_API(nvnTextureBuilderSetSize1D) {
     tex_builder_t *b = TB(c);
@@ -77,6 +99,7 @@ NVN_API(nvnTextureBuilderSetSize2D) {
     b->d.width = (uint32_t)arg_x(c, 1);
     b->d.height = (uint32_t)arg_x(c, 2);
     b->d.depth = 1;
+    res_probe_note(c, "SetSize2D", b->d.width, b->d.height);
 }
 NVN_API(nvnTextureBuilderSetSize3D) {
     tex_builder_t *b = TB(c);

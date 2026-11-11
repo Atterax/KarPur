@@ -35,7 +35,7 @@ XLATE = ROOT / 'build' / 'xlate' / 'totk_xlate.exe'
 MSYS = ROOT / 'toolchain' / 'msys2'
 FREE_GB = 30   # docs/setup-windows.md: about 30 GB during the setup
 
-STEPS = ['check', 'toolchain', 'extract', 'fonts', 'romfs', 'menu', 'fps', 'icon', 'lift', 'build', 'selftest', 'shaders',
+STEPS = ['check', 'toolchain', 'extract', 'fonts', 'romfs', 'dlc', 'menu', 'fps', 'icon', 'lift', 'build', 'selftest', 'shaders',
          'cleanup']
 UI_LIST = ROOT / 'tools' / 'data' / 'ui_patch_violet_4.0.0.txt'
 
@@ -172,6 +172,7 @@ STEP_INPUTS = {
     'extract': ['tools/extract.py', 'tools/switchfs.py', 'tools/nso.py'],
     'fonts': ['tools/extract_fonts.py'],
     'romfs': ['tools/extract_romfs.py', 'tools/romfs_index.py'],
+    'dlc': ['tools/extract_dlc.py'],
     'menu': ['tools/data/ui_patch_violet_4.0.0.txt'],
     'fps': ['tools/fps_patches.py'],
     'icon': ['tools/game_icon.py'],
@@ -182,6 +183,7 @@ STEP_OUTPUTS = {
     'extract': ['game/extracted/update/exefs/main', 'game/report/m1-report.txt'],
     'fonts': ['game/firmware/shared-fonts'],
     'romfs': ['game/romfs/romfs.bin', 'game/romfs/index.json'],
+    'dlc': ['game/dlc'],
     'menu': ['game/ui_patch.txt'],
     'fps': ['build/fps_patches.txt'],
     'build': ['build/game/karpur.exe'],
@@ -282,6 +284,7 @@ def main():
         'extract': lambda: run('extract', [py, 'tools/extract.py'], env),
         'fonts': lambda: run('fonts', [py, 'tools/extract_fonts.py'] + (['--firmware', a.firmware] if a.firmware else []), env),
         'romfs': lambda: run('romfs', [py, 'tools/extract_romfs.py'], env),
+        'dlc': lambda: run('dlc', [py, 'tools/extract_dlc.py'], env),
         'menu': menu,
         'fps': lambda: run('fps', [py, 'tools/fps_patches.py'], env),
         'icon': lambda: icon(py, env),

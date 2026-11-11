@@ -376,7 +376,10 @@ static void probe_applet(void) {
     CALL("err.ShowError", 0x2a8);
     CALL("nndiagStartup", 0);
     CALL("aoc.Initialize", 0);
-    CHECK(CALL("aoc.ListAddOnContent", U(out), 0, 8) == 0, "aoc: no add-on content");
+    {   // the add-on content the player's build unpacked (game/dlc), as many as fs_aoc_indices finds
+        int idx[64], have = fs_aoc_indices(idx, 64);
+        CHECK(CALL("aoc.ListAddOnContent", U(out), 0, 8) == (uint64_t)(have < 8 ? have : 8), "aoc: ListAddOnContent count");
+    }
     CALL("err.InitializeContextWriterApi", 0);
     CALL("pctl.Initialize", 0);
     CALL("diag.InitializeApplicationAbortObserver", 0);

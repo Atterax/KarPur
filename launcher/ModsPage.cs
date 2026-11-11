@@ -13,7 +13,7 @@ namespace KarPurLauncher;
 // the list leaves them out and the game reads its own files again.
 //   <root>\mods.json        the mods in their order (a file two mods change comes from the later one), on or off, and
 //                           what the analysis found: files it replaces, adds (not supported yet), changes unpacked
-//                           (not supported) and whether it carries code (exefs: never usable in a recompiled game)
+//                           (not supported) and whether it carries code (exefs: needs a separate recompilation path)
 //   <root>\mods\<name>\     a mod added from a .zip (a folder added as a folder stays where it is)
 class ModEntry
 {
@@ -36,18 +36,28 @@ class Toggle : Control
 
     public Toggle()
     {
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-        Size = new Size(46, 26);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                 ControlStyles.Selectable, true);
+        Size = new Size(64, 36);
         Cursor = Cursors.Hand;
+        TabStop = true;
+    }
+
+    public void PerformToggle()
+    {
+        if (!Enabled) return;
+        On = !On;
+        Switched?.Invoke(this, EventArgs.Empty);
     }
 
     protected override void OnClick(EventArgs e)
     {
-        if (!Enabled) return;
-        On = !On;
-        Switched?.Invoke(this, e);
+        PerformToggle();
         base.OnClick(e);
     }
+
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -58,6 +68,11 @@ class Toggle : Control
         Color fill = !Enabled ? Theme.Mix(Theme.Field, Theme.Back, 0.4f) : on ? Theme.Accent : Theme.Field;
         using (var b = new SolidBrush(fill)) g.FillPath(b, track);
         using (var pen = new Pen(on ? Theme.Mix(Theme.Accent, Color.White, 0.2f) : Theme.Border)) g.DrawPath(pen, track);
+        if (Focused && Pad.Active)
+        {
+            using var ring = new Pen(Theme.Accent2, 2f);
+            g.DrawPath(ring, track);
+        }
         float d = Height - 8, x = on ? Width - d - 4 : 4;
         using var knob = new SolidBrush(Color.White);
         g.FillEllipse(knob, x, 4, d, d);
@@ -81,8 +96,8 @@ partial class MainForm
         var how = Theme.Label("Experimental: only a few mods have been tried so far. A mod can make the game crash or behave " +
                               "oddly; switch it off and tell us in Feedback which mod it was. " +
                               "Mods are used while the game loads its files: nothing of your game is replaced, and a mod switched off " +
-                              "is gone from the game at its next start. A mod's code (an exefs folder) cannot run in KarPur; " +
-                              "its data files can. When two mods change the same file, the lower one in the list wins.", 9.5f, muted: true);
+                              "is gone from the game at its next start. Code mods (exefs) are not supported yet; " +
+                              "supported data files can be used. When two mods change the same file, the lower one in the list wins.", 9.5f, muted: true);
         how.MaximumSize = new Size(720, 0);
         how.Dock = DockStyle.Top;
         how.Padding = new Padding(0, 0, 0, 10);
@@ -176,7 +191,7 @@ partial class MainForm
         {
             var (name, version) = ModInfo(m.Path);
             var card = new Card { Width = 760, Height = 92, Margin = new Padding(0, 0, 0, 10) };
-            const int textW = 760 - 18 - 170;   // the text keeps clear of the switch and the remove button
+            const int textW = 760 - 18 - 220;   // the text keeps clear of the switch and the remove button
             var title = Theme.Label(name + (version != "" ? "  " + version : ""), 11f, style: FontStyle.Bold);
             title.Location = new Point(18, 14);
             title.BackColor = Theme.Card;
@@ -198,10 +213,12 @@ partial class MainForm
             int infoH = TextRenderer.MeasureText(info.Text, info.Font, new Size(textW, 0), TextFormatFlags.WordBreak).Height;
             where.Location = new Point(18, 44 + infoH + 4);
             card.Height = Math.Max(92, where.Bottom + where.Font.Height + 14);
-            var toggle = new Toggle { On = m.Enabled, Location = new Point(card.Width - 140, 32), Enabled = built && !modsBusy };
-            var remove = new Label { Text = "", Font = new Font(Theme.IconFont, 12f), ForeColor = Theme.Muted, BackColor = Theme.Card,
-                                     AutoSize = true, Cursor = Cursors.Hand, Location = new Point(card.Width - 70, 34) };
-            new ToolTip().SetToolTip(remove, "Remove from the list (the mod's files stay where they are)");
+            var toggle = new Toggle { On = m.Enabled, Location = new Point(card.Width - 200, 29), Enabled = built && !modsBusy,
+                                      AccessibleName = $"Enable {name}" };
+            var remove = Theme.Button("Remove");
+            remove.Location = new Point(card.Width - 116, 25);
+            remove.Enabled = built && !modsBusy;
+            remove.AccessibleName = $"Remove {name} from the list";
             toggle.Switched += async (_, _) => { m.Enabled = toggle.On; SaveMods(); await ApplyMods(); };
             remove.Click += async (_, _) =>
             {
@@ -241,6 +258,7 @@ partial class MainForm
         try
         {
             string root = Builder.Root(targetBox.Text), python = Path.Combine(root, "python", "python.exe");
+            if (Builder.IsSourceRoot(root)) python = Path.Combine(root, ".venv", "Scripts", "python.exe");
             if (!File.Exists(python)) { ModMessage("Python is missing in the game folder: press Repair in Setup.", true); return; }
             foreach (var m in mods.Where(m => !m.Analysed).ToList())
             {

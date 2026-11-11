@@ -10,6 +10,14 @@ static class Program
 
     public static string? PreviewColour;
     public static bool DesignCheck;   // --shot: a picture of the window only, nothing else runs
+    // A preview built inside the checkout starts its existing local game by default. This only chooses the initial
+    // target: every Setup path stays editable and Builder.Root follows the target the user chooses.
+    public static string? FindRepository(string directory)
+    {
+        for (var p = new DirectoryInfo(directory); p != null; p = p.Parent)
+            if (Builder.IsSourceRoot(p.FullName)) return p.FullName;
+        return null;
+    }
 
     [STAThread]
     static void Main(string[] args)

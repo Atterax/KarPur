@@ -16,7 +16,7 @@ typedef enum {
     UI_MENU_TITLE = UI_MENU_FIRST,
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU,
     UI_MENU_TAB_ADVANCED,
-    UI_MENU_CONTINUE, UI_MENU_QUIT,
+    UI_MENU_CONTINUE, UI_MENU_QUIT, UI_MENU_QUIT_CONFIRM,
     UI_MENU_ON, UI_MENU_OFF, UI_MENU_AUTO, UI_MENU_DEFAULT_MARK,      // "default" beside the default value
     UI_MENU_AFTER_RESTART,    // note on a setting that is read at start
     UI_MENU_SET_BY_ENV,       // note on a setting an environment variable fixes
@@ -160,10 +160,9 @@ typedef enum {
     // number formats of the overlay's cells (printf, one number each)
     UI_MENU_OV_FMT_PCT, UI_MENU_OV_FMT_TEMP, UI_MENU_OV_FMT_POWER, UI_MENU_OV_FMT_MHZ, UI_MENU_OV_FMT_GB,
     UI_MENU_OV_FMT_GB_OF, UI_MENU_OV_GAME_GB, UI_MENU_OV_FMT_MS, UI_MENU_OV_PER_FRAME,
-    // the picture lines: window, game image and 3D scene sizes, the scaling to the window, frame limit and presentation
-    UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT,
+    // the picture lines: window and game image sizes, the scaling to the window, frame limit and presentation
+    UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT,
     UI_MENU_OV_FMT_SIZE,      // "%ux%u"
-    UI_MENU_OV_FMT_SCENE,     // "%ux%u, %.0f%%": the scene and its share of the game image's width
     UI_MENU_OV_FMT_FSR,       // "AMD FSR 1, sharpness %d%%"
     UI_MENU_OV_SCALE_NONE, UI_MENU_OV_SCALE_BILINEAR,
     UI_MENU_LAST_ID = UI_MENU_OV_SCALE_BILINEAR,

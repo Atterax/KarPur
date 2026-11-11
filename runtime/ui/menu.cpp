@@ -651,6 +651,10 @@ static const char *pad_layout_note(void) {
 
 static void tab_controls(float scale) {
     opt_begin("##controls", scale);
+    // On the locked (default) F1/Esc page this is the only tab shown, so the performance overlay's own row
+    // (tab_screen, TAB_SCREEN) is otherwise unreachable without TOTK_MENU_LOCK=0.
+    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
+    opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
                                       UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
     opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
@@ -896,8 +900,40 @@ static void layout_controls(uint32_t w, uint32_t h, float scale) {
     dl->AddText(ImVec2(x, text_y), white, back);
     ImGui::SetCursorScreenPos(ImVec2(cx - rad, fh - foot));
     if (ImGui::InvisibleButton("##back", ImVec2(fw - 64 * scale - (cx - rad), foot))) set_open(0);
-    if (!binds_modal() && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
+
+    // "Quit game" on the left of the lower bar (issue #25: the window's X was the only way out in fullscreen), the Y
+    // button's sign and the word, both click; it asks first, as progress since the last save is lost
+    const char *quit = menu_text(UI_MENU_QUIT);
+    float qx = 64 * scale + rad * 2 + fs * 0.45f, qcx = 64 * scale + rad;
+    if (cfg_last_save_ok()) {   // the save warning takes the left side while it shows
+        dl->AddCircleFilled(ImVec2(qcx, cy), rad, white);
+        const ImFontGlyph *yg = font->FindGlyph('Y');
+        dl->AddText(ImVec2(qcx - (yg->X0 + yg->X1) * 0.5f * k, text_y), IM_COL32(122, 40, 176, 255), "Y");
+        dl->AddText(ImVec2(qx, text_y), white, quit);
+        ImGui::SetCursorScreenPos(ImVec2(64 * scale, fh - foot));
+        if (ImGui::InvisibleButton("##quit", ImVec2(qx + ImGui::CalcTextSize(quit).x - 64 * scale, foot)) ||
+            (!binds_modal() && !g_modal && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false)))
+            ImGui::OpenPopup("##quit_confirm");
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("##quit_confirm", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) {
+        g_modal = true;
+        ImGui::TextUnformatted(menu_text(UI_MENU_QUIT_CONFIRM));
+        ImGui::Spacing();
+        const char *no = menu_text(UI_MENU_RESET_NO);
+        const ImGuiStyle &st = ImGui::GetStyle();
+        float bw = fmaxf(ImGui::CalcTextSize(quit).x, ImGui::CalcTextSize(no).x) + st.FramePadding.x * 4;
+        bool close = false;
+        if (ImGui::Button(no, ImVec2(bw, 0))) close = true;   // Cancel has the cursor first
+        if (ImGui::IsWindowAppearing()) ImGui::SetItemDefaultFocus();
+        ImGui::SameLine();
+        if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) close = true;
+        if (close) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    } else if (!binds_modal() && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false))) {
         set_open(0);
+    }
     ImGui::End();
     ImGui::PopStyleColor(10);
     ImGui::PopStyleVar(2);
@@ -1097,45 +1133,43 @@ static void perf_label(UiTextId label, const ImVec4 &c) {
 
 static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 
-// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), how the
-// present scales the image to the window (gfx_present.c, the last present), the frame limit and the presentation mode
-// in use.
+// The picture lines: the window, the game image the present shows, how the present scales it to the window
+// (gfx_present.c, the last present), the frame limit and the presentation mode in use. The 3D scene's own size
+// (resolution.c) is left out: Violet/Scarlet has no patch set yet to make it differ from the game image, so the row
+// only ever repeated "100%".
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
-    unsigned out[2], scene[2];
-    res_sizes(out, scene);
-    char v[6][64];
+    char v[5][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
-    snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
     char taa[64];
     int taa_kind = vk_taa_describe(taa, sizeof taa);   // KarPur: DLAA / DLSS (vk_taa.c)
     if (taa_kind == 2) {   // DLSS made the picture at the window's size: the present shows it 1:1
-        snprintf(v[3], sizeof v[3], "%s", taa);
+        snprintf(v[2], sizeof v[2], "%s", taa);
     } else if (t->scaler == 2) {
         int s = cfg_int("TOTK_SHARPNESS");
-        snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
+        snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
-        snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
+        snprintf(v[2], sizeof v[2], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
     if (taa_kind == 1) {   // DLAA at the game's size; the present's own scaling as before
-        size_t n = strlen(v[3]);
-        snprintf(v[3] + n, sizeof v[3] - n, ", %s", taa);
+        size_t n = strlen(v[2]);
+        snprintf(v[2] + n, sizeof v[2] - n, ", %s", taa);
     }
     double hz = frame_step_limit_hz();
-    snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));
-    if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
+    snprintf(v[3], sizeof v[3], "%s", menu_text(UI_MENU_OV_NONE));
+    if (hz > 0) snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
-    snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
+    snprintf(v[4], sizeof v[4], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
     float fg = slfg_shown_fps();   // KarPur TOTK_FRAMEGEN: what DLSS Frame Generation shows (vk_slfg.cpp)
-    if (fg > 0) snprintf(v[5], sizeof v[5], "%s, FG %.0f FPS", pm ? pm : menu_text(UI_MENU_OV_NONE), fg);
-    static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
-                                       UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
+    if (fg > 0) snprintf(v[4], sizeof v[4], "%s, FG %.0f FPS", pm ? pm : menu_text(UI_MENU_OV_NONE), fg);
+    static const UiTextId labels[5] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT,
+                                       UI_MENU_OV_PRESENT};
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
     float vw = 0;
     for (auto &s : v) vw = fmaxf(vw, ImGui::CalcTextSize(s).x);
     ImGui::TableSetupColumn("##p0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("##p1", ImGuiTableColumnFlags_WidthFixed, vw);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 5; i++) {
         perf_label(labels[i], c);
         ImGui::TableNextColumn();
         perf_right(v[i], false);

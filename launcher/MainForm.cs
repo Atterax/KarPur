@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace KarPurLauncher;
 
@@ -16,7 +17,7 @@ partial class MainForm : Form
                     playButton = Theme.Button("Play", true, Theme.GlyphPlay);
     readonly Bar progress = new();
     readonly Label status = Theme.Label("Choose your files and a target folder, then press Build.", 9.5f, muted: true);
-    readonly CheckBox details = new() { Text = "Show details", AutoSize = true, ForeColor = Theme.Muted, BackColor = Theme.Card };
+    readonly CheckBox details = new ChoiceBox { Text = "Show details", AutoSize = true, ForeColor = Theme.Muted, BackColor = Theme.Card };
     readonly TextBox log = new()
     {
         Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill,
@@ -24,19 +25,21 @@ partial class MainForm : Form
         Font = new Font("Cascadia Mono", 8.5f),
     };
     // Settings
-    readonly CheckBox fullscreen = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
+    readonly CheckBox fullscreen = new ChoiceBox { AutoSize = true, ForeColor = Theme.Text, Text = "Start in fullscreen", BackColor = Theme.Card };
     // submit_defer = 0: every GPU submission goes out at once. Players whose game crashed after the character creation
     // reported that TOTK_SUBMIT_DEFER=0 fixes it; far trees may flicker a little and the frame rate can drop.
-    readonly CheckBox safeSubmit = new() { AutoSize = true, ForeColor = Theme.Text, BackColor = Theme.Card,
+    readonly CheckBox safeSubmit = new ChoiceBox { AutoSize = true, ForeColor = Theme.Text, BackColor = Theme.Card,
                                            Text = "Compatibility mode (try it if the game crashes after the character creation)" };
     readonly ComboBox windowSize = Combo(), fpsLimit = Combo(), present = Combo(), upscaler = Combo(), overlay = Combo(),
-                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssModel = Combo(), frameGen = Combo();
+                      population = Combo(), colour = Combo(), antiAliasing = Combo(), dlssModel = Combo(), frameGen = Combo(),
+                      gpu = Combo(), opMode = Combo();
+    readonly Label gpuNote = Theme.Label("", 9.5f, muted: true);
     readonly Dictionary<Control, Label> rowLabels = new();
     readonly Button addStreamline = Theme.Button("Add Streamline files", glyph: Theme.GlyphFolder);
     readonly Label fgNote = Theme.Label("", 9.5f, muted: true);
     readonly Button addDlss = Theme.Button("Add nvngx_dlss.dll", glyph: Theme.GlyphFolder);
     readonly Label dlssNote = Theme.Label("", 9.5f, muted: true);
-    readonly TrackBar sharpness = new() { Minimum = 0, Maximum = 100, TickFrequency = 10, Width = 280, BackColor = Theme.Card };
+    readonly TrackBar sharpness = new FocusSlider { Minimum = 0, Maximum = 100, TickFrequency = 10, Width = 280, BackColor = Theme.Card };
     readonly Label sharpnessValue = Theme.Label("80");
     readonly Label settingsNote = Theme.Label("", 9.5f, muted: true);
     readonly Button saveSettings = Theme.Button("Save settings", true, "");
@@ -51,8 +54,10 @@ partial class MainForm : Form
     };
     Updater.Release? release;
 
-    readonly Panel content = new() { Dock = DockStyle.Fill, BackColor = Theme.Back, Padding = new Padding(32, 18, 32, 22) };
+    readonly LogoMark sidebarLogo = new();
+    readonly Panel content = new Surface { Dock = DockStyle.Fill, BackColor = Theme.Back, Padding = new Padding(28, 24, 28, 24) };
     readonly Dictionary<string, (NavButton Nav, Control Page)> pages = new();
+    string currentPage = "";
     CancellationTokenSource? cancel;
     readonly bool updated;
 
@@ -76,6 +81,13 @@ partial class MainForm : Form
     static readonly (string, string)[] AntiAliasings = { ("0", "Game's own"), ("1", "NVIDIA DLAA (RTX)") };
     static readonly (string, string)[] FrameGens =
         { ("0", "Off"), ("2", "2x (DLSS Frame Generation)"), ("3", "3x (RTX 50)"), ("4", "4x (RTX 50)") };
+    static readonly (string, string)[] GpuAuto = { ("", "Automatic (best card)") };
+    // The console's own two output modes (runtime/ov_system.c): handheld renders at 1280x720, the console's own
+    // lower-resolution mode, a real speed gain confirmed by the maintainer, no reverse engineering needed.
+    static readonly (string, string)[] OperationModes =
+        { ("docked", "Docked (1920x1080, full quality)"), ("handheld", "Handheld (1280x720, saves performance)") };
+    // TOTK_RENDER_SCALE exists in cfg.c/resolution.c but is not wired into Violet/Scarlet's own code yet (see
+    // progress.md): no launcher row for it until it actually does something.
     static readonly (string, string)[] DlssModels =
         { ("5", "CNN (steady, recommended)"), ("11", "Transformer (sharper, can smear)") };
     static readonly (string, string)[] Overlays = { ("off", "Off"), ("fps", "FPS only"), ("full", "Full") };
@@ -95,7 +107,8 @@ partial class MainForm : Form
         BackColor = Theme.Back;
         ForeColor = Theme.Text;
         MinimumSize = new Size(1000, 680);
-        Size = new Size(1080, 720);
+        Size = new Size(1260, 840);
+        DoubleBuffered = true;
         StartPosition = FormStartPosition.CenterScreen;
         try { Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!); } catch { }
 
@@ -145,11 +158,13 @@ partial class MainForm : Form
             UpdateRows();
         };
         colour.SelectedIndexChanged += (_, _) => { ApplyColour(); if (!loading) SaveSettings(); };
+        gpu.SelectedIndexChanged += (_, _) => { if (!loadingGame) UpdateGpuLock(); };
         checkUpdate.Click += async (_, _) => await CheckUpdate();
         installUpdate.Click += async (_, _) => await InstallUpdate();
         installUpdate.Visible = false;
 
         HandleCreated += (_, _) => Theme.DarkTitleBar(this);
+        StartPad();   // the controller (PadNav.cs)
         Load += async (_, _) =>
         {
             LoadSettings();
@@ -159,7 +174,7 @@ partial class MainForm : Form
             // After an update, through the Update tab (--updated) or a launcher replaced by hand: the game's files and
             // build follow this launcher's version (only what changed is rebuilt).
             string builtWith = builtNow ? Builder.BuiltWith(targetBox.Text) : "";
-            if (builtNow && !Program.DesignCheck && (this.updated || builtWith != Program.Version))
+            if (builtNow && !Program.DesignCheck && !Builder.IsSourceRoot(Builder.Root(targetBox.Text)) && (this.updated || builtWith != Program.Version))
             {
                 status.Text = $"Updated to version {Program.Version}. Rebuilding what changed …";
                 await Build(repair: false);
@@ -178,8 +193,10 @@ partial class MainForm : Form
 
     Control Sidebar()
     {
-        var side = new Panel { Dock = DockStyle.Left, Width = 224, BackColor = Theme.Panel };
-        var logo = new LogoMark { Size = new Size(40, 40), Location = new Point(22, 24) };   // the "K" in the edition's accent
+        var side = new Surface { Dock = DockStyle.Left, Width = 232, BackColor = Theme.Panel };
+        var logo = sidebarLogo;
+        logo.Size = new Size(46, 46);
+        logo.Location = new Point(18, 20);
         var title = Theme.Label("KarPur", 17f, style: FontStyle.Bold);
         title.Location = new Point(70, 20);
         var version = Theme.Label($"Version {Program.Version}", 9f, muted: true);
@@ -187,7 +204,10 @@ partial class MainForm : Form
         side.Controls.Add(logo);
         side.Controls.Add(title);
         side.Controls.Add(version);
-        int y = 104;
+        var library = Theme.Label("KARPUR", 8f, muted: true, style: FontStyle.Bold);
+        library.Location = new Point(26, 101);
+        side.Controls.Add(library);
+        int y = 128;
         foreach (var (name, glyph) in new[] { ("Home", Theme.GlyphHome), ("Setup", Theme.GlyphSetup), ("Settings", Theme.GlyphSettings),
                                                ("Controls", Theme.GlyphGame), ("Saves", Theme.GlyphSave),
                                                ("Mods", ""), ("Update", Theme.GlyphUpdate),
@@ -197,14 +217,27 @@ partial class MainForm : Form
             b.Click += (_, _) => Show(name);
             side.Controls.Add(b);
             pages[name] = (b, new Panel());
-            y += 46;
+            y += 50;
         }
         playButton.Font = new Font("Segoe UI Semibold", 13f);
         playButton.Size = new Size(184, 54);
         ((RoundButton)playButton).Radius = 12;
         playButton.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;
         side.Controls.Add(playButton);
-        side.Resize += (_, _) => playButton.Location = new Point(20, side.Height - 78);
+        side.Controls.Add(padBack);
+        void PlaceSidebar()
+        {
+            playButton.Location = new Point(24, side.Height - 88);
+            padBack.Location = new Point(26, side.Height - 136);
+            int step = Math.Clamp((side.Height - 128 - 164) / pages.Count, 40, 50), row = 0;
+            foreach (var (nav, _) in pages.Values)
+            {
+                nav.Top = 128 + step * row++;
+                nav.Height = step - 2;
+            }
+        }
+        side.Resize += (_, _) => PlaceSidebar();
+        PlaceSidebar();
         return side;
     }
 
@@ -220,19 +253,30 @@ partial class MainForm : Form
 
     void Show(string name)
     {
+        if (currentPage == name) { PadMarkSidebar(); return; } // entering with A keeps unsaved edits and scroll position
+        currentPage = name;
+        using var paint = new PagePaint(content);
+        content.Padding = name == "Home" ? Padding.Empty : new Padding(28, 24, 28, 24);
+        // Hide the old page before revealing the new one. Home used to paint while Setup still covered it.
+        foreach (var (_, (_, page)) in pages) page.Visible = false;
+        padInPage = false;
+        ActiveControl = null;
         foreach (var (key, (nav, page)) in pages)
         {
             page.Visible = key == name;
             nav.Selected = key == name;
         }
-        if (pages[name].Page is ScrollableControl shown)   // a page opens at its top, not at the control with the focus
-            BeginInvoke(() => shown.AutoScrollPosition = Point.Empty);
+        pages[name].Page.BringToFront();
+        if (pages[name].Page is ScrollableControl shown) shown.AutoScrollPosition = Point.Empty;
+        int pi = padTabs.IndexOf(name);   // the controller's cursor follows a tab chosen with the mouse
+        if (pi >= 0) padIndex = pi;
         if (name == "Home") { RefreshHome(); WatchTeam(); }
         if (name == "Saves") RefreshSaves();
         if (name == "Mods") LoadMods();
         if (name == "Settings") LoadGameSettings();
         if (name == "Controls") LoadControls();
         if (name == "Feedback") _ = FillFeedback();
+        PadMarkSidebar();
     }
 
     static TableLayoutPanel Grid(int columns) =>
@@ -262,7 +306,7 @@ partial class MainForm : Form
 
     Control SetupPage()
     {
-        var page = new Panel { BackColor = Theme.Back };
+        var page = new Surface { BackColor = Theme.Back };
         var grid = Grid(3);
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -310,7 +354,7 @@ partial class MainForm : Form
 
     Control SettingsPage()
     {
-        var page = new Panel { BackColor = Theme.Back };
+        var page = new Surface { BackColor = Theme.Back };
         var grid = Grid(2);
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -318,6 +362,8 @@ partial class MainForm : Form
         Fill(fpsLimit, Fps);
         Fill(present, Presents);
         Fill(upscaler, Upscalers);
+        Fill(gpu, GpuAuto);
+        Fill(opMode, OperationModes);
         Fill(antiAliasing, AntiAliasings);
         Fill(dlssModel, DlssModels);
         Fill(frameGen, FrameGens);
@@ -332,6 +378,11 @@ partial class MainForm : Form
         SettingRow(grid, "Window size", windowSize);
         SettingRow(grid, "FPS limit", fpsLimit);
         SettingRow(grid, "Frame sync", present);
+        SettingRow(grid, "Graphics card", gpu);
+        gpuNote.MaximumSize = new Size(560, 0);
+        gpuNote.AutoSize = true;
+        SettingRow(grid, "", gpuNote);
+        SettingRow(grid, "Mode", opMode);
         var aa = new FlowLayoutPanel { AutoSize = true, BackColor = Theme.Card, Margin = new Padding(0), WrapContents = false };
         antiAliasing.Margin = new Padding(0, 3, 10, 0);
         addDlss.Margin = new Padding(0);
@@ -397,6 +448,79 @@ partial class MainForm : Form
         string up = Value(upscaler);
         ShowRow(sharpness.Parent!, up == "fsr");
         ShowRow(dlssModel, Value(antiAliasing) == "1" || up.StartsWith("dlss"));
+    }
+
+    // DLAA, DLSS upscaling and DLSS Frame Generation need an NVIDIA RTX card: locked (not just hidden, so it is clear
+    // why) once a specific other card is picked above. "Automatic" leaves every option open, since any installed card
+    // could end up running the game.
+    void UpdateGpuLock()
+    {
+        string name = Value(gpu);
+        bool locked = name != "" && !name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
+        string curUp = Value(upscaler);
+        Fill(upscaler, locked ? Upscalers.Where(u => u.Item1 is "fsr" or "bilinear").ToArray() : Upscalers);
+        Select(upscaler, locked && curUp.StartsWith("dlss") ? "fsr" : curUp, "fsr");
+        if (locked && Value(antiAliasing) == "1") Select(antiAliasing, "0", "0");
+        if (locked && Value(frameGen) != "0") Select(frameGen, "0", "0");
+        antiAliasing.Enabled = dlssModel.Enabled = frameGen.Enabled = addDlss.Enabled = addStreamline.Enabled = !locked;
+        gpuNote.Text = locked
+            ? $"DLAA, DLSS and Frame Generation need an NVIDIA card: locked while \"{name}\" is selected above."
+            : "";
+        UpdateRows();
+    }
+
+    // The graphics cards karpur.exe finds (vk_device.c pick_device logs "vk: gpu N: name (type T, ...)" on every
+    // start): run once per built exe (cached) through --probe-vkdevice, which only enumerates devices, no game files
+    // needed. wantName is the card saved in karpur.ini (TOTK_GPU_NAME), selected once the list is in.
+    (string Value, string Name)[]? gpuCacheItems;
+    string? gpuCacheExe;
+
+    async Task DetectGpus(string exe, string? wantName)
+    {
+        if (exe == "" || !File.Exists(exe)) { Fill(gpu, GpuAuto); Select(gpu, "", ""); gpu.Enabled = false; UpdateGpuLock(); return; }
+        if (gpuCacheExe == exe && gpuCacheItems != null)
+        {
+            Fill(gpu, gpuCacheItems);
+            Select(gpu, wantName, "");
+            UpdateGpuLock();
+            return;
+        }
+        Fill(gpu, GpuAuto);
+        Select(gpu, "", "");
+        gpu.Enabled = false;
+        gpuNote.Text = "Detecting graphics cards …";
+        var found = new List<(string, string)>();
+        try
+        {
+            var psi = new ProcessStartInfo(exe, "--probe-vkdevice")
+            {
+                WorkingDirectory = Path.GetDirectoryName(exe)!, RedirectStandardError = true, RedirectStandardOutput = true,
+                UseShellExecute = false, CreateNoWindow = true,
+            };
+            using var p = Process.Start(psi);
+            if (p != null)
+            {
+                string err = await p.StandardError.ReadToEndAsync();
+                await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync();
+                foreach (Match m in Regex.Matches(err, @"vk: gpu \d+: (.+?) \(type (\d+)"))
+                {
+                    string name = m.Groups[1].Value.Trim();
+                    string kind = m.Groups[2].Value == "1" ? " (integrated)" : m.Groups[2].Value == "2" ? " (discrete)" : "";
+                    if (!found.Any(f => f.Item1 == name)) found.Add((name, name + kind));
+                }
+            }
+        }
+        catch { }
+        // the exe or target may have changed while the probe ran: only apply a result for what is still selected
+        if (targetBox.Text == "" || Builder.Exe(targetBox.Text) != exe) return;
+        var items = GpuAuto.Concat(found).ToArray();
+        gpuCacheExe = exe;
+        gpuCacheItems = items;
+        Fill(gpu, items);
+        Select(gpu, wantName, "");
+        gpu.Enabled = true;
+        UpdateGpuLock();
     }
 
     static void Fill(ComboBox c, (string Value, string Name)[] items)
@@ -665,6 +789,7 @@ partial class MainForm : Form
         bool built = targetBox.Text != "" && File.Exists(Builder.Exe(targetBox.Text));
         playButton.Enabled = cancel == null && built;
         repairButton.Enabled = cancel == null && built;
+        buildButton.Enabled = cancel == null;
         buildButton.Text = built ? "Rebuild" : "Build";
         if (cancel == null && status.ForeColor == Theme.Muted)
             status.Text = built ? "Ready to play. Rebuild or Repair only when something is missing or after a change."
@@ -679,15 +804,22 @@ partial class MainForm : Form
         if (Program.PreviewColour != null) choice = Program.PreviewColour;   // --colour=scarlet: a look at a palette (design checks)
         string game = choice == "auto" ? (targetBox.Text != "" ? Builder.Game(targetBox.Text) : "unknown") : choice;
         Theme.SetPalette(Theme.PaletteFor(game), this);
+        sidebarLogo.Edition = File.Exists(Builder.Exe(targetBox.Text)) ? Theme.Current.Name : "neutral";
+        sidebarLogo.Invalidate();
+        hero.Invalidate(true);
     }
 
     void Play()
     {
         string exe = Builder.Exe(targetBox.Text);
         if (!File.Exists(exe)) return;
-        var game = Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = Builder.Root(targetBox.Text), UseShellExecute = true });
+        var start = Builder.GameStartInfo(targetBox.Text);
+        var game = Process.Start(start);
         if (game != null)
         {
+            // Record successful starts for Home and distinguish installations in local reports.
+            try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "launcher-start.log"),
+                $"{DateTime.Now:O} exe={start.FileName} cwd={start.WorkingDirectory}{Environment.NewLine}"); } catch { }
             // the Home page follows the game: its save and team when it ends (the watcher covers saves while it runs)
             game.EnableRaisingEvents = true;
             game.Exited += (_, _) => BeginInvoke(() => { RefreshHome(); RefreshSaves(); });
@@ -729,6 +861,7 @@ partial class MainForm : Form
         Select(antiAliasing, built ? ini.Get("dlaa") : null, "0");
         string dlssOut = built ? ini.Get("dlss_out") ?? "game" : "game";
         Select(upscaler, dlssOut == "window" ? "dlss" : dlssOut == "3840x2160" ? "dlss4k" : built ? ini.Get("upscaler") : null, "fsr");
+        Select(opMode, built ? ini.Get("operation_mode") : null, "docked");
         Select(dlssModel, built ? ini.Get("dlaa_preset") : null, "5");
         Select(frameGen, built ? ini.Get("framegen") : null, "0");
         loadingGame = false;
@@ -737,11 +870,12 @@ partial class MainForm : Form
         Select(population, built ? ini.Get("population") : null, "switch");
         safeSubmit.Checked = (built ? ini.Get("submit_defer") : null) == "0";
         sharpness.Value = int.TryParse(built ? ini.Get("sharpness") : null, out int s) ? Math.Clamp(s, 0, 100) : 80;
-        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, upscaler, antiAliasing, addDlss, dlssModel, frameGen, addStreamline, overlay, population, safeSubmit, sharpness, saveSettings })
+        foreach (Control c in new Control[] { fullscreen, windowSize, fpsLimit, present, opMode, upscaler, antiAliasing, addDlss, dlssModel, frameGen, addStreamline, overlay, population, safeSubmit, sharpness, saveSettings })
             c.Enabled = built;
         settingsNote.Text = built ? "" : "Build the game first: the settings belong to its folder.";
         DlssStatus();
         FgStatus();
+        _ = DetectGpus(built ? Builder.Exe(targetBox.Text) : "", built ? ini.Get("gpu_name") : null);
     }
 
     // ---- DLSS Frame Generation: NVIDIA Streamline's files are NVIDIA's; the player adds their own copies next to
@@ -863,8 +997,11 @@ partial class MainForm : Form
             ini.Set("display", "window_size", Value(windowSize));
             ini.Set("frame rate", "fps_limit", Value(fpsLimit));
             ini.Set("display", "vk_present", Value(present));
+            ini.Set("display", "gpu_name", Value(gpu));
+            ini.Set("display", "gpu_index", "");   // clears a stale manual TOTK_GPU_INDEX: both set at once can match no device
             string up = Value(upscaler);
             ini.Set("display", "upscaler", up.StartsWith("dlss") ? "fsr" : up);   // (the present's scaler when DLSS is off)
+            ini.Set("display", "operation_mode", Value(opMode));
             ini.Set("display", "dlaa", Value(antiAliasing));
             ini.Set("display", "dlss_out", up == "dlss" ? "window" : up == "dlss4k" ? "3840x2160" : "game");
             ini.Set("display", "dlaa_preset", Value(dlssModel));
@@ -944,7 +1081,9 @@ partial class MainForm : Form
         loading = false;
         // Started from the target folder (the copy a build puts there): that folder is the target.
         string here = Path.GetDirectoryName(Environment.ProcessPath ?? "") ?? "";
-        if (here != "" && File.Exists(Builder.Exe(here))) targetBox.Text = here;
+        string? repo = Program.FindRepository(AppContext.BaseDirectory);
+        if (repo != null) targetBox.Text = repo; // preview2 uses the current repo; changing Target folder still works
+        else if (here != "" && File.Exists(Builder.Exe(here))) targetBox.Text = here;
     }
 
     void SaveSettings()

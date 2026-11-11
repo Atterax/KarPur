@@ -30,7 +30,7 @@ class RoundCombo : ComboBox
         DrawMode = DrawMode.OwnerDrawFixed;
         DropDownStyle = ComboBoxStyle.DropDownList;
         FlatStyle = FlatStyle.Flat;
-        ItemHeight = 26;
+        ItemHeight = 34;
         BackColor = Theme.Field;
         ForeColor = Theme.Text;
         Font = new Font("Segoe UI", 10f);
@@ -107,7 +107,8 @@ class RoundCombo : ComboBox
         {
             using var b = new SolidBrush(!Enabled ? Theme.Mix(Theme.Field, Theme.Back, 0.4f) : hover ? Theme.Mix(Theme.Field, Theme.Border, 0.5f) : Theme.Field);
             g.FillPath(b, path);
-            using var pen = new Pen(Focused || DroppedDown ? Theme.Accent : Theme.Border);
+            using var pen = new Pen(Focused && Pad.Active ? Theme.Accent2 : Focused || DroppedDown ? Theme.Accent : Theme.Border,
+                                    Focused && Pad.Active ? 2f : 1f);
             g.DrawPath(pen, path);
         }
         string text = SelectedIndex >= 0 ? GetItemText(Items[SelectedIndex]) ?? "" : "";
@@ -126,6 +127,8 @@ class KeyButton : RoundButton
 {
     string key = "default";
     bool waiting;
+    public bool Capturing => waiting;
+    public void CancelCapture() { waiting = false; UpdateText(); }
     readonly string defaultKey;
     public event EventHandler? KeyChosen;
 
@@ -133,7 +136,7 @@ class KeyButton : RoundButton
     {
         this.defaultKey = defaultKey;
         Width = 150;
-        Height = 34;
+        Height = 42;
         Font = new Font("Segoe UI Semibold", 9.5f);
         Margin = new Padding(0, 4, 0, 4);
         var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), ShowImageMargin = false, BackColor = Theme.Field, ForeColor = Theme.Text };
@@ -253,6 +256,23 @@ class DarkMenuRenderer : ToolStripProfessionalRenderer
     }
 }
 
+// A native slider with a visible controller focus; dragging and ValueChanged stay the standard TrackBar's.
+class FocusSlider : TrackBar
+{
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg != 0x000F || !Focused || !Pad.Active || Width < 4 || Height < 4) return;
+        using var g = Graphics.FromHwnd(Handle);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = Theme.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), 8);
+        using var pen = new Pen(Theme.Accent2, 2f);
+        g.DrawPath(pen, path);
+    }
+}
+
 // A controller binding: shows the button; a click waits for the next button pressed on an XInput controller (Xbox pads,
 // and pads Steam presents as one); the right mouse button lists every button (any controller, the paddles too). Pad
 // holds runtime/input_map.c's pad name ("south" ... "rpaddle2"), "default" or "none". Positions, not letters: "south" is
@@ -270,6 +290,7 @@ class PadButton : RoundButton
 
     string pad = "default";
     bool waiting;
+    public bool Capturing => waiting;
     ushort startButtons;
     byte startLt, startRt;
     readonly System.Windows.Forms.Timer poll = new() { Interval = 25 };
@@ -278,7 +299,7 @@ class PadButton : RoundButton
     public PadButton()
     {
         Width = 170;
-        Height = 34;
+        Height = 42;
         Font = new Font("Segoe UI Semibold", 9.5f);
         Margin = new Padding(8, 4, 0, 4);
         var menu = new ContextMenuStrip { Renderer = new DarkMenuRenderer(), ShowImageMargin = false, BackColor = Theme.Field, ForeColor = Theme.Text };

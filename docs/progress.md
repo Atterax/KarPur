@@ -1,12 +1,151 @@
 # Progress
 
+## F1/Esc: performance overlay choice; launcher: removed Render scale (2026-11-11)
+
+- The Performance overlay choice (`tab_screen`, Off/FPS/Full) was only reachable with `TOTK_MENU_LOCK=0` (the old
+  full tabbed menu); F1/Esc opens the simplified, locked Controls-only page by default, which had no way to change it
+  in-game at all (launcher only). Added the same `opt_choice("TOTK_PERF_OVERLAY", ...)` row to `tab_controls`, so it
+  now shows on both the locked and the full menu (mutually exclusive per frame, no ID clash). Syntax-checked with
+  clang; not yet built into the real game.
+- Removed the launcher's "Render scale" row (`MainForm.cs`: the `renderScale` control, `RenderScales` array, its
+  note, and the `render_scale` ini write) since it does not do anything yet (see above) and was confusing; the
+  underlying `TOTK_RENDER_SCALE` cfg/runtime support and the `TOTK_RES_PROBE` diagnostic stay for whenever that gets
+  picked up again. Builds (0 warnings/errors), copied into `launcher/bin/Preview2`. No commit/push.
+
+## Overlay: dropped the "3D scene" line (2026-11-11)
+
+- Maintainer's ask: the Full overlay's "3D scene" row always read the same as "Game image" (always 100%, since there is
+  no output/scene patch set for Violet/Scarlet) and was pure noise. Removed it from `perf_picture`
+  (`runtime/ui/menu.cpp`) and the now-unused `UI_MENU_OV_SCENE` / `UI_MENU_OV_FMT_SCENE` strings (en, ru) from
+  `ui_text.h`/`ui_text.c`. Also noticed, while touching this file, two other dead in-game-menu strings
+  (`UI_MENU_RENDER_SCALE*`, `UI_MENU_OUTPUT_RES*`) that were never wired into any menu row — left them alone for now,
+  not part of this ask. Syntax-checked with clang; not yet built into a full game exe or run. No commit/push.
+
+## Handheld-mode setting, real performance win (2026-11-11)
+
+- The deep trace below for render-scale bottomed out at a persistent display-config object (reached through two
+  pointer hops, a field copied from `x23+0x8`), not a single literal to patch; before going further the maintainer
+  tried the console's own existing docked/handheld switch (`TOTK_OPERATION_MODE`, already in `cfg.c`, read by
+  `ov_system.c`) as a quick side test. **Confirmed: handheld renders at 1280x720** (the Switch's own real handheld
+  resolution), a genuine speed gain with zero reverse engineering, since the game already supports it natively.
+- Added "Mode" (Docked 1920x1080 / Handheld 1280x720) to the launcher's Settings page (`MainForm.cs`), next to the
+  render scale/GPU rows: `ini.Set("display", "operation_mode", ...)`, loaded/saved like the other dropdowns. Builds
+  (0 warnings/errors), copied into `launcher/bin/Preview2`. This is the actually useful, no-reverse-engineering AMD/
+  weak-GPU performance option the maintainer originally wanted from the render-scale idea; it stays in the Settings
+  page as its own thing. No commit/push.
+
+## Render scale: finding out why it does nothing (2026-11-11)
+
+- The maintainer set `render_scale = 50` and forced the iGPU via the new GPU switch; the game ran on it (confirmed:
+  overlay named "AMD Radeon(TM) Graphics"), but the "3D scene" overlay line stayed "1920x1080, 100%" and no FPS
+  changed. The log explains why: `resolution: the generated C has no output and scene patch sets; the game keeps its
+  own resolution`. `resolution.c`'s comments cite `recomp/patches-v121.txt` / `patches-v143.txt` as where the real
+  hook into the game's own render-target sizes would live, but neither file, nor any patch set named "output" or
+  "scene", exists anywhere in the repo (`recomp/patches.py` only has the page-layout comment; the only real patch
+  table produced anywhere is `build/fps_patches.txt` for the frame-rate/LOD/data-watch fixes). So `TOTK_RENDER_SCALE`
+  (and `TOTK_OUTPUT_RES`, the aspect-ratio and FOV patches with it) have never actually been wired into Violet: this is
+  a pre-existing gap, not something this session's launcher change broke. Corrected course with the maintainer instead
+  of quietly shipping a setting that does nothing.
+- **First step towards a real fix:** `runtime/nvn_api_obj.c nvnTextureBuilderSetSize2D` now calls `res_probe_note`
+  (`TOTK_RES_PROBE=1`, diagnostic, off by default): logs the first call from each distinct caller (by its own return
+  address, `ldr_describe`) that builds a 2D texture sized 1920, 1080, 1600 or 900 on either side, to find which
+  function(s) in the game's own code set its fixed output/scene render target sizes. Also added `GPU_NAME` to
+  `cfg.c`'s section table (the GPU launcher setting from earlier today) and `RES_PROBE` to its known-keys list.
+  Syntax-checked with clang (`-fsyntax-only`, one pre-existing unrelated warning); not yet run against the real game.
+- **First run (test RA):** one hit, `SetSize2D 1920x1080 from main+0x107f154`, right before the game's own present-
+  interval setup at boot: a strong candidate for the output/swapchain surface. No 1600x900 scene hit at all, so the
+  scene size is probably not built through one `SetSize2D` call. Extended the probe to `nvnTextureBuilderSetWidth` /
+  `SetHeight` too (each logged on its own, deduped by caller + which API), since the scene may set its two dimensions
+  separately. Not yet re-run.
+- **Second run (test RB, on the iGPU this time):** three hits, all **1920x1080**, none at 1600x900: `SetSize2D
+  1920x1080 from main+0x107f154` (the output surface, as before), and a pair right next to each other,
+  `SetWidth 1920x0 from main+0x7f1788` / `SetHeight 0x1080 from main+0x7f17a8` (likely one more 1920x1080 surface built
+  through the other API shape, not the scene). The frame's own pass-size report in the same log
+  (`vk_exec: pass sizes per frame ... 1920x1080+depth 38.5 passes 425 draws, 960x540+depth 31.4 passes 179 draws,
+  1024x1024+depth 19.4 passes 163 draws, ...`) shows the main pass already drawing directly at 1920x1080, with the
+  other sizes looking like separate fixed-size passes (shadow maps, a half-res post effect), not one shared "scene"
+  surface scaled up to the output afterwards. So this port may not render through a single smaller internal buffer the
+  way `resolution.c`'s comments assumed (modelled on the original Switch docked 1600x900 -> 1080p upscale); if true,
+  there is no one constant to patch for a cheap win, and a real render-scale would mean changing the main pass's own
+  viewport/attachment sizes throughout, a bigger and less certain job than first estimated. Told the maintainer plainly
+  instead of continuing to probe without a clear next hypothesis. No commit/push.
+
+## AMD render scale setting (2026-11-11)
+
+- Exposed `TOTK_RENDER_SCALE` (already read by `resolution.c`, unrelated to this session's reverted Compass work) as a
+  "Render scale" dropdown on the launcher's Settings page (`launcher/MainForm.cs`): 50/67/75/game's own (default,
+  5/6)/100/125/150/200%. It sits above Upscaling, with a note that pairing a lower scale with AMD FSR 1 is a real speed
+  gain on non-NVIDIA cards, no new runtime code needed (the scene renders smaller, the game's own FSR 1 EASU scales it to
+  `TOTK_OUTPUT_RES`, then the present's FSR 1 / bilinear scales that to the window). Written to `karpur.ini`
+  `[display] render_scale`, read back the same way as the other Settings fields.
+- Not yet built or tested with the real game; the maintainer will try it on the RDNA 2 iGPU next. No commit/push.
+- **Graphics card setting (2026-11-11):** added "Graphics card" to Settings (`MainForm.cs DetectGpus`): runs the built
+  `karpur.exe --probe-vkdevice` once per exe (cached), which only enumerates Vulkan devices (no game files touched),
+  and reads the "vk: gpu N: name (type T, ...)" lines `vk_device.c pick_device` already logs; "Automatic" plus one entry
+  per found card (name, "(integrated)"/"(discrete)"), written to `karpur.ini` `[display] gpu_name` (already read by
+  `vk_device.c`, matched as a case-insensitive substring; added `GPU_NAME` to `cfg.c`'s section table for consistency).
+  Maintainer's ask: picking a card that is not NVIDIA should lock the NVIDIA-only options instead of silently failing.
+  `UpdateGpuLock` disables Anti-aliasing, DLSS model, Frame generation, "Add nvngx_dlss.dll" and "Add Streamline files",
+  switches them off/away if they were on, and removes the two DLSS entries from Upscaling, with a note saying why;
+  "Automatic" leaves everything open (any installed card could end up running the game). Builds (0 warnings/errors).
+  - **Found and fixed:** the maintainer had a stale `gpu_index = 0` in `karpur.ini` from before this dropdown existed
+    (an earlier, manual workaround this chat suggested). `vk_device.c pick_device` ANDs `TOTK_GPU_INDEX` and
+    `TOTK_GPU_NAME` when both are set, so index 0 (the RTX 5080) plus name "AMD Radeon..." matched no device at all:
+    `FATAL: vk: no usable Vulkan device`, the game exiting in well under a second regardless of which card the
+    dropdown had selected. `SaveGameSettings` now also clears `gpu_index` whenever the dropdown saves, since the
+    launcher's own GPU setting replaces that manual step. Fixed the maintainer's existing `karpur.ini` by hand too.
+    No commit/push.
+
+## Compass instruction compatibility probe (2026-11-11)
+
+- Added an explicit experimental --plugin-compat generator profile, used only by tools/compass_workspace.py probe. It models TPIDR2 as per-thread storage in Cpu's reserved padding, disabled-GCS reads as zero, and SMSTOP disable forms in the fixed non-streaming/no-ZA model. Pending TPIDR2 state faults explicitly; SMSTART, SVCR and guarded-stack writes remain rejected. This is limited compatibility behavior, not complete SME/GCS emulation. Cpu's size/vector offsets stay unchanged; kernel fiber switches propagate the new thread-local slot.
+- Reserved all-ones encodings stay undefined-instruction traps instead of unsupported-FP false positives. Independently checked 1024 synthetic encodings with LLVM for Cortex-A57 and generic/extended targets. No plugin bytes copied into source.
+- Probe 20261111-095204: 326 functions, seven compatibility sites, 2/2 C files compiled, zero compiler errors. The raw unsupported count is still 1: an unallocated slot at subsdk9+0xa8. It stays a trap and is unreachable from its emitted +0x38 entry under the current static CFG. The probe records that separately; it does not hide the raw count, remove the fault, prove runtime hook reachability or claim a runnable Compass build.
+- Tests: seven Python decoding/control-flow cases, native synthetic C execution for register round-trips/context independence/XZR/GCS-off/SMSTOP preservation/Cpu ABI, four guarded exit cases, four EH regressions, strict-system output comparison with the backup for 131072 synthetic encodings, and kernel.c syntax check. Full Compass initialization/execution remains untested.
+- Existing source/docs backed up to C:/KarPur/backup/compass-instructions-20261111. Normal game, preview2, real saves and mod switches remain unchanged. No commit/push. See docs/compass-compatibility.md for limitations and the next integration stages.
+
+
+## Isolated Compass workspace and first plugin compilation (2026-11-11)
+
+- Maintainer provided C:/KarPur/KarPurCompassTest. Added tools/compass_workspace.py: prepare verifies independent baseline/native DLL/ExeFS copies, creates fresh baseline/profile and compass-profile, and provides Run-Baseline.cmd with explicit profile/ExeFS/RomFS paths. It strips inherited TOTK variables and sets a separate shader cache. No real saves are copied. Baseline self-test: 0 failures. Compass stays inactive.
+- Plugin generation exposed a missing EH table represented by equal, nonzero start/end offsets. Fixed recomp/module.py to skip that absent table and recomp/gen.py inner_mask to handle zero FDEs. Four synthetic tests pass; original main/subsdk0/sdk EH starts/ranges match the backed-up parser (177528/9831/30320 entries).
+- Plugin-only probe in KarPurCompassTest/probes/20261111-093314: 326 functions, 32210 instruction slots (includes padding/traps), two C files, two compiled successfully, zero compiler errors. Eight unsupported instruction sites remain (system-register/system and FP/SIMD classes). This is not an executable Compass build; the hook bridge, linker compatibility and missing RomFS paths remain unimplemented. No partly supported mod was enabled.
+- Backups before source/docs edits: C:/KarPur/backup/compass-workspace-20261111. No changes to original ExeFS, normal game/preview2 binaries, mod toggles or real saves; no commit/push. Details in compass-compatibility.md.
+
+
+## Compass / TotK ExeFS investigation (2026-11-11)
+
+- Inspected TotK Recomp at 7a37fc3c346cd6f2b3c80637effb27b880ce817b. It supports compiled IPS/IPSwitch patch sets, but explicitly rejects whole mods containing subsdk plugins or replacement main modules. This does not supply a ready-made loader for Compass.
+- Added `tools/mod_exefs_report.py`, a read-only metadata diagnostic. Both local Compass packages contain main.npdm + subsdk9, not IPS patches. Violet: 93,829-byte NSO, 487 relocations, 15 imports (13 weak), 27 exports and five constructor-array entries. One strong import has no definition in the original linked game modules: nn::ro::detail::g_LookupGlobalManualFunctionPointer. Symbol presence alone does not verify runtime compatibility.
+- The plugin exports exl_inline_hook_impl. exlaunch's public implementation creates ARM trampolines at runtime; KarPur must bridge hooks to lifted code, including direct calls and interior function sites. Merely adding the module or making text writable is insufficient. The missing RomFS additions/uncompressed replacements remain separate requirements.
+- Full evidence, pinned upstream links and implementation stages: [compass-compatibility.md](compass-compatibility.md). Metadata-only local reports: build/compass-research-20261111/{violet,scarlet}-exefs.json. No mod toggles, launcher/game executables, save files or original ExeFS changed; no commit/push. Backed up this document under C:/KarPur/backup/compass-research-20261111 before editing.
+
+
+## Launcher banner alignment and input hints (2026-11-11)
+
+- Home metadata now shares the bottom edge of Play/Open game folder at both normal and minimum window sizes. Compact labels and action widths keep all fields on one row in narrow windows.
+- Violet's logo is right-aligned; only its background crop moves downward to show Miraidon's head. Scarlet retains its previous crop and left logo. Source image files are unchanged.
+- A/B badges have a shaded face, upper highlight and drop shadow. Their glyphs use visible-ink bounds for centering; Back sits closer to B.
+- An application message filter observes clicks and mouse-wheel scrolling in the launcher, hides pad hints without consuming mouse input, and lets subsequent pad input restore the contextual hint. Hover alone does not interrupt controller navigation. The filter is removed when the form closes.
+- Backups preserve source/docs and replaced preview2 outputs under `C:\KarPur\backup\launcher-polish-20261111`. No native game rebuild, commit or push.
+
+
+## Launcher edition artwork and contextual controller hints (2026-11-11)
+
+- Home now uses an edge-to-edge, square banner with the maintainer's supplied Scarlet/Violet backgrounds and transparent logos, following the automatic/manual launcher palette. Sidebar edition icons follow the same choice after a build; the neutral supplied image is also the executable icon.
+- Removed the three redundant Home statistic cards and all Home shader counts. Banner chips show game version, DLC and the most recent matching launcher-start.log record, falling back to an explicitly labelled save timestamp. Team/profile/icon loading is unchanged.
+- Sidebar A appears only on the controller-selected tab. Entering with A replaces it with B Back above Play; returning or switching tabs hides B. Removed persistent controller instruction text.
+- Vertical pad movement prioritizes the nearest visual row, preventing wide checkboxes from being skipped in favour of distant narrow controls. Setup remains editable and Play still follows its selected target.
+- Source/assets and changed preview2 publish outputs are backed up under `C:\KarPur\backup\launcher-art-20261111-0917`, preserving repository-relative paths. Native game executable is not rebuilt. No commit or push.
+
+
 The current state, the decisions that shaped it, and what comes next. Newest log entries on top.
 
 The detailed German log up to 2026-11-08 (every test, A to BT, with its numbers) is in [progress-archive-de.md](progress-archive-de.md). Code comments that cite `docs/progress.md` with a date up to 2026-11-08 refer to that archive.
 
-## Current milestone: M5, playable
+## Current milestone: M6, PC extras (M5 complete)
 
-*Pokémon Violet* 4.0.0 runs from the title screen into the open world, with battles, picnics, fast travel, saving and loading. On the maintainer's PC (Ryzen 7 9800X3D, RTX 5080) it holds 56–60 FPS almost everywhere, towns included, with no tree flicker (test BT, 2026-11-08). The game's main menu has a PC Settings page; the older full settings menu on F1 is locked (`TOTK_MENU_LOCK=0` opens it). The KarPur Launcher 0.1.0 builds the game from a player's own dumps without any setup ([launcher.md](launcher.md), German).
+*Pokémon Violet* 4.0.0 runs from the title screen into the open world, with battles, picnics, fast travel, saving and loading. On the maintainer's PC (Ryzen 7 9800X3D, RTX 5080) it holds 56–60 FPS almost everywhere, towns included, with no tree flicker (test BT, 2026-11-08). The game's main menu has a PC Settings page; the older full settings menu on F1 is locked (`TOTK_MENU_LOCK=0` opens it). The KarPur Launcher 0.3.2 builds the game from a player's own dumps without any setup ([launcher.md](launcher.md), German).
 
 Scarlet and other game versions are untested.
 
@@ -65,14 +204,12 @@ All off by default except the abort line.
 
 ## Next steps
 
-1. **Long sessions.** At the end of test BT, 106,395 chunks (415.6 MiB) were hot. Watch whether the frame rate drops over hours of play.
-2. **Stutter** when opening the map (single frames of 75–282 ms) and a spike of 65–80 ms about every 70 s.
-3. **View distance** for grass, bushes and NPCs, and a view distance setting in the launcher and the PC Settings page.
-4. **Higher internal resolution** than 1920×1080.
-5. **Test the launcher's update path** with a release v0.1.1; test on other PCs (feedback issues).
-6. **Scarlet:** test with a Scarlet dump.
-7. The rare abort after a fast travel (`AbortImpl` called from `main+0xb5d930`, seen once); the abort line now names the place.
-8. Leftovers: transform feedback pause/resume and `DrawTransformFeedback`; NVN functions as they get called; `nn::aoc` does not report DLC; `codec::HardwareOpusDecoder`.
+1. **Launcher review (2026-11-11).** Controller-sized controls and explicit focus, spatial navigation, atomic page changes and a cached Home banner are implemented locally. Test the revised launcher with a real controller, including tab changes and binding capture. Keep Home's team.json/catalog/icon interface intact.
+2. **AMD temporal upscaling, then frame generation.** Reuse the existing tone-mapped scene/depth/camera-motion inputs and HUD separation from vk_taa.c. Start with an optional Vulkan FSR upscaler and an explicit fallback, then implement AMD's Vulkan frame-generation swapchain (separate from Streamline). The DLLs in AMD_NVIDIA_DLLs are DX12, not Vulkan. Reference: AMD's official FSR SDK and GPUOpen integration manuals; refs/PokeZ-ARecomp has FSR 2 source and a Vulkan FSR 3.1 upscaler adapter. Neither new path is implemented in KarPur yet. Test on the maintainer's RDNA 2 iGPU; no performance promise for that small GPU. New paths stay off by default until tested.
+3. **Complete mod support in separate stages.** First direct RomFS overlays and uncompressed replacements; then archive-table additions for new packed files (data.trpfd/trpfs). Code mods need version/build-ID checks, patched-code regeneration and/or lifting additional NSO modules with hook redirection. A Switch exefs plugin cannot simply execute as x86-64, and runtime instruction hooks must reach the lifted functions. Use a separate profile for Compass (it requires a new save); do not label the current partial support final.
+4. **Stability.** Long sessions (hot chunks/PCIe), map-opening stutters and the roughly 70-second spike; collect complete community crash logs. A rare AbortImpl from main+0xb5d930 after fast travel remains unexplained.
+5. **View distance** for grass, bushes and NPCs; **higher internal resolution**; Scarlet and other PCs remain to be tested.
+6. Runtime leftovers: transform feedback pause/resume and DrawTransformFeedback, NVN functions as called, codec::HardwareOpusDecoder.
 
 ## Open questions
 
@@ -84,6 +221,28 @@ All off by default except the abort line.
 - Are `nn::movie` functions called at all? The videos are Bink 2 (`.bk2`), decoded by the game's own code, so TotK's `ov_movie.c` (VP9) is probably not needed.
 
 ## Log
+
+### 2026-11-11: use preview2 directly, remove the workspace restrictions
+- Maintainer request: work in the repo, put all launcher UI/controller/banner changes in `launcher/bin/preview2`, back up only replaced/changed files, keep every Setup path and Build/Repair/Update available; other setup/mod management is manual. The separate preview/workspace approach below is superseded.
+- Removed the global workspace override, command/sidecar mode, disabled Setup grid, read-only target, Build/Repair/update guards and suppression of saved launcher preferences. Preview2 finds its source-checkout ancestor only to choose the initial Target folder. Builder.Root follows the editable target (source root directly, regular installation target + KarPur), so all tabs and Play use the selected build. Local source builds do not auto-rebuild on startup; the buttons remain available for manual use.
+- Kept spatial controller navigation, binding capture handling, focus/hit areas, banner bitmap/clip fix, atomic page changes, responsive team cards, edition metadata fallback, DLC-folder detection and existing game/runtime changes. No mod lists copied or toggles changed. Validation: isolated Release build (0 warnings/errors) and 37 synthetic UI/path checks passed, including editable Setup fields, Build/Repair/Update availability, selecting source and installed targets, team/save path changes and embedded build payload. Neither game executable is rebuilt or replaced. No commit or push.
+
+### 2026-11-11: preview started the older installation instead of the workspace
+- The maintainer confirmed that startup works again, but DLC and Quit in F1 were absent. Their working development launcher is `repo/launcher/bin/preview2/`. File times confirm two different game builds: `repo/build/game/karpur.exe` 2026-11-11 06:37, installed `KarPurTEST/KarPur/build/game/karpur.exe` 2026-11-10 21:39. The workspace's existing log reports one add-on content and mounts aoc1. The preview inherited the installed target from launcher.json, which explained the missing local changes. The Compass/Lua failure observed in the older installation remains a separate diagnostic; it did not prove the preview was launching the intended build.
+- Explicit development selection: `--workspace=<root>` or private `karpur-workspace.txt` next to the launcher; a launcher inside a source checkout also finds its repository ancestor. Invalid explicit workspaces fail visibly instead of falling back. All game paths (Play, working directory, settings, team/icons, saves and mods) resolve from that root. Home shows Workspace and the game executable's build time; DLC is detected from the extracted add-on folders, not from a saved Setup input path. Normal installed-launcher behaviour is unchanged outside workspace mode.
+- Workspace mode does not read/write installed launcher preferences, auto-rebuild via the release payload, or allow Build/Repair/release installation to overwrite local source. Use repository build tools for local game changes. Play logs its exact executable/working directory next to the launcher in launcher-start.log. The maintainer's original preview2 files and both game executables are left intact. The new preview's sidecar points explicitly to C:/KarPur/repo. Workspace edition detection falls back to the extraction report's application ID when setup_info.json is absent (manual build). Isolated Release build and 37 synthetic UI/path checks passed, including stale-target override, preview2 ancestry, working directory, settings/save roots, DLC detection, invalid-path rejection and payload-write guards. No game launch was used as proof of these path checks. No commit or push.
+
+### 2026-11-11: black screen after Play, partial Compass mod active
+- The maintainer reported a persistent black screen after Play with the launcher preview. The installed game's log (`KarPurTEST/KarPur/build/game/logs/karpur.log`, 08:12 run) shows 1469 file replacements; Compass replaces main.blua and main_dynamic.blua, the second main-script call returns Lua runtime error 2, and rendering stays at the startup passes (14 draws per frame, no scene). mods.json enables Compass alongside Improved Dynamic LODs and PokePopulation; Compass still lacks its 552 added files, 16 uncompressed replacements and exefs code. This is strong evidence of the known incomplete Compass path, not a new renderer change (the preview changed only launcher UI/docs; Play's process start is unchanged).
+- Recovery: backed up mods.json, mod_files.txt, karpur.ini and the failing log under `C:/KarPur/backup/blackscreen-20261111-081551/` before changing anything. Disabled only PokeCompass_Violet_Standalone and regenerated mod_files.txt from the other two mods: 3 replacement files, no script replacements. Graphics settings and real saves were not changed; mod_files remains enabled for the two supported mods. Restart from Play is needed to apply the list.
+- An isolated startup attempt with a separate profile produced only the first four Streamline startup lines and exited before the Lua check; it does not establish whether recovery fixes the maintainer's desktop run. The maintainer must confirm the next launch. Do not claim a verified game-start fix from the configuration check alone. No commit or push.
+
+### 2026-11-11: DLC accepted, launcher/controller review, next feature stages
+- The maintainer confirmed that the DLC switch works and asked to make it standard. It already defaults to on (`fs_host.c dlc_on`, `rt_knob("DLC", "1")`); the normal `dlc` build step extracts the player's add-on content, and nn::aoc reports/mounts it. Keep `TOTK_DLC=0` as a diagnostic opt-out. No additional unlock patch is needed; only supplied DLC is reported.
+- Launcher visual revision: 1260x840 initial window, responsive sidebar spacing down to the 1000x680 minimum, larger buttons/dropdown rows/checkbox hit areas and switches, explicit cyan focus, subtle card borders and edition gradients. Home distributes up to six team cards across one row. Its team.json fields, national-species/form catalog lookup, icon fallback and save watcher are unchanged. Replaced team/icon/chip controls are disposed on refresh.
+- Tab glitch: hide outgoing pages before showing the incoming one, suspend content painting through layout/refresh and redraw all descendants once. Hero caches a bitmap by size/palette; child buttons/chips copy their own part without replacing the graphics clip. Revisiting the selected tab preserves pending edits instead of reloading them on controller A.
+- Controller: spatial arrows follow the visible arrangement; up/down change rows; left/right change dropdowns/sliders/switches or move between neighbouring buttons. A enters/activates, B closes a dropdown or returns to the sidebar, LB/RB change tabs, X opens binding context options, Start plays. Disabled/read-only controls are skipped, focus scrolls into view, and a tab remembers its last control. Binding capture owns the pad while waiting (navigation must not consume B/Start/directions); returning from focus loss/reconnect first needs a neutral pad.
+- Local checks: isolated .NET Release build and synthetic WinForms review (no game launched or real save modified), team JSON/catalog/icon/shiny handling, six-card widths at 1260/1000, 24 Setup/Home transitions, clip preservation and controller action handlers. Real-controller feel and absence of a transient glitch on the maintainer's desktop still need confirmation. FSR/frame-generation and broader mod formats are follow-ups, not implemented by this launcher revision. No commit, push or release.
 
 ### 2026-11-08: launcher 0.2.0
 - Released KarPur Launcher 0.2.0: NVIDIA DLAA, DLSS upscaling to the window or 4K, DLSS Frame Generation 2x-4x, the Controls tab (keys, controller buttons, sticks), rounded dropdowns and dark scrollbars, the game's DLC button back with F1 / Esc opening the Controls page. The first release whose Update tab can be tested from an older launcher (0.1.0 → 0.2.0).
@@ -152,6 +311,8 @@ All off by default except the abort line.
   - **Team icons (2026-11-10):** the icons are packs `pokemon/data/pmNNNN/pmNNNN_FF_GG/icon/pmNNNN_FF_GG_00.bntx` (979; the trpfd names them without slashes), each with two BNTX textures, 100x100 and 256x256, format 0x1b01 (BC2), block-linear with block height 4 / 8 GOBs, data after BRTD (test CZ). Paldea's Pokémon have folders of their own numbers; the game's `pokemon/catalog/poke_resource_table.trpmcatalog` maps species and form to the model path `pmNNNN/pmNNNN_FF_GG/...` (Azumarill 184 -> pm0184, Meowscarada 908 -> pm1012, Lechonk 915 -> pm1019; test DA). The shader census now decodes every 100x100 icon (BC1/2/3, Tegra block-linear deswizzle) to `build/game/icons/<folder>.png` and writes `icons/catalog.txt` ("species form folder"); the launcher's team cards draw the icon (species and form, else form 0) over a glow in the edition's colours, else the monogram. **Test DB: works**: 966 icons written, a catalog of 1012 species and forms (Bounsweet 761 -> pm0812); the Azumarill icon decoded cleanly, and the Home page shows the whole team with icons (drawn at 96 px, as the icons carry a margin).
   - Launcher: Home refreshes when team.json changes (a FileSystemWatcher on the profile) and when the game it started exits; `Theme.Rounded` and the hero survive a size of 0 (a minimised window threw "Parameter is not valid" in GDI+).
   - **Mods tab (2026-11-10):** `launcher/ModsPage.cs`: mods (folders, or .zip unpacked into `<root>\mods`) in `<root>\mods.json` with a switch each; switching runs `tools/mod_files.py` for the mods switched on, in their order (a later mod wins a shared file), into `game\mod_files.txt`, and sets `mod_files` in karpur.ini (0 when none is on). Nothing on disk is replaced. `mod_files.py` gained `--out` and a last line `SUMMARY {json}` per mod (files it replaces, adds, changes unpacked, code). `runtime/data_patch.c`: mod files unlimited (was 64), read from disk when the game unpacks the original (was: all loaded at start), looked up by packed size; `MAX_FIELDS` 16384 (a size field per file). Pokémon Compass 2.1.1.1 (Violet): 1467 files replaced, 552 added files (new wild Pokémon groups, Pokédex scenes, message files) and 16 files the game stores unpacked are not supported yet, and its exefs code cannot run; Improved Dynamic LODs (2 files) and PokePopulation (1 file) are fully usable. Test DC (repo build, Improved Dynamic LODs + PokePopulation): 3 mod files listed, `common_resident_1.trscn` (25444 bytes for 24828) and `object_generation_range_array.bin` used in a short visit; KarPur's own population setting (switch2) then writes its values into the same file. Next: files a mod adds (they need entries in the archive's tables).
+  - **Quit, pad, DLC (2026-11-11):** (1) the F1/Esc page has "Y  Quit game" in the lower bar (asks first; `UI_MENU_QUIT_CONFIRM`; issue #25). (2) The launcher works with a controller (`launcher/PadNav.cs`, XInput): stick / D-pad choose a tab or Play in the sidebar (the page follows), A enters a page, stick / D-pad move between controls, left/right change a dropdown, slider or switch, A presses, B goes back (or closes a dropdown), Start presses Play; focus rings show while a pad is used (issue #30; the auto-start option is still to do). (3) DLC: Violet's DLC NSP holds one PublicData NCA (index 1, 0.1 MiB) whose RomFS is only `keyfile.dat`, the proof of ownership; the expansions' data is in the update. `tools/extract_dlc.py` (build step `dlc`) unpacks it with hactool into `game/dlc/<index>/`; `fs_host.c fs_aoc_indices` lists those indices to `nn::aoc` (ListAddOnContent, CountAddOnContent) and `MountAddOnContent` mounts the folder read-only (`TOTK_DLC=0` hides it). Test DD: load a save that visited the DLC areas. The costumes may be a separate item (the game's own shop data), to be seen in the test.
+  - **Test DD: works.** The build's log shows the add-on content reported and mounted at start (`aoc: 1 add-on content`, `fs mount aoc1: -> .../dlc/1`), and the maintainer confirmed the DLC areas play correctly on a save that had already visited them. No crash, no missing-content message. DLC counts as done for M6; it only needs to reach players through the next release's `dlc` build step (already in `tools/setup_build.py`). No commit/push yet.
   - **CPUs without AVX2 (issue #15, GTX 1660, 8 threads: 15.8 FPS, at times 1.5):** the frame time went to the lifted code, not to rendering. Without FMA, `__builtin_elementwise_fma` (FMADD, FMLA, FRECPS, FRSQRTS: 2943 scalar fused ops in main alone, plus the vector ones) compiled to calls of the C library's software fma, one per lane: main_0045.c had 115 such calls in an x86-64-v2 build. `runtime/simd.h KFMA` now computes a float FMA as the product and sum in double rounded once (the product is exact; 0 of 20,000,000 random cases differed from fmaf), vectors through 4 x double, and doubles unfused; with FMA it is the same instruction as before (118 vfmadd in main_0045.c). `tools/cpu_march.py` builds for `-march=native` on a CPU without AVX2/FMA/BMI2 (its own AVX, F16C, …; x86-64-v2 when even SSE4.2/POPCNT are missing), and the self-test checks each extension the build was compiled with. Not tested on such a CPU (the reporter of #15 can, after a release).
   - **Test in play (2026-11-09):** over half an hour with every shader prepared; the maintainer: it never ran as well as now. Next: a launcher release (0.3.0) with the `shaders` build step.
   - (Test CJ's command was the same:) the census measures the BNSH layout for two programs per file: where the control section lies, which u32 fields hold the code's and control's offsets, and the length / size / 0x880 fields beside them, plus the first BNSH header words. Then the extractor walks every BNSH and writes all programs in `shader-programs.bin` form.

@@ -60,3 +60,11 @@ desktop.ini
 /dist/
 /launcher/bin/
 /launcher/obj/
+
+# Launcher's own mod list (written next to the installed game, not source)
+/mods.json
+
+# Building directly into the repo (launcher Builder.cs Install/python setup): the embeddable Python package and the
+# play shortcut it creates in the target folder
+/python/
+*.lnk

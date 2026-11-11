@@ -119,7 +119,7 @@ static class Theme
 
     public static Label Label(string text, float size = 10f, bool muted = false, FontStyle style = FontStyle.Regular) => new()
     {
-        Text = text, AutoSize = true, ForeColor = muted ? Muted : Text, Font = new Font("Segoe UI", size, style),
+        Text = text, AutoSize = true, UseMnemonic = false, ForeColor = muted ? Muted : Text, Font = new Font("Segoe UI", size, style),
         BackColor = Color.Transparent,
     };
 }
@@ -141,7 +141,7 @@ class RoundButton : Button
         FlatAppearance.BorderSize = 0;
         Cursor = Cursors.Hand;
         Font = new Font("Segoe UI Semibold", 10f);
-        Height = 38;
+        Height = 44;
         Margin = new Padding(0, 0, 10, 0);
         AutoSize = false;
     }
@@ -157,6 +157,8 @@ class RoundButton : Button
     protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
     protected override void OnPaintBackground(PaintEventArgs e) { if (BackColor.A == 255 || FindHero() == null) base.OnPaintBackground(e); }
     Hero? FindHero() { for (var p = Parent; p != null; p = p.Parent) if (p is Hero h) return h; return null; }
 
@@ -181,6 +183,14 @@ class RoundButton : Button
                 using var b = new SolidBrush(fill);
                 g.FillPath(b, path);
             }
+            using var edge = new Pen(Theme.Alpha(Primary ? Color.White : Theme.Border, Primary ? 35 : 150));
+            g.DrawPath(edge, path);
+        }
+        if (Focused && Pad.Active)
+        {
+            using var ring = Theme.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), Radius);
+            using var pen = new Pen(Theme.Accent2, 2f);
+            g.DrawPath(pen, ring);
         }
         Color fore = Enabled ? Theme.Text : Theme.Muted;
         int glyphW = Glyph != "" ? (int)(Font.Size * 2.2f) : 0;
@@ -197,27 +207,69 @@ class RoundButton : Button
     }
 }
 
-// The launcher's mark in the sidebar: a rounded square in the accent of the chosen edition (a lighter and a darker
-// shade of it, nothing of the other accent) with a white "K".
+// User-supplied edition artwork, shared for the lifetime of the application.
+static class Artwork
+{
+    static readonly Dictionary<string, Image?> images = new();
+    public static Image? Get(string name)
+    {
+        if (images.TryGetValue(name, out var image)) return image;
+        using var stream = typeof(Artwork).Assembly.GetManifestResourceStream(name);
+        return images[name] = stream != null ? new Bitmap(stream) : null;
+    }
+    public static void Badge(Graphics g, string text, Rectangle box, Color color)
+    {
+        var state = g.Save();
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var face = new RectangleF(box.X + 0.5f, box.Y + 0.5f, box.Width - 1, box.Height - 3);
+        using (var shadow = new SolidBrush(Color.FromArgb(115, Color.Black)))
+            g.FillEllipse(shadow, box.X, box.Y + 3, box.Width, box.Height - 2);
+        using (var fill = new LinearGradientBrush(face, Theme.Mix(color, Color.White, 0.35f), Theme.Mix(color, Color.Black, 0.3f), 90f))
+            g.FillEllipse(fill, face);
+        using (var edge = new Pen(Theme.Mix(color, Color.Black, 0.5f))) g.DrawEllipse(edge, face);
+        var inner = RectangleF.Inflate(face, -1, -1);
+        using (var shine = new Pen(Color.FromArgb(165, Color.White))) g.DrawArc(shine, inner, 195, 150);
+        using var glyph = new GraphicsPath();
+        using var family = new FontFamily("Segoe UI");
+        glyph.AddString(text, family, (int)FontStyle.Bold, box.Height * 0.61f, PointF.Empty, StringFormat.GenericTypographic);
+        // Centre the visible ink, rather than the font's asymmetric line box (especially noticeable on B).
+        var ink = glyph.GetBounds();
+        using var move = new Matrix();
+        move.Translate(face.X + (face.Width - ink.Width) / 2 - ink.X, face.Y + (face.Height - ink.Height) / 2 - ink.Y);
+        glyph.Transform(move);
+        using var white = new SolidBrush(Color.White);
+        g.FillPath(white, glyph);
+        g.Restore(state);
+    }
+}
+
 class LogoMark : Control
 {
-    public LogoMark()
-    {
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-    }
-
+    public string Edition = "neutral";
+    public LogoMark() => SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         g.Clear(Parent?.BackColor ?? Theme.Panel);
-        var r = new RectangleF(0, 0, Width - 1, Height - 1);
-        using var path = Theme.Rounded(r, Width * 0.24f);
-        using (var b = new LinearGradientBrush(r, Theme.Mix(Theme.Accent, Color.White, 0.22f), Theme.Mix(Theme.Accent, Color.Black, 0.25f), 45f))
-            g.FillPath(b, path);
-        using var f = new Font("Segoe UI", Height * 0.5f, FontStyle.Bold, GraphicsUnit.Pixel);
-        TextRenderer.DrawText(g, "K", f, Rectangle.Round(r), Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = Theme.Rounded(new RectangleF(0, 0, Width, Height), 9);
+        g.SetClip(path);
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        if (Artwork.Get($"icon-{Edition}.png") is Image image) g.DrawImage(image, ClientRectangle);
+    }
+}
+
+class BackHint : Control
+{
+    public BackHint() => SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.Clear(Parent?.BackColor ?? Theme.Panel);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        int y = (Height - 24) / 2;
+        Artwork.Badge(e.Graphics, "B", new Rectangle(0, y, 24, 24), Color.FromArgb(190, 57, 52));
+        TextRenderer.DrawText(e.Graphics, "Back", Font, new Rectangle(29, 0, Width - 29, Height - 2), Theme.Text,
+                              TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 }
 
@@ -229,12 +281,15 @@ class NavButton : Control
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Selected { get => selected; set { selected = value; Invalidate(); } }
     bool selected;
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool PadCursor { get => padCursor; set { padCursor = value; Invalidate(); } }   // the controller's cursor (PadNav.cs)
+    bool padCursor;
 
     public NavButton()
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         Cursor = Cursors.Hand;
-        Height = 44;
+        Height = 48;
         Font = new Font("Segoe UI", 10.5f);
     }
     protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
@@ -248,8 +303,16 @@ class NavButton : Control
         if (selected || hover)
         {
             using var path = Theme.Rounded(new RectangleF(10, 3, Width - 21, Height - 7), 8);
-            using var b = new SolidBrush(selected ? Theme.Field : Theme.Mix(Theme.Panel, Theme.Field, 0.5f));
+            using var b = new LinearGradientBrush(ClientRectangle,
+                selected ? Theme.Mix(Theme.Panel, Theme.Accent, 0.26f) : Theme.Field,
+                selected ? Theme.Mix(Theme.Panel, Theme.Accent, 0.09f) : Theme.Panel, 0f);
             g.FillPath(b, path);
+        }
+        if (padCursor)
+        {
+            using var ring = Theme.Rounded(new RectangleF(10, 3, Width - 21, Height - 7), 8);
+            using var pen = new Pen(Theme.Accent2, 2f);
+            g.DrawPath(pen, ring);
         }
         if (selected)
         {
@@ -261,10 +324,12 @@ class NavButton : Control
         using var gf = new Font(Theme.IconFont, 12f);
         TextRenderer.DrawText(g, Glyph, gf, new Rectangle(26, 0, 28, Height), selected ? Theme.Accent : fore,
                               TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding);
-        TextRenderer.DrawText(g, Text, Font, new Rectangle(58, 0, Width - 60, Height), fore,
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(58, 0, Width - 100, Height), fore,
                               TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+        if (padCursor) Artwork.Badge(g, "A", new Rectangle(Width - 48, (Height - 24) / 2, 24, 24), Color.FromArgb(68, 137, 58));
     }
 }
+
 
 // A rounded card in a slightly lighter colour than the page; its children sit inside the padding.
 class Card : Panel
@@ -283,6 +348,8 @@ class Card : Panel
         using var path = Theme.Rounded(new RectangleF(0, 0, Width - 1, Height - 1), 12);
         using var b = new SolidBrush(Theme.Card);
         e.Graphics.FillPath(b, path);
+        using var edge = new Pen(Theme.Mix(Theme.Card, Theme.Border, 0.32f));
+        e.Graphics.DrawPath(edge, path);
     }
 }
 
@@ -295,8 +362,8 @@ class Field : Panel
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         Box = box;
         BackColor = Theme.Field;
-        Height = 36;
-        Padding = new Padding(10, 9, 10, 6);
+        Height = 44;
+        Padding = new Padding(12, 12, 12, 8);
         Dock = DockStyle.Fill;
         Margin = new Padding(0, 4, 10, 4);
         box.Dock = DockStyle.Fill;
@@ -312,8 +379,83 @@ class Field : Panel
         using var path = Theme.Rounded(new RectangleF(0, 0, Width - 1, Height - 1), 8);
         using var b = new SolidBrush(Theme.Field);
         g.FillPath(b, path);
-        using var pen = new Pen(Box.Focused ? Theme.Accent : Theme.Border);
+        using var pen = new Pen(Box.Focused && Pad.Active ? Theme.Accent2 : Box.Focused ? Theme.Accent : Theme.Border,
+                                Box.Focused && Pad.Active ? 2 : 1);
         g.DrawPath(pen, path);
+    }
+}
+
+// Buffered containers keep a page's paint and layout changes in one surface during scrolling and navigation.
+class Surface : Panel
+{
+    public Surface() => SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                                  ControlStyles.ResizeRedraw, true);
+}
+
+class FlowSurface : FlowLayoutPanel
+{
+    public FlowSurface() => SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+}
+
+// Freeze a visible content host while exchanging pages, then repaint the complete descendant tree once. Layout
+// suspension alone does not stop the native child windows from painting the new Home over the outgoing Setup page.
+sealed class PagePaint : IDisposable
+{
+    readonly Control host;
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr hwnd, IntPtr rect, IntPtr region, uint flags);
+    public PagePaint(Control host)
+    {
+        this.host = host;
+        host.SuspendLayout();
+        if (host.IsHandleCreated) SendMessage(host.Handle, 0x000B, IntPtr.Zero, IntPtr.Zero);
+    }
+    public void Dispose()
+    {
+        host.ResumeLayout(true);
+        if (!host.IsHandleCreated) return;
+        SendMessage(host.Handle, 0x000B, (IntPtr)1, IntPtr.Zero);
+        RedrawWindow(host.Handle, IntPtr.Zero, IntPtr.Zero, 0x0185); // invalidate, erase, all children, update now
+    }
+}
+
+// A whole-row hit area and an explicit focus outline, rather than a tiny native checkbox with an invisible pad focus.
+class ChoiceBox : CheckBox
+{
+    public ChoiceBox()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        MinimumSize = new Size(0, 42);
+        Cursor = Cursors.Hand;
+    }
+    public override Size GetPreferredSize(Size proposedSize)
+    {
+        var text = TextRenderer.MeasureText(Text, Font);
+        return new Size(text.Width + 48, Math.Max(42, text.Height + 16));
+    }
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(Parent?.BackColor ?? Theme.Card);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = Theme.Rounded(new RectangleF(1, Height / 2f - 11, 22, 22), 6);
+        using (var b = new SolidBrush(Checked ? Theme.Accent : Theme.Field)) g.FillPath(b, path);
+        using (var edge = new Pen(Theme.Border)) g.DrawPath(edge, path);
+        if (Checked)
+        {
+            using var pen = new Pen(Color.White, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLines(pen, new[] { new PointF(6, Height / 2f), new PointF(10, Height / 2f + 4), new PointF(18, Height / 2f - 5) });
+        }
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(34, 0, Width - 36, Height), Enabled ? Theme.Text : Theme.Muted,
+                              TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        if (Focused && Pad.Active)
+        {
+            using var ring = Theme.Rounded(new RectangleF(0, 0, Width - 1, Height - 1), 8);
+            using var pen = new Pen(Theme.Accent2, 2f);
+            g.DrawPath(pen, ring);
+        }
     }
 }
 

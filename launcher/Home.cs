@@ -4,13 +4,7 @@ using System.Drawing.Drawing2D;
 
 namespace KarPurLauncher;
 
-// The Home page: a banner in the edition's colours, what the build holds at a glance and the Play button. The banners
-// for Violet and Scarlet are pictures the maintainer drew (launcher/assets, embedded); their painted scenes below stay
-// as the fallback, and the neutral palette (before a build) keeps its painted dusk.
-//   Violet: a night over Paldea seen from the future: an indigo sky, a neon horizon grid, circuit lines and a ringed
-//           moon in the second accent.
-//   Scarlet: an evening from the past: a wine-red sky turning amber, a low sun with rays and layered mountain ridges.
-//   Before a build: the neutral palette's quiet dusk.
+// Full-width edition artwork, cached once per size and palette to keep tab switches clean.
 class Hero : Panel
 {
     static readonly Random Stars = new(7);
@@ -28,6 +22,8 @@ class Hero : Panel
         return Banners[edition] = img;
     }
     readonly (float X, float Y, float R, int A)[] stars;
+    Bitmap? scene;
+    Theme.Palette? scenePalette;
 
     public Hero()
     {
@@ -38,36 +34,62 @@ class Hero : Panel
                                                       0.6f + (float)Stars.NextDouble() * 1.4f, 60 + Stars.Next(160))).ToArray();
     }
 
-    protected override void OnPaintBackground(PaintEventArgs e) => PaintScene(e.Graphics);
+    Bitmap? Scene()
+    {
+        if (Width < 2 || Height < 2) return null;
+        if (scene == null || scene.Size != ClientSize || scenePalette != Theme.Current)
+        {
+            scene?.Dispose();
+            scene = new Bitmap(Width, Height);
+            scenePalette = Theme.Current;
+            using var g = Graphics.FromImage(scene);
+            PaintScene(g);
+        }
+        return scene;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        if (Scene() is Bitmap bitmap) e.Graphics.DrawImageUnscaled(bitmap, 0, 0);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { scene?.Dispose(); scene = null; }
+        base.Dispose(disposing);
+    }
 
     // The scene under a child control (buttons, chips): drawn by the child itself, shifted to its place, so its rounded
     // corners show the scene and not a stale or black rectangle (Windows' transparency through nested panels).
     public void PaintBehind(Graphics g, Control child)
     {
         var at = PointToClient(child.Parent!.PointToScreen(child.Location));
-        var state = g.Save();
-        g.TranslateTransform(-at.X, -at.Y);
-        PaintScene(g);
-        g.Restore(state);
+        // Copy only the child's part. Repainting the scene here used ResetClip, which discarded the invalidated
+        // region during a tab switch and let banner fragments escape over neighbouring controls.
+        if (Scene() is Bitmap bitmap) g.DrawImageUnscaled(bitmap, -at.X, -at.Y);
     }
 
     void PaintScene(Graphics g)
     {
+        var state = g.Save();
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(Parent?.BackColor ?? Theme.Back);
-        if (Width < 40 || Height < 40) return;   // a minimised window: GDI+ refuses paths and brushes of no size
+        if (Width < 40 || Height < 40) { g.Restore(state); return; }
         var p = Theme.Current;
         var r = new RectangleF(0, 0, Width - 1, Height - 1);
-        using var clip = Theme.Rounded(r, 18);
-        g.SetClip(clip);
+        using var clip = new GraphicsPath();
+        clip.AddRectangle(r);
+        g.SetClip(clip, CombineMode.Intersect);
         var banner = p.Name == "neutral" ? null : Banner(p.Name);
         if (banner != null)
         {
-            // cover: fill the banner, keep the picture's aspect, centred
+            // Violet anchors near the top of the source so Miraidon's head stays in view.
+            // Scarlet keeps its original centred crop.
             float scale = Math.Max(r.Width / banner.Width, r.Height / banner.Height);
             float w = banner.Width * scale, h = banner.Height * scale;
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(banner, (r.Width - w) / 2, (r.Height - h) / 2, w, h);
+            float y = (r.Height - h) * (p.Name == "violet" ? 0.08f : 0.5f);
+            g.DrawImage(banner, (r.Width - w) / 2, y, w, h);
         }
         else
         {
@@ -76,15 +98,22 @@ class Hero : Panel
             else PaintViolet(g, r, p);
         }
         // a dark veil on the left, where the text sits
-        using (var veil = new LinearGradientBrush(r, Theme.Alpha(p.Back, 225), Theme.Alpha(p.Back, 0), 0f))
+        using (var veil = new LinearGradientBrush(r, Theme.Alpha(p.Back, 125), Theme.Alpha(p.Back, 0), 0f))
         {
             var blend = new Blend { Positions = new[] { 0f, 0.45f, 1f }, Factors = new[] { 0f, 0.55f, 1f } };
             veil.Blend = blend;
             g.FillRectangle(veil, r);
         }
-        g.ResetClip();
-        using var border = new Pen(Theme.Alpha(p.Accent, 90));
-        g.DrawPath(border, clip);
+        g.Restore(state);
+        // The logo stays inside the cached scene, so transparent children share the exact same pixels.
+        void Logo(string edition, Rectangle box)
+        {
+            if (Artwork.Get($"logo-{edition}.png") is not Image image) return;
+            float scale = Math.Min((float)box.Width / image.Width, (float)box.Height / image.Height);
+            g.DrawImage(image, box.Left, box.Top, image.Width * scale, image.Height * scale);
+        }
+        Logo(p.Name == "neutral" ? "scarlet" : p.Name, new Rectangle(p.Name == "violet" ? Width - 312 : 28, 26, 284, 154));
+        if (p.Name == "neutral") Logo("violet", new Rectangle(332, 26, 284, 154));
     }
 
     void PaintViolet(Graphics g, RectangleF r, Theme.Palette p)
@@ -184,6 +213,15 @@ class Hero : Panel
 // A small rounded label on the hero: a glyph and a text on a translucent field.
 class Chip : Control
 {
+    public string CompactText = "";
+    public bool Compact;
+    string DisplayText => Compact && CompactText != "" ? CompactText : Text;
+    public void Fit(bool compact)
+    {
+        Compact = compact;
+        Width = TextRenderer.MeasureText(DisplayText, Font).Width + (Compact || Glyph == "" ? 24 : 44);
+        Invalidate();
+    }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string Glyph { get; set; } = "";
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -202,8 +240,7 @@ class Chip : Control
     protected override void OnTextChanged(EventArgs e)
     {
         base.OnTextChanged(e);
-        Width = TextRenderer.MeasureText(Text, Font).Width + (Glyph != "" ? 52 : 28);
-        Invalidate();
+        Fit(Compact);
     }
 
     protected override void OnPaintBackground(PaintEventArgs e) { }
@@ -217,54 +254,19 @@ class Chip : Control
         using var path = Theme.Rounded(new RectangleF(0, 0, Width - 1, Height - 1), Height / 2f);
         using (var b = new SolidBrush(Theme.Alpha(Theme.Back, 170))) g.FillPath(b, path);
         using (var pen = new Pen(Theme.Alpha(Good ? Theme.Good : Theme.Border, 200))) g.DrawPath(pen, path);
-        int x = 14;
-        if (Glyph != "")
+        int x = 10;
+        if (Glyph != "" && !Compact)
         {
             using var gf = new Font(Theme.IconFont, 10f);
             TextRenderer.DrawText(g, Glyph, gf, new Rectangle(x, 0, 20, Height), Good ? Theme.Good : Theme.Accent2,
                                   TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             x += 24;
         }
-        TextRenderer.DrawText(g, Text, Font, new Rectangle(x, 0, Width - x, Height), Theme.Text, TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(g, DisplayText, Font, new Rectangle(x, 0, Width - x, Height), Theme.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 }
 
 // A card with a glyph, a title, a big value and a note: one fact about the build.
-class StatCard : Card
-{
-    public readonly Label Value = Theme.Label("", 15f, style: FontStyle.Bold), Note = Theme.Label("", 9f, muted: true);
-    readonly Label title;
-    readonly string glyph;
-
-    public StatCard(string glyph, string title)
-    {
-        this.glyph = glyph;
-        this.title = Theme.Label(title.ToUpperInvariant(), 8.5f, muted: true, style: FontStyle.Bold);
-        Padding = new Padding(18, 14, 18, 14);
-        Height = 112;
-        Margin = new Padding(0, 0, 12, 0);
-        this.title.Location = new Point(48, 18);
-        Value.Location = new Point(16, 44);
-        Note.Location = new Point(18, 78);
-        Controls.Add(this.title);
-        Controls.Add(Value);
-        Controls.Add(Note);
-        foreach (Control c in Controls) c.BackColor = Theme.Card;
-    }
-
-    protected override void OnPaintBackground(PaintEventArgs e)
-    {
-        base.OnPaintBackground(e);
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var top = new LinearGradientBrush(new RectangleF(0, 0, Width, 3), Theme.Accent, Theme.Accent2, 0f);
-        using var bar = Theme.Rounded(new RectangleF(14, 0, Width - 28, 3), 1.5f);
-        g.FillPath(top, bar);
-        using var gf = new Font(Theme.IconFont, 13f);
-        TextRenderer.DrawText(g, glyph, gf, new Rectangle(16, 12, 28, 28), Theme.Accent2, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-    }
-}
-
 // One party member: a monogram in the edition's gradient (no game art), the name the game shows, the level, a star when
 // shiny.
 class TeamCard : Control
@@ -276,9 +278,15 @@ class TeamCard : Control
     public TeamCard()
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-        Size = new Size(124, 132);
-        Margin = new Padding(0, 0, 10, 0);
+        Size = new Size(142, 164);
+        Margin = new Padding(0, 0, 12, 12);
         Font = new Font("Segoe UI Semibold", 10f);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { Icon?.Dispose(); Icon = null; }
+        base.Dispose(disposing);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -288,12 +296,12 @@ class TeamCard : Control
         g.Clear(Parent?.BackColor ?? Theme.Back);
         using (var path = Theme.Rounded(new RectangleF(0, 0, Width - 1, Height - 1), 12))
         {
-            using var b = new SolidBrush(Theme.Card);
+            using var b = new LinearGradientBrush(ClientRectangle, Theme.Mix(Theme.Card, Theme.Accent, 0.09f), Theme.Card, 90f);
             g.FillPath(b, path);
             using var pen = new Pen(Shiny ? Theme.Mix(Theme.Accent2, Theme.Card, 0.2f) : Theme.Border);
             g.DrawPath(pen, path);
         }
-        var circle = new RectangleF(Width / 2f - 28, 14, 56, 56);
+        var circle = new RectangleF(Width / 2f - 30, 24, 60, 60);
         if (Icon != null)
         {
             // a soft glow in the edition's colours behind the icon, the icon a little larger than the circle
@@ -304,7 +312,7 @@ class TeamCard : Control
                 g.FillPath(hb, halo);
             }
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(Icon, new RectangleF(Width / 2f - 48, -10, 96, 96));   // the icons carry a margin of their own
+            g.DrawImage(Icon, new RectangleF(Width / 2f - 56, 0, 112, 112));   // the icons carry a margin of their own
         }
         else
         {
@@ -318,85 +326,65 @@ class TeamCard : Control
             using var sf = new Font(Theme.IconFont, 11f);
             TextRenderer.DrawText(g, "", sf, new Rectangle(Width - 28, 6, 22, 22), Theme.Accent2, TextFormatFlags.NoPadding);
         }
-        TextRenderer.DrawText(g, Nick, Font, new Rectangle(4, 78, Width - 8, 22), Theme.Text,
+        TextRenderer.DrawText(g, Nick, Font, new Rectangle(4, 111, Width - 8, 22), Theme.Text,
                               TextFormatFlags.HorizontalCenter | TextFormatFlags.EndEllipsis);
         using var small = new Font("Segoe UI", 9f);
-        TextRenderer.DrawText(g, Level, small, new Rectangle(4, 100, Width - 8, 20), Theme.Accent2, TextFormatFlags.HorizontalCenter);
+        TextRenderer.DrawText(g, Level, small, new Rectangle(4, 135, Width - 8, 20), Theme.Accent2, TextFormatFlags.HorizontalCenter);
     }
 }
 
 partial class MainForm
 {
     readonly Hero hero = new() { Dock = DockStyle.Top, Height = 340 };
-    readonly Label heroEdition = Theme.Label("", 9.5f, style: FontStyle.Bold), heroTitle = Theme.Label("", 30f, style: FontStyle.Bold),
-                   heroText = Theme.Label("", 10.5f, muted: true);
+    readonly Label heroText = Theme.Label("", 10.5f, muted: true);
     readonly FlowLayoutPanel heroChips = new() { AutoSize = true, BackColor = Color.Transparent, WrapContents = false };
     readonly Button heroPlay = Theme.Button("Play", true, Theme.GlyphPlay), heroFolder = Theme.Button("Open game folder", glyph: Theme.GlyphFolder),
                     heroSetup = Theme.Button("Go to Setup", true, Theme.GlyphSetup);
     readonly FlowLayoutPanel teamRow = new() { Dock = DockStyle.Top, AutoSize = true, BackColor = Theme.Back, WrapContents = true };
     readonly Label teamTitle = Theme.Label("YOUR TEAM", 8.5f, muted: true, style: FontStyle.Bold);
-    readonly StatCard statGame = new(Theme.GlyphGame, "Game"), statShaders = new(Theme.GlyphShaders, "Shaders"),
-                      statSave = new(Theme.GlyphSave, "Last save");
 
     Control HomePage()
     {
-        var page = new Panel { BackColor = Theme.Back };
-        foreach (var l in new[] { heroEdition, heroTitle, heroText }) l.BackColor = Color.Transparent;
-        // one column, top to bottom: edition, title, text, chips, buttons (sizes follow the system's text scale)
-        var column = new FlowLayoutPanel
+        var page = new Surface { BackColor = Theme.Back };
+        heroText.BackColor = Color.Transparent;
+        hero.Height = 350;
+        heroText.Location = new Point(30, 194);
+        heroText.MaximumSize = new Size(560, 0);
+        heroChips.AutoSize = false;
+        heroChips.Height = 40;
+        heroChips.WrapContents = false;
+        heroPlay.Font = new Font("Segoe UI Semibold", 13f);
+        heroPlay.Size = new Size(164, 50);
+        heroSetup.Size = new Size(180, 50);
+        heroFolder.Size = new Size(204, 50);
+        foreach (var button in new[] { heroPlay, heroSetup, heroFolder })
         {
-            AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent,
-            Location = new Point(36, 30),
-        };
-        heroEdition.Margin = new Padding(4, 0, 0, 0);
-        heroTitle.Margin = new Padding(0, 2, 0, 0);
-        heroText.Margin = new Padding(4, 0, 0, 16);
-        heroText.MaximumSize = new Size(500, 0);
-        heroChips.Margin = new Padding(4, 0, 0, 22);
-        heroPlay.Font = new Font("Segoe UI Semibold", 14f);
-        heroPlay.Size = new Size(190, 56);
-        ((RoundButton)heroPlay).Radius = 14;
-        heroSetup.Font = heroPlay.Font;
-        heroSetup.Size = new Size(230, 56);
-        ((RoundButton)heroSetup).Radius = 14;
-        heroFolder.Height = 56;
-        ((RoundButton)heroFolder).Radius = 14;
-        foreach (var b in new[] { heroPlay, heroSetup, heroFolder }) { b.BackColor = Color.Transparent; b.Margin = new Padding(0, 0, 12, 0); }
-        // the buttons sit on the hero itself, below the column: a button inside a transparent panel inside another one
-        // showed black corners
-        column.Controls.AddRange(new Control[] { heroEdition, heroTitle, heroText, heroChips });
-        hero.Controls.Add(column);
-        hero.Controls.AddRange(new Control[] { heroPlay, heroSetup, heroFolder });
+            button.BackColor = Color.Transparent;
+            ((RoundButton)button).Radius = 12;
+        }
+        hero.Controls.AddRange(new Control[] { heroText, heroChips, heroPlay, heroSetup, heroFolder });
         void PlaceButtons()
         {
-            int x = column.Left + 4, y = column.Bottom;
-            foreach (var b in new[] { heroPlay, heroSetup, heroFolder })
-            {
-                b.Location = new Point(x, y);
-                if (b.Visible) x += b.Width + 12;
-            }
-            hero.Height = Math.Max(300, y + heroPlay.Height + 34);
+            bool compact = hero.Width < 950;
+            heroPlay.Width = compact ? 120 : 164;
+            heroFolder.Width = compact ? 164 : 204;
+            var buttons = new[] { heroPlay, heroSetup, heroFolder }.Where(b => b.Visible).ToArray();
+            int width = buttons.Sum(b => b.Width + 12) - 12;
+            int x = Math.Max(28, hero.ClientSize.Width - width - 28);
+            foreach (var button in buttons) { button.Location = new Point(x, hero.Height - 74); x += button.Width + 12; }
+            foreach (var chip in heroChips.Controls.OfType<Chip>()) chip.Fit(compact);
+            // Chips and actions share a bottom edge; compact labels keep that row usable at minimum width.
+            heroChips.SetBounds(24, hero.Height - 56, Math.Max(1, hero.Width - width - 68), 32);
         }
-        column.SizeChanged += (_, _) => PlaceButtons();
-        foreach (var b in new[] { heroPlay, heroSetup, heroFolder }) b.VisibleChanged += (_, _) => PlaceButtons();
-
-        var stats = new TableLayoutPanel { Dock = DockStyle.Top, Height = 112, ColumnCount = 3, BackColor = Theme.Back, Margin = new Padding(0) };
-        for (int i = 0; i < 3; i++) stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.3f));
-        int col = 0;
-        foreach (var s in new[] { statGame, statShaders, statSave })
-        {
-            s.Dock = DockStyle.Fill;
-            s.Margin = new Padding(col == 0 ? 0 : 6, 0, col == 2 ? 0 : 6, 0);
-            stats.Controls.Add(s, col++, 0);
-        }
-
+        hero.Resize += (_, _) => PlaceButtons();
+        heroChips.ControlAdded += (_, _) => PlaceButtons();
+        foreach (var button in new[] { heroPlay, heroSetup, heroFolder }) button.VisibleChanged += (_, _) => PlaceButtons();
+        var body = new Surface { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(28, 24, 28, 20), BackColor = Theme.Back };
         teamTitle.Dock = DockStyle.Top;
-        teamTitle.Padding = new Padding(2, 0, 0, 8);
-        page.Controls.Add(teamRow);
-        page.Controls.Add(teamTitle);
-        page.Controls.Add(Spacer(18));
-        page.Controls.Add(stats);
-        page.Controls.Add(Spacer(16));
+        teamTitle.Padding = new Padding(2, 0, 0, 12);
+        body.Controls.Add(teamRow);
+        body.Controls.Add(teamTitle);
+        page.Controls.Add(body);
         page.Controls.Add(hero);
         heroPlay.Click += (_, _) => Play();
         heroSetup.Click += (_, _) => Show("Setup");
@@ -405,44 +393,47 @@ partial class MainForm
             string root = Builder.Root(targetBox.Text);
             if (Directory.Exists(root)) Process.Start(new ProcessStartInfo(root) { UseShellExecute = true });
         };
+        teamRow.SizeChanged += (_, _) => LayoutTeam();
         return page;
     }
 
-    // What the Home page shows: the edition, whether the game is built, the shaders and the newest save.
+    void LayoutTeam()
+    {
+        int n = teamRow.Controls.Count;
+        if (n == 0) return;
+        int width = Math.Max(100, (teamRow.ClientSize.Width - 12 * (n - 1)) / n);
+        for (int i = 0; i < n; i++)
+        {
+            teamRow.Controls[i].Width = width;
+            teamRow.Controls[i].Margin = new Padding(0, 0, i == n - 1 ? 0 : 12, 12);
+        }
+    }
+
+    // What the Home page shows: the edition, whether the game is built, DLC and the most recent play or save.
     void RefreshHome()
     {
         bool built = targetBox.Text != "" && File.Exists(Builder.Exe(targetBox.Text));
-        string game = targetBox.Text != "" ? Builder.Game(targetBox.Text) : "unknown";
-        string name = game == "scarlet" ? "Pokémon Scarlet" : game == "violet" ? "Pokémon Violet" : "Pokémon Scarlet & Violet";
-        heroEdition.Text = name.ToUpperInvariant();
-        heroEdition.ForeColor = Theme.Accent2;
-        heroTitle.Text = cancel != null ? "Building …" : built ? "Ready to play" : "Let's get started";
-        heroText.Text = built ? "Your game files are set up and the game's code is compiled for this PC."
-                              : "Choose your own game dump, update and keys in Setup. KarPur builds the PC version from them, on your PC.";
+        bool dlc = built && Builder.HasDlc(targetBox.Text);
+        sidebarLogo.Edition = built ? Theme.Current.Name : "neutral";
+        sidebarLogo.Invalidate();
+        heroText.Visible = !built;
+        heroText.Text = cancel != null ? "Building your PC version…" : "Choose your game files in Setup to get started.";
         heroPlay.Visible = built;
         heroFolder.Visible = built;
         heroSetup.Visible = !built;
         heroPlay.Enabled = built && cancel == null;
 
-        heroChips.Controls.Clear();
+        while (heroChips.Controls.Count > 0) heroChips.Controls[0].Dispose();
         if (built)
         {
-            bool dlc = dlcBox.Text != "";
-            heroChips.Controls.Add(new Chip { Glyph = Theme.GlyphCheck, Good = true, Text = "Version 4.0.0" + (dlc ? " + DLC" : "") });
-            int shaders = PreparedShaders();
-            if (shaders > 0) heroChips.Controls.Add(new Chip { Glyph = Theme.GlyphShaders, Text = $"{shaders:N0} shaders ready" });
+            heroChips.Controls.Add(new Chip { Glyph = Theme.GlyphCheck, Good = true, CompactText = "v4.0.0", Text = "Game version 4.0.0" });
+            heroChips.Controls.Add(new Chip { Glyph = Theme.GlyphGame, CompactText = dlc ? "DLC installed" : "No DLC", Text = dlc ? "DLC installed" : "DLC not installed" });
+            var played = LastPlayed();
             var save = NewestSave();
-            if (save != null) heroChips.Controls.Add(new Chip { Glyph = Theme.GlyphSave, Text = $"Save from {save.Value:yyyy-MM-dd, HH:mm}" });
+            if (played != null) heroChips.Controls.Add(new Chip { Glyph = Theme.GlyphPlay, CompactText = $"Played {played.Value:dd MMM, HH:mm}", Text = $"Last played {played.Value:yyyy-MM-dd, HH:mm}" });
+            else if (save != null) heroChips.Controls.Add(new Chip { Glyph = Theme.GlyphSave, CompactText = $"Save {save.Value:dd MMM, HH:mm}", Text = $"Last save {save.Value:yyyy-MM-dd, HH:mm}" });
         }
 
-        statGame.Value.Text = built ? name.Replace("Pokémon ", "") : "Not built";
-        statGame.Note.Text = built ? "Update 4.0.0" + (dlcBox.Text != "" ? " · DLC" : "") : "Set it up in Setup";
-        int n = built ? PreparedShaders() : 0;
-        statShaders.Value.Text = n > 0 ? $"{n:N0}" : "–";
-        statShaders.Note.Text = n > 0 ? "prepared during the build: no stutter" : "prepared at the end of a build";
-        var last = built ? NewestSave() : null;
-        statSave.Value.Text = last != null ? $"{last.Value:dd MMM, HH:mm}" : "–";
-        statSave.Note.Text = last != null ? "manage it in Saves" : "no save yet";
         RefreshTeam(built);
         hero.Invalidate(true);
     }
@@ -450,7 +441,8 @@ partial class MainForm
     // <profile>	eam.json, which the game writes when it saves (runtime/team.c): name, level, shiny per party member
     void RefreshTeam(bool built)
     {
-        teamRow.Controls.Clear();
+        teamRow.SuspendLayout();
+        while (teamRow.Controls.Count > 0) teamRow.Controls[0].Dispose();
         var team = new List<TeamCard>();
         try
         {
@@ -472,9 +464,11 @@ partial class MainForm
                 }
             }
         }
-        catch { team.Clear(); }
+        catch { foreach (var card in team) card.Dispose(); team.Clear(); }
         teamTitle.Visible = teamRow.Visible = team.Count > 0;
         teamRow.Controls.AddRange(team.ToArray());
+        LayoutTeam();
+        teamRow.ResumeLayout(true);
     }
 
     // build\game\icons\catalog.txt (the shader census: "species form folder" per line) and the folder's PNG
@@ -507,13 +501,16 @@ partial class MainForm
         catch { return null; }
     }
 
-    int PreparedShaders()
+    DateTime? LastPlayed()
     {
         try
         {
-            var f = new FileInfo(Path.Combine(Builder.Root(targetBox.Text), "build", "game", "shader-prepared.bin"));
-            return f.Exists && f.Length > 16 ? (int)((f.Length - 16) / 36) : 0;
+            string suffix = $" exe={Builder.Exe(targetBox.Text)} cwd={Builder.Root(targetBox.Text)}";
+            return File.ReadLines(Path.Combine(AppContext.BaseDirectory, "launcher-start.log"))
+                .Where(line => line.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                .Select(line => DateTime.TryParse(line[..line.IndexOf(" exe=", StringComparison.Ordinal)], out var time) ? (DateTime?)time : null)
+                .Where(time => time != null).LastOrDefault();
         }
-        catch { return 0; }
+        catch { return null; }
     }
 }

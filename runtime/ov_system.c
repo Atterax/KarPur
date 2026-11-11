@@ -297,13 +297,21 @@ static void ov_show_error(Cpu *c) {
 
 // ==== SDK-internal initialisation (services.c)
 static void ov_diag_startup(Cpu *c) { (void)c; rt_log("diag: host diagnostics"); }
-static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: no add-on content"); }
-// 1.4.3's main lists add-on content (MNG services.c host_aoc_list): there is none.
+static void ov_aoc_initialize(Cpu *c) {
+    (void)c;
+    int idx[64], n = fs_aoc_indices(idx, 64);
+    if (!n) rt_log("aoc: no add-on content");
+    else rt_log("aoc: %d add-on content%s (game/dlc; TOTK_DLC=0 hides them), the first index %d", n, n == 1 ? "" : "s", idx[0]);
+}
+// The player's add-on content as tools/extract_dlc.py unpacked it (fs_host.c fs_aoc_indices).
 // int ListAddOnContent(AddOnContentIndex *out, int offset, int count)
 static void ov_aoc_list(Cpu *c) {
+    int32_t *out = arg_p(c, 0);
     int offset = (int)arg_x(c, 1), count = (int)arg_x(c, 2);
     if (offset < 0 || count < 0) rt_fatal("aoc: ListAddOnContent range %d+%d", offset, count);
-    ret_x(c, 0);
+    int idx[64], n = fs_aoc_indices(idx, 64), k = 0;
+    for (int i = offset; i < n && k < count && out; i++) out[k++] = idx[i];
+    ret_x(c, (uint64_t)k);
 }
 static void ov_err_context(Cpu *c) { (void)c; rt_log("err: error contexts stay local"); }
 static void ov_pctl_initialize(Cpu *c) { (void)c; rt_log("pctl: no parental controls"); }
@@ -890,8 +898,11 @@ HOST_OVERRIDE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", ov_font_size
 #define KP_R_ACCOUNT_NSA_UNAVAILABLE KP_RESULT(124, 280)   // network service account not available
 #define KP_R_TIME_NO_NETWORK_CLOCK KP_RESULT(116, 1)
 
-// int aoc::CountAddOnContent(): matches ListAddOnContent above, which lists none.
-static void ov_aoc_count(Cpu *c) { ret_x(c, 0); }
+// int aoc::CountAddOnContent(): matches ListAddOnContent above.
+static void ov_aoc_count(Cpu *c) {
+    int idx[64];
+    ret_x(c, (uint64_t)fs_aoc_indices(idx, 64));
+}
 // void aoc::GetAddOnContentListChangedEvent(os::SystemEvent *): an event that never fires (the list never changes)
 static void ov_aoc_changed_event(Cpu *c) {
     uint64_t ev = arg_x(c, 0);

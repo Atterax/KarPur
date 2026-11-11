@@ -17,6 +17,14 @@
 >
 > Everything is built from your files, on your PC, for your own use. Do not share it.
 
+> [!IMPORTANT]
+> **AMD GPU owners and Vulkan people wanted.** The remaining AMD-specific bugs (a crash on some RDNA 3 cards during
+> character creation, flickering trees in compatibility mode) are hard to track down: the maintainer has no AMD card
+> and knows nobody who does. If you own one and know Vulkan or graphics debugging, your help would make a real
+> difference — testing, logs, a pull request, or even just pointing out what to look at. Contributions put together
+> with the help of an AI assistant are very welcome too. Please open an issue or pull request; see
+> [Troubleshooting](#troubleshooting) and the open issues for what is known so far.
+
 ## What is KarPur?
 
 KarPur is a fan project. It takes the ARM64 code of *Pokémon Scarlet & Violet* (Nintendo Switch, 2022) and translates it into C code, which it compiles into a Windows program. The Switch system and its graphics API are replaced by a runtime of our own, and the game draws its pictures through Vulkan.
@@ -38,7 +46,7 @@ The **KarPur Launcher** does all the building for you.
 | 🟢 | ***Pokémon Violet*, base game as `.xci`** (a cartridge dump) | Tested by the maintainer |
 | 🟢 | **Update 4.0.0 as `.nsp`** | Tested; the only supported update |
 | 🟡 | ***Pokémon Scarlet*, base game as `.xci`** | Works according to community reports; not tested by the maintainer |
-| 🟡 | **DLC as `.nsp`** (optional) | Costumes work; the DLC story areas need more testing |
+| 🟢 | **DLC as `.nsp`** (optional) | Confirmed working, including the story areas |
 | 🟡 | **Base game as `.nsp`** (an eShop copy, or an `.xci` converted from one) | Works with a **firmware folder**: the system fonts come from the cartridge image, so an eShop copy needs your console's system files for them (the launcher's *Firmware folder*) |
 | 🔴 | Other updates than 4.0.0 | Not tested so not supported |
 
@@ -71,7 +79,7 @@ You also need **`prod.keys`** from the same console.
 | ✅ | M0-M3 | Foundation, tools, the code translator, first sign of life |
 | ✅ | M4 | First picture through Vulkan |
 | ✅ | M5 | Playable |
-| 🔄 | **M6** | **PC extras**: 60 FPS ✅, DLSS / DLAA / Frame Generation ✅, launcher ✅, settings ✅, shader pre-build ✅, AMD alternatives, DLC, draw distance |
+| 🔄 | **M6** | **PC extras**: 60 FPS ✅, DLSS / DLAA / Frame Generation ✅, launcher ✅, settings ✅, shader pre-build ✅, DLC ✅, a real AMD/weaker-GPU option (FSR 1 + Handheld mode) ✅, draw distance |
 
 Details: [docs/roadmap.md](docs/roadmap.md) · daily log: [docs/progress.md](docs/progress.md)
 
@@ -86,7 +94,11 @@ Details: [docs/roadmap.md](docs/roadmap.md) · daily log: [docs/progress.md](doc
 - **NVIDIA DLSS**: the 3D world is rendered at your window's size, or at 4K and then scaled down.
 - **DLSS Frame Generation**: 2× on RTX 40, up to 4× on RTX 50 cards. It needs Windows' hardware-accelerated GPU scheduling.
 - NVIDIA's files are not part of KarPur: you add your own copies (from any game that ships DLSS) in the launcher.
-- **AMD FSR 1** or bilinear scaling, with sharpness, when DLSS is off.
+- **AMD FSR 1** or bilinear scaling, with sharpness, when DLSS is off. The console's own **Handheld mode** (1280×720,
+  a real speed gain) is selectable too, next to the usual Docked (1920×1080) — a genuine performance option for AMD
+  and other non-NVIDIA cards, no reverse engineering required.
+- A **Graphics card** setting (Settings tab) picks which GPU runs the game when more than one is installed; NVIDIA-only
+  features lock themselves off automatically once you pick a non-NVIDIA card.
 - The HUD always stays as the game draws it.
 
 ### 🌿 A livelier Paldea
@@ -108,14 +120,18 @@ Switch 2 uses the spawn values of the fan mod [Pokémon Compass](https://compass
   - button layout and motion controls
   - vibration
   - stick dead zone and mouse sensitivity
-  
+  - the performance overlay (Off / FPS / Full)
+  - **Quit game**, with a confirmation, so fullscreen no longer needs Alt-F4 (#25)
+
   Its texts are in English, German and Russian.
+- **The launcher itself works with a controller** too (#30): the sidebar's tabs and Play follow the stick or D-pad, A
+  opens a page or presses a button, B goes back.
 
 ### 🧰 The KarPur Launcher
 - **One file**: no installation and no administrator rights.
 - **Home**: a start page in your edition's colours, with Play, the state of your build, your last save and **your current team** (name and level, read when the game saves) at a glance.
 - **Setup**: builds the game from your dumps, shaders included. A stopped build goes on where it stopped.
-- **Settings**: everything from fullscreen to Frame Generation, before you start the game.
+- **Settings**: everything from fullscreen and your graphics card to Frame Generation, before you start the game.
 - **Controls**: keyboard, mouse and controller, with swapped sticks and an inverted camera.
 - **Saves**: export your save as a `.zip`, import one, open its folder, or restore one of the last saves.
 - **Mods** (experimental, only a few mods tried so far): add your own mods (a folder or a `.zip`, for example from NexusMods) and switch each on or off. Nothing of your game is replaced: KarPur gives the game a mod's file as it loads the original. Mods that only change files work; files a mod adds and a mod's code (`exefs`) are not supported yet, and the tab says so per mod.
@@ -186,9 +202,9 @@ You add a few words, and with *Attach log* the end of the game's log. **Open on 
 
 - The game renders at 1920 × 1080; DLSS gives a sharper picture at higher window sizes. A higher native resolution is not done yet.
 - Online features (Union Circle, trading, Tera Raid matchmaking) are not available.
-- Of the DLC, only the costumes are confirmed to work so far; the story areas need more testing.
+- DLC is confirmed to work, including the story expansions.
 - Draw distance settings for trees, grass, Pokémon and NPCs are not done yet.
-- No AMD upscaler or frame generation beyond FSR 1 yet.
+- No temporal AMD upscaler (FSR 2) or frame generation yet; FSR 1 plus Handheld mode is the real performance option for now.
 
 ## How it works
 

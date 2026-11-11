@@ -34,15 +34,15 @@ partial class MainForm
           ("xbox_prompts", "Nintendo positions, Xbox button names") };
 
     readonly ComboBox padLayout = Combo();
-    readonly TrackBar deadzone = new() { Minimum = 0, Maximum = 50, TickFrequency = 5, Width = 280, BackColor = Theme.Card };
-    readonly TrackBar mouseSens = new() { Minimum = 1, Maximum = 50, TickFrequency = 5, Width = 280, BackColor = Theme.Card };
-    readonly TrackBar rumble = new() { Minimum = 0, Maximum = 300, TickFrequency = 25, SmallChange = 10, LargeChange = 25, Width = 280, BackColor = Theme.Card };
+    readonly TrackBar deadzone = new FocusSlider { Minimum = 0, Maximum = 50, TickFrequency = 5, Width = 280, BackColor = Theme.Card };
+    readonly TrackBar mouseSens = new FocusSlider { Minimum = 1, Maximum = 50, TickFrequency = 5, Width = 280, BackColor = Theme.Card };
+    readonly TrackBar rumble = new FocusSlider { Minimum = 0, Maximum = 300, TickFrequency = 25, SmallChange = 10, LargeChange = 25, Width = 280, BackColor = Theme.Card };
     readonly Label deadzoneValue = Theme.Label(""), mouseSensValue = Theme.Label(""), rumbleValue = Theme.Label("");
-    readonly CheckBox motion = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Motion controls (gyro)", BackColor = Theme.Card };
-    readonly CheckBox stickSwap = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Swap the sticks (move with the right, camera with the left)", BackColor = Theme.Card };
-    readonly CheckBox camInvX = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Invert the camera horizontally", BackColor = Theme.Card };
-    readonly CheckBox camInvY = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Invert the camera vertically", BackColor = Theme.Card };
-    readonly CheckBox rumbleTriggers = new() { AutoSize = true, ForeColor = Theme.Text, Text = "Rumble in the triggers too", BackColor = Theme.Card };
+    readonly CheckBox motion = new ChoiceBox { AutoSize = true, ForeColor = Theme.Text, Text = "Motion controls (gyro)", BackColor = Theme.Card };
+    readonly CheckBox stickSwap = new ChoiceBox { AutoSize = true, ForeColor = Theme.Text, Text = "Swap the sticks (move with the right, camera with the left)", BackColor = Theme.Card };
+    readonly CheckBox camInvX = new ChoiceBox { AutoSize = true, ForeColor = Theme.Text, Text = "Invert the camera horizontally", BackColor = Theme.Card };
+    readonly CheckBox camInvY = new ChoiceBox { AutoSize = true, ForeColor = Theme.Text, Text = "Invert the camera vertically", BackColor = Theme.Card };
+    readonly CheckBox rumbleTriggers = new ChoiceBox { AutoSize = true, ForeColor = Theme.Text, Text = "Rumble in the triggers too", BackColor = Theme.Card };
     readonly KeyButton[] keyButtons = new KeyButton[Actions.Length];
     readonly PadButton?[] padButtons = new PadButton?[Actions.Length];   // none for the stick directions (keys only)
     readonly Button saveControls = Theme.Button("Save controls", true, "");

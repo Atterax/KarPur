@@ -19,9 +19,23 @@ class Builder
     public Action<int>? Percent;         // overall progress, 0-100
     public Action<string>? Log;          // raw lines for the details box and launcher.log
 
-    public static string Root(string target) => Path.Combine(target, "KarPur");
+    public static bool IsSourceRoot(string target) =>
+        !string.IsNullOrWhiteSpace(target) &&
+        File.Exists(Path.Combine(target, "launcher", "KarPurLauncher.csproj")) &&
+        File.Exists(Path.Combine(target, "tools", "setup_build.py"));
+    public static string Root(string target) => IsSourceRoot(target) ? Path.GetFullPath(target) : Path.Combine(target, "KarPur");
     public static string Exe(string target) => Path.Combine(Root(target), "build", "game", "karpur.exe");
     public static string Ini(string target) => Path.Combine(Root(target), "build", "game", "karpur.ini");
+    public static bool HasDlc(string target)
+    {
+        string dir = Path.Combine(Root(target), "game", "dlc");
+        try { return Directory.Exists(dir) && Directory.EnumerateDirectories(dir).Any(d =>
+            int.TryParse(Path.GetFileName(d), out int index) && index > 0 && index < 0x1000); }
+        catch { return false; }
+    }
+
+    public static ProcessStartInfo GameStartInfo(string target) =>
+        new(Exe(target)) { WorkingDirectory = Root(target), UseShellExecute = true };
 
     // The steps of tools/setup_build.py: their names here and their weight (rough share of a first build's time).
     static readonly Dictionary<string, (string Text, int Weight)> Steps = new()
@@ -31,6 +45,7 @@ class Builder
         ["extract"] = ("Unpacking the game code", 2),
         ["fonts"] = ("Unpacking the system fonts", 1),
         ["romfs"] = ("Merging the game data (5-20 minutes)", 18),
+        ["dlc"] = ("Unpacking the DLC", 1),
         ["menu"] = ("Setting up the PC settings menu", 1),
         ["fps"] = ("Preparing the 60 FPS patches", 1),
         ["icon"] = ("Taking the game icon", 1),
@@ -166,9 +181,20 @@ class Builder
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(Root(target), "build", "setup_info.json")));
-            return doc.RootElement.GetProperty("game").GetString() ?? "unknown";
+            string? game = doc.RootElement.GetProperty("game").GetString();
+            if (game is "violet" or "scarlet") return game;
         }
-        catch { return "unknown"; }
+        catch { }
+        // Manual workspace builds predate setup_build.py's launcher metadata. The extraction report contains the
+        // application ID (metadata only), so edition colours do not depend on a separate installed build's inputs.
+        try
+        {
+            string report = File.ReadAllText(Path.Combine(Root(target), "game", "report", "m1-report.txt"));
+            if (report.Contains("01008F6008C5E000", StringComparison.OrdinalIgnoreCase)) return "violet";
+            if (report.Contains("0100A3D008C5C000", StringComparison.OrdinalIgnoreCase)) return "scarlet";
+        }
+        catch { }
+        return "unknown";
     }
 
     // The repository's files (and the prebuilt translator and hactool) into root; what the build made stays. Files the

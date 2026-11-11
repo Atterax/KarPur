@@ -30,7 +30,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // Every name the runtime reads (and the patch sets in generated/), without the prefix. A file key outside this list is
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line.
 static const char *const known[] = {
-    "AB", "CAM_PROBE", "DLAA", "DLAA_AT", "DLAA_DEPTH_INV", "DLAA_JITTER_BIAS", "DLAA_JX", "DLAA_JY", "DLAA_PRESET", "CAMERA_INVERT_X", "CAMERA_INVERT_Y", "SHADER_CENSUS", "STICK_SWAP", "DLSS_CONVERT", "DLSS_DEBUG", "FRAMEGEN", "FRAMEGEN_FEATURES", "FRAMEGEN_MODE", "FRAMEGEN_OBS", "FRAMEGEN_VERBOSE", "DLSS_HUD_DIFF", "DLSS_OUT", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AB", "CAM_PROBE", "RES_PROBE", "DLAA", "DLAA_AT", "DLAA_DEPTH_INV", "DLAA_JITTER_BIAS", "DLAA_JX", "DLAA_JY", "DLAA_PRESET", "CAMERA_INVERT_X", "CAMERA_INVERT_Y", "SHADER_CENSUS", "STICK_SWAP", "DLSS_CONVERT", "DLSS_DEBUG", "FRAMEGEN", "FRAMEGEN_FEATURES", "FRAMEGEN_MODE", "FRAMEGEN_OBS", "FRAMEGEN_VERBOSE", "DLSS_HUD_DIFF", "DLSS_OUT", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
@@ -58,7 +58,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
     {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
-    {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"}, {"DLAA", "display"}, {"DLSS_OUT", "display"}, {"DLAA_PRESET", "display"}, {"FRAMEGEN", "display"},
+    {"GPU_INDEX", "display"}, {"GPU_NAME", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"}, {"DLAA", "display"}, {"DLSS_OUT", "display"}, {"DLAA_PRESET", "display"}, {"FRAMEGEN", "display"},
     {"SHARPNESS", "display"}, {"ASPECT", "display"}, {"LOD", "display"}, {"LOD_BIAS", "display"}, {"ANISO", "display"}, {"FOV", "display"}, {"COLOR_PRESET", "display"},
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"},

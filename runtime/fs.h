@@ -48,6 +48,7 @@ void fs_host_set_profile(const char *dir);                 // profile directory;
                                                            // (default rt_config()->profile)
 int fs_save_busy(void);                                    // a save is being written: a save file open for writing,
                                                            // or save data changed in the last 3 s and not committed
+int fs_aoc_indices(int *out, int cap);                     // the player's add-on content indices (game/dlc/<n>)
 int fs_profile_dir(char *out, size_t cap);                 // the profile folder (saves, team.json); 0 before it is set
 void team_on_save(void);                                   // team.c: a save was committed (scans for the party)
 void fs_save_flush(void);                                  // wait for a save Commit still running in the background;
