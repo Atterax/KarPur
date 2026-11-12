@@ -132,8 +132,12 @@ def index_romfs(path):
 
 
 def merge(base_path, update_path, keys_path, keys, out_dir):
-    base_nca, _ = program_nca(base_path, keys, update=False)
-    update_nca, tickets = program_nca(update_path, keys, update=True)
+    base_nca, base_tickets = program_nca(base_path, keys, update=False)
+    update_nca, update_tickets = program_nca(update_path, keys, update=True)
+    # hactool reads the base NCA through --basenca with the same title keys as the update: a base game as NSP is
+    # titlekey-encrypted (an XCI is not), so its ticket's key must be in title.keys too, or the base data decrypts to
+    # garbage and IVFC level 5 fails (issue #2).
+    tickets = {**base_tickets, **update_tickets}
     sections = [i for i in range(4) if update_nca.header[0x400 + 512 * i + 4] == 4
                 and any(struct.unpack_from('<II', update_nca.header, 0x240 + 16 * i))]
     require(len(sections) == 1, f'{update_path.name}: expected one BKTR section, found {len(sections)}')
