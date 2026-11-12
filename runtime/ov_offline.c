@@ -251,6 +251,7 @@ typedef struct {
     uint64_t end_ns;                    // when the last appended buffer finishes
     uint64_t played;                    // frames released so far
     SDL_AudioStream *stream;            // KarPur: 16-bit stereo to the default device, NULL when silent
+    unsigned gain_version;              // KarPur: the cfg_version the stream's gain was last set from
 } AudioOutSlot;
 static AudioOutSlot ao[AO_MAX_OUTS];
 static PlatMutex ao_lock = PLAT_MUTEX_INIT;
@@ -297,6 +298,7 @@ static void ao_open(Cpu *c) {
     AudioOutSlot *s = ao_slot(arg_x(c, 0), 1);
     if (s->stream) SDL_DestroyAudioStream(s->stream);
     s->stream = st;
+    s->gain_version = cfg_version() - 1;   // ao_append sets the gain before the first samples
     plat_mutex_unlock(&ao_lock);
     rt_log("audout: default audio output opened (%d Hz, %d channels, %s)", AO_RATE, AO_CHANNELS,
            st ? "to the default playback device" : "silent");
@@ -385,6 +387,14 @@ static void ao_append(Cpu *c) {
             if (q_min < 0 || q_ms < q_min) q_min = q_ms;
             if (q_ms > q_max) q_max = q_ms;
             if (max_ms && q_ms > max_ms) SDL_ClearAudioStream(s->stream), q_drops++;
+            // KarPur: the player's volume (TOTK_VOLUME, live) as the stream's gain, so the guest buffer is not touched;
+            // the audio renderer applies the same volume to its output (audio_mixer.c host_volume).
+            unsigned ver = cfg_version();
+            if (ver != s->gain_version) {
+                s->gain_version = ver;
+                if (!SDL_SetAudioStreamGain(s->stream, cfg_player_volume()))
+                    rt_log("audout: setting the volume failed (%s)", SDL_GetError());
+            }
             SDL_PutAudioStreamData(s->stream, (const void *)(uintptr_t)data, (int)(frames * 2 * AO_CHANNELS));
             if (rt_trace & RT_TRACE_AUDIO) {
                 uint64_t t = kern_now_ns();
