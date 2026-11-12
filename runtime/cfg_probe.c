@@ -102,6 +102,7 @@ int probe_cfg(void) {
     cfg_set("TOTK_VOLUME", "40");
     CHECK(cfg_version() == v0 + 4, "cfg_set bumps the version");
     CHECK(EQ(cfg_get("TOTK_FPS60"), "0") && EQ(cfg_get("TOTK_VOLUME"), "40"), "cfg_set values are read back at once");
+    CHECK(cfg_player_volume() == 0.4f, "cfg_player_volume is the percent as a gain");
     CHECK(cfg_save_to(path) == 1, "cfg_save_to writes");
     uint64_t got_n = 0;
     uint8_t *got = plat_file_read(path, &got_n);

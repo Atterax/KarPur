@@ -392,6 +392,11 @@ int cfg_int(const char *name) {
 
 int cfg_bool(const char *name) { return strcmp(cfg_value(name), "0") != 0; }
 
+float cfg_player_volume(void) {
+    double pct = cfg_double("TOTK_VOLUME");
+    return (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
+}
+
 // ---- cfg_save: the file as lines, each with its line ending
 typedef struct { const char *s; size_t n; } Line;   // n includes the '\n' (and '\r') when present
 

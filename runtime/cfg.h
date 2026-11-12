@@ -60,3 +60,6 @@ const char *cfg_value(const char *name);
 int cfg_int(const char *name);
 double cfg_double(const char *name);
 int cfg_bool(const char *name);
+// TOTK_VOLUME ([audio] volume in karpur.ini), the player's volume in percent, as a gain 0..1 on top of the game's own. Live: a
+// consumer that keeps it compares cfg_version and calls this again when it changed. Every audio output applies it.
+float cfg_player_volume(void);
