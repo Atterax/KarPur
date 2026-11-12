@@ -41,6 +41,7 @@ typedef struct PoolRec {
     uint64_t import_lo, import_hi;     // POOL_IMPORT: the imported host range (aligned outwards)
     VkBuffer buf;
     VkDeviceMemory mem;                // POOL_IMPORT
+    int arena;                         // KarPur POOL_IMPORT: 1 + the arena buf is bound into (mem stays NULL), 0 none
     VmaAllocation alloc;               // POOL_PHYS
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
     uint64_t npages;
@@ -126,23 +127,144 @@ static int memory_type(const VkCtx *c, uint32_t bits, VkMemoryPropertyFlags want
     return -1;
 }
 
+// KarPur import arenas (TOTK_IMPORT_ARENA=<MiB>, default 16, 0 off). On the NVIDIA driver a host-pointer import
+// (vkGetMemoryHostPointerPropertiesEXT, then vkAllocateMemory) takes 1-20 ms whatever its size, and the game creates
+// dozens of small pools per second while it streams in Pokemon and objects. A pool instead binds its buffer into an
+// arena: one import of the committed run of guest pages around it, inside the aligned block of that size, shared by
+// every later pool in that run. An arena stays imported while pools use it; a guest decommit that touches it
+// (rt_mem_decommit_hook, called before the pages go) retires it: no new pool binds to it, and it is freed with its
+// last pool.
+typedef struct { uint64_t lo, hi; VkDeviceMemory mem; uint32_t type; int32_t refs; int dead; } Arena;
+#define ARENA_MAX 512
+static Arena arena_tab[ARENA_MAX];
+static int arena_hi_n;                       // slots in use or freed: [0, arena_hi_n)
+static PlatMutex arena_lock = PLAT_MUTEX_INIT;
+static int32_t n_arenas, n_arena_binds;
+static int32_t af_cross, af_state, af_props, af_alloc, af_bind;   // why pools missed an arena (TOTK_POOL_SLOW_MS)
+static uint64_t pst_ns[5];   // pool init stages: thaw, host props, buffer, arena, own import (racy sums, for the log)
+
+static uint64_t arena_size(void) {
+    static int mib = -1;
+    if (mib < 0) {
+        const char *e = cfg_get("TOTK_IMPORT_ARENA");
+        mib = e && *e ? atoi(e) : 16;
+        if (mib < 0 || (mib & (mib - 1))) mib = 0;   // a power of two
+        if (mib) rt_log("vk: imported pools share %d MiB import arenas (TOTK_IMPORT_ARENA)", mib);
+    }
+    return (uint64_t)mib << 20;
+}
+
+// arena_lock held. Frees retired arenas no pool uses.
+static void arena_reap_locked(VkCtx *c) {
+    for (int i = 0; i < arena_hi_n; i++) {
+        Arena *a = &arena_tab[i];
+        if (a->mem && a->dead && !a->refs) vkFreeMemory(c->device, a->mem, NULL), a->mem = VK_NULL_HANDLE;
+    }
+}
+
+static void arena_decommit(uint64_t addr, uint64_t n) {
+    VkCtx *c = vk_ctx();
+    if (!c || !n) return;
+    plat_mutex_lock(&arena_lock);
+    for (int i = 0; i < arena_hi_n; i++) {
+        Arena *a = &arena_tab[i];
+        if (a->mem && !a->dead && addr < a->hi && addr + n > a->lo) a->dead = 1;
+    }
+    arena_reap_locked(c);
+    plat_mutex_unlock(&arena_lock);
+}
+
+// Binds r->buf (memory requirements req) into an arena that holds its range, importing a new arena if none does; 1 done.
+static int arena_bind(VkCtx *c, PoolRec *r, const VkMemoryRequirements *req) {
+    uint64_t B = arena_size();
+    if (!B || !p_host_props) return 0;
+    uint64_t blo = r->import_lo & ~(B - 1), bhi = blo + B;
+    if (r->import_hi > bhi) { plat_inc32(&af_cross); return 0; }
+    plat_mutex_lock(&arena_lock);
+    Arena *a = NULL;
+    for (int i = 0; i < arena_hi_n && !a; i++) {
+        Arena *e = &arena_tab[i];
+        if (e->mem && !e->dead && e->lo <= r->import_lo && r->import_hi <= e->hi && (req->memoryTypeBits >> e->type & 1))
+            a = e;
+    }
+    if (!a) {
+        // The committed run of the block around the pool (mem_thaw makes frozen pages writable for the import): the game
+        // maps its memory in pieces, so a block is often only partly committed when its first pool comes.
+        mem_thaw(blo, B);
+        uint64_t lo = 0, hi = 0;
+        for (uint64_t x = blo, y; x < bhi; x = y) {
+            int st = plat_mem_state(x, bhi, &y);
+            if (y <= x) break;
+            if (st == PLAT_PROT_RW) {
+                if (hi != x) lo = x;
+                hi = y;
+            } else if (hi && lo <= r->import_lo && r->import_hi <= hi) {
+                break;
+            } else {
+                lo = hi = 0;
+            }
+        }
+        if (hi > bhi) hi = bhi;
+        int whole = hi && lo <= r->import_lo && r->import_hi <= hi;
+        if (!whole) plat_inc32(&af_state);
+        VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+        int type = -1;
+        if (whole && p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)lo,
+                                  &hp) == VK_SUCCESS)
+            type = memory_type(c, req->memoryTypeBits & hp.memoryTypeBits,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (whole && (type < 0 || !(req->memoryTypeBits & hp.memoryTypeBits))) whole = 0, plat_inc32(&af_props);
+        int slot = -1;
+        for (int i = 0; i < arena_hi_n && slot < 0; i++) if (!arena_tab[i].mem) slot = i;
+        if (slot < 0 && arena_hi_n < ARENA_MAX) slot = arena_hi_n;
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        if (whole && slot >= 0) {
+            VkImportMemoryHostPointerInfoEXT im = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                                   .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                   .pHostPointer = (void *)(uintptr_t)lo};
+            VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &im,
+                                       .allocationSize = hi - lo, .memoryTypeIndex = (uint32_t)type};
+            if (vkAllocateMemory(c->device, &ai, NULL, &mem) != VK_SUCCESS) mem = VK_NULL_HANDLE, plat_inc32(&af_alloc);
+        }
+        if (mem) {
+            if (slot == arena_hi_n) arena_hi_n++;
+            arena_tab[slot] = (Arena){.lo = lo, .hi = hi, .mem = mem, .type = (uint32_t)type};
+            a = &arena_tab[slot];
+            long k = plat_inc32(&n_arenas);
+            if (k <= 8 || !(k & (k - 1)))
+                rt_log("vk: import arena %ld at %#llx (%.2f MiB)", k, (unsigned long long)lo, (hi - lo) / 1048576.0);
+        }
+    }
+    uint64_t off = a ? r->import_lo - a->lo : 0;
+    int ok = a && !(off % (req->alignment ? req->alignment : 1)) &&
+             vkBindBufferMemory(c->device, r->buf, a->mem, off) == VK_SUCCESS;
+    if (ok) a->refs++, r->arena = (int)(a - arena_tab) + 1, plat_inc32(&n_arena_binds);
+    else if (a) plat_inc32(&af_bind);
+    plat_mutex_unlock(&arena_lock);
+    static int hooked;
+    if (ok && !hooked) hooked = 1, rt_mem_decommit_hook = arena_decommit;
+    return ok;
+}
+
+static void arena_release(VkCtx *c, int arena) {
+    plat_mutex_lock(&arena_lock);
+    Arena *a = &arena_tab[arena - 1];
+    if (a->refs > 0) a->refs--;
+    arena_reap_locked(c);
+    plat_mutex_unlock(&arena_lock);
+}
+
 // CPU-visible storage: the guest pages themselves become the buffer's memory (VK_EXT_external_memory_host).
 static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     if (shadow_on) return shadow_pool(c, r, addr, size);
     if (!p_host_props)
         p_host_props = (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(c->device, "vkGetMemoryHostPointerPropertiesEXT");
+    uint64_t t0 = plat_now_ns();
     uint64_t al = c->min_imported_host_alignment ? c->min_imported_host_alignment : 0x1000;
     r->import_lo = addr & ~(al - 1);
     r->import_hi = (addr + size + al - 1) & ~(al - 1);
     uint64_t n = r->import_hi - r->import_lo;
-    VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    VkResult res = p_host_props ? p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                               (void *)(uintptr_t)r->import_lo, &hp)
-                                : VK_ERROR_EXTENSION_NOT_PRESENT;
-    if (res != VK_SUCCESS || !hp.memoryTypeBits) {
-        rt_log("vk: pool %#llx+%#llx: host pointer not importable (%d)", (unsigned long long)addr, (unsigned long long)size, (int)res);
-        return 0;
-    }
+    VkResult res;
     VkExternalMemoryBufferCreateInfo eb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &eb, .size = n,
@@ -153,6 +275,28 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     }
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(c->device, r->buf, &req);
+    uint64_t t1 = plat_now_ns();
+    pst_ns[2] += t1 - t0;
+    // An arena of the block first: a pool in one skips vkGetMemoryHostPointerPropertiesEXT, the slow part of an import.
+    int bound = req.size <= n && arena_bind(c, r, &req);
+    uint64_t t2 = plat_now_ns();
+    pst_ns[3] += t2 - t1;
+    if (bound) {
+        plat_inc32(&n_imports);
+        return 1;
+    }
+    VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    res = p_host_props ? p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                      (void *)(uintptr_t)r->import_lo, &hp)
+                       : VK_ERROR_EXTENSION_NOT_PRESENT;
+    uint64_t t3 = plat_now_ns();
+    pst_ns[1] += t3 - t2;
+    if (res != VK_SUCCESS || !hp.memoryTypeBits) {
+        rt_log("vk: pool %#llx+%#llx: host pointer not importable (%d)", (unsigned long long)addr, (unsigned long long)size, (int)res);
+        vkDestroyBuffer(c->device, r->buf, NULL);
+        r->buf = VK_NULL_HANDLE;
+        return 0;
+    }
     int type = memory_type(c, req.memoryTypeBits & hp.memoryTypeBits,
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (type < 0 || req.size > n) {
@@ -177,6 +321,7 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
         r->mem = VK_NULL_HANDLE;
         return 0;
     }
+    pst_ns[4] += plat_now_ns() - t3;
     plat_inc32(&n_imports);
     return 1;
 }
@@ -251,6 +396,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->salloc) vmaDestroyBuffer(c->vma, r->buf, r->salloc), r->buf = VK_NULL_HANDLE;
     if (r->buf) vkDestroyBuffer(c->device, r->buf, NULL);
     if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
+    if (r->arena) arena_release(c, r->arena), r->arena = 0;
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
     free(r->hot), free(r->late_cnt), free(r->late_seen), free(r->hot_sub), free(r->pin);
@@ -258,7 +404,38 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     free(r);
 }
 
+static int pool_init_body(pool_t *p);
+
+// KarPur TOTK_POOL_SLOW_MS=<ms> (default 0, off): log every MemoryPoolInitialize that takes at least that long, with its
+// kind and size, the time of all pool inits so far by stage and why pools missed an arena; the first 400 only.
 int vk_pool_init(pool_t *p) {
+    static int slow_ms = -1;
+    static int32_t n_logged, n_calls;
+    static uint64_t total_ns;
+    if (slow_ms < 0) { const char *e = cfg_get("TOTK_POOL_SLOW_MS"); slow_ms = e && *e ? atoi(e) : 0; }
+    uint64_t t0 = plat_now_ns();
+    int ok = pool_init_body(p);
+    uint64_t dt = plat_now_ns() - t0;
+    long n = plat_inc32(&n_calls);
+    total_ns += dt;   // racy sum, only for the log
+    if (slow_ms > 0 && dt >= (uint64_t)slow_ms * 1000000ull && plat_inc32(&n_logged) <= 400) {
+        const char *kind = (p->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS) && !(p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL)
+                               ? "no-gpu"
+                           : p->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL  ? "virtual"
+                           : p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL ? "physical"
+                                                                       : "import";
+        rt_log("vk: pool init %.2f ms: %s, flags %#x, %.2f MiB (call %ld, %.1f ms in all pool inits; arenas %d, "
+               "pools in them %d)",
+               dt / 1e6, kind, p->flags, p->size / 1048576.0, n, total_ns / 1e6, (int)n_arenas, (int)n_arena_binds);
+        rt_log("vk: pool init stages so far (ms): thaw %.1f, host props %.1f, buffer %.1f, arena %.1f, own import %.1f; "
+               "arena misses: crosses its block %d, not committed around it %d, host props %d, import %d, bind %d",
+               pst_ns[0] / 1e6, pst_ns[1] / 1e6, pst_ns[2] / 1e6, pst_ns[3] / 1e6, pst_ns[4] / 1e6, (int)af_cross,
+               (int)af_state, (int)af_props, (int)af_alloc, (int)af_bind);
+    }
+    return ok;
+}
+
+static int pool_init_body(pool_t *p) {
     VkCtx *c = vk_ctx();
     if (!c) { rt_log("vk: MemoryPoolInitialize before vk_init"); return 0; }
     // The GPU never sees a GPU_NO_ACCESS pool, except a physical one (0x189; 1.4.3 also 0x18c, CPU-visible) through the
@@ -282,7 +459,9 @@ int vk_pool_init(pool_t *p) {
         ok = alloc_physical(c, r);
     } else {
         r->kind = POOL_IMPORT;
+        uint64_t tt = plat_now_ns();
         mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
+        pst_ns[0] += plat_now_ns() - tt;
         ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
         if (!ok) {
             // Not fatal for the game: the pool works for the CPU, and vk_mem_resolve reports its addresses as unbacked.

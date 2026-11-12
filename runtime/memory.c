@@ -254,7 +254,11 @@ static void commit(uint64_t a, uint64_t n, const char *what) {
     if (!ok) rt_fatal("memory: commit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);
 }
 
+// KarPur: told before guest pages are decommitted (vk_memory.c import arenas), outside frz_lock: the hook may thaw.
+void (*rt_mem_decommit_hook)(uint64_t a, uint64_t n);
+
 static void decommit(uint64_t a, uint64_t n, const char *what) {
+    if (rt_mem_decommit_hook && n) rt_mem_decommit_hook(a, n);
     plat_mutex_lock(&frz_lock);
     thaw_range_locked(a, n, 3);
     int ok = !n || plat_mem_decommit(a, n);
