@@ -127,7 +127,8 @@ static int memory_type(const VkCtx *c, uint32_t bits, VkMemoryPropertyFlags want
     return -1;
 }
 
-// KarPur import arenas (TOTK_IMPORT_ARENA=<MiB>, default 16, 0 off). On the NVIDIA driver a host-pointer import
+// KarPur import arenas (TOTK_IMPORT_ARENA=<MiB>, a power of two; default 0, off: a maintainer's runs crashed on loading
+// with them and not without, 2026-11-13, cause not found yet). On the NVIDIA driver a host-pointer import
 // (vkGetMemoryHostPointerPropertiesEXT, then vkAllocateMemory) takes 1-20 ms whatever its size, and the game creates
 // dozens of small pools per second while it streams in Pokemon and objects. A pool instead binds its buffer into an
 // arena: one import of the committed run of guest pages around it, inside the aligned block of that size, shared by
@@ -135,8 +136,18 @@ static int memory_type(const VkCtx *c, uint32_t bits, VkMemoryPropertyFlags want
 // (rt_mem_decommit_hook, called before the pages go) retires it: no new pool binds to it, and it is freed with its
 // last pool.
 typedef struct { uint64_t lo, hi; VkDeviceMemory mem; uint32_t type; int32_t refs; int dead; } Arena;
+// KarPur TOTK_ARENA_DIAG=1 (diagnostic, default off): keeps the live pool ranges of each arena and logs a guest decommit
+// that retires an arena with pools in it or touches the pages of a live pool in one (memory the GPU can write through),
+// with counts every 1024 binds: those, pool lists that ran full, MiB thawed outside the pool that made an arena, and
+// readback-armed pages that thaws released.
+#define ARENA_DIAG_POOLS 256
+typedef struct { uint64_t lo, hi; } ArenaRange;
 #define ARENA_MAX 512
 static Arena arena_tab[ARENA_MAX];
+static ArenaRange arena_pools[ARENA_MAX][ARENA_DIAG_POOLS];
+static int arena_diag;
+static int32_t ad_retire_live, ad_pool_hit, ad_full;
+static uint64_t ad_thaw_extra;
 static int arena_hi_n;                       // slots in use or freed: [0, arena_hi_n)
 static PlatMutex arena_lock = PLAT_MUTEX_INIT;
 static int32_t n_arenas, n_arena_binds;
@@ -147,9 +158,10 @@ static uint64_t arena_size(void) {
     static int mib = -1;
     if (mib < 0) {
         const char *e = cfg_get("TOTK_IMPORT_ARENA");
-        mib = e && *e ? atoi(e) : 16;
+        mib = e && *e ? atoi(e) : 0;
         if (mib < 0 || (mib & (mib - 1))) mib = 0;   // a power of two
         if (mib) rt_log("vk: imported pools share %d MiB import arenas (TOTK_IMPORT_ARENA)", mib);
+        arena_diag = mib && rt_knob("ARENA_DIAG", "0");
     }
     return (uint64_t)mib << 20;
 }
@@ -168,6 +180,19 @@ static void arena_decommit(uint64_t addr, uint64_t n) {
     plat_mutex_lock(&arena_lock);
     for (int i = 0; i < arena_hi_n; i++) {
         Arena *a = &arena_tab[i];
+        if (arena_diag && a->mem && addr < a->hi && addr + n > a->lo) {
+            if (!a->dead && a->refs > 0 && plat_inc32(&ad_retire_live) <= 20)
+                rt_log("arena diag: decommit %#llx+%#llx retires arena %d [%#llx, %#llx) with %d pools",
+                       (unsigned long long)addr, (unsigned long long)n, i, (unsigned long long)a->lo,
+                       (unsigned long long)a->hi, (int)a->refs);
+            for (int j = 0; j < ARENA_DIAG_POOLS; j++) {
+                ArenaRange *p = &arena_pools[i][j];
+                if (p->hi && addr < p->hi && addr + n > p->lo && plat_inc32(&ad_pool_hit) <= 40)
+                    rt_log("arena diag: decommit %#llx+%#llx touches the live pool [%#llx, %#llx) of arena %d (retired %d, "
+                           "%d pools)", (unsigned long long)addr, (unsigned long long)n, (unsigned long long)p->lo,
+                           (unsigned long long)p->hi, i, a->dead, (int)a->refs);
+            }
+        }
         if (a->mem && !a->dead && addr < a->hi && addr + n > a->lo) a->dead = 1;
     }
     arena_reap_locked(c);
@@ -190,7 +215,11 @@ static int arena_bind(VkCtx *c, PoolRec *r, const VkMemoryRequirements *req) {
     if (!a) {
         // The committed run of the block around the pool (mem_thaw makes frozen pages writable for the import): the game
         // maps its memory in pieces, so a block is often only partly committed when its first pool comes.
-        mem_thaw(blo, B);
+        // Frozen pages only: mem_thaw would also release the readback watch's armed pages of the whole block, so the
+        // game could read GPU write-backs early in memory unrelated to this pool. Armed pages stay inaccessible and end
+        // the run (vk_pool_init thawed the pool's own pages).
+        mem_thaw_keep_watch(blo, B);
+        if (arena_diag) ad_thaw_extra += B - (r->import_hi - r->import_lo);
         uint64_t lo = 0, hi = 0;
         for (uint64_t x = blo, y; x < bhi; x = y) {
             int st = plat_mem_state(x, bhi, &y);
@@ -239,16 +268,33 @@ static int arena_bind(VkCtx *c, PoolRec *r, const VkMemoryRequirements *req) {
     int ok = a && !(off % (req->alignment ? req->alignment : 1)) &&
              vkBindBufferMemory(c->device, r->buf, a->mem, off) == VK_SUCCESS;
     if (ok) a->refs++, r->arena = (int)(a - arena_tab) + 1, plat_inc32(&n_arena_binds);
+    if (ok && arena_diag) {
+        int j = 0;
+        while (j < ARENA_DIAG_POOLS && arena_pools[a - arena_tab][j].hi) j++;
+        if (j < ARENA_DIAG_POOLS) arena_pools[a - arena_tab][j] = (ArenaRange){r->import_lo, r->import_hi};
+        else plat_inc32(&ad_full);
+    }
     else if (a) plat_inc32(&af_bind);
     plat_mutex_unlock(&arena_lock);
     static int hooked;
     if (ok && !hooked) hooked = 1, rt_mem_decommit_hook = arena_decommit;
+    if (ok && arena_diag && !(n_arena_binds & 1023))
+        rt_log("arena diag: %d binds, %d arenas; retired with pools %d, decommits over live pools %d, pool lists full %d, "
+               "%.1f MiB thawed outside the first pool, readback-armed pages released by thaws %lld", (int)n_arena_binds,
+               (int)n_arenas, (int)ad_retire_live, (int)ad_pool_hit, (int)ad_full, ad_thaw_extra / 1048576.0,
+               (long long)mem_rbw_thaw_released());
     return ok;
 }
 
-static void arena_release(VkCtx *c, int arena) {
+static void arena_release(VkCtx *c, int arena, uint64_t lo, uint64_t hi) {
     plat_mutex_lock(&arena_lock);
     Arena *a = &arena_tab[arena - 1];
+    if (arena_diag)
+        for (int j = 0; j < ARENA_DIAG_POOLS; j++)
+            if (arena_pools[arena - 1][j].lo == lo && arena_pools[arena - 1][j].hi == hi) {
+                arena_pools[arena - 1][j] = (ArenaRange){0, 0};
+                break;
+            }
     if (a->refs > 0) a->refs--;
     arena_reap_locked(c);
     plat_mutex_unlock(&arena_lock);
@@ -396,7 +442,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->salloc) vmaDestroyBuffer(c->vma, r->buf, r->salloc), r->buf = VK_NULL_HANDLE;
     if (r->buf) vkDestroyBuffer(c->device, r->buf, NULL);
     if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
-    if (r->arena) arena_release(c, r->arena), r->arena = 0;
+    if (r->arena) arena_release(c, r->arena, r->import_lo, r->import_hi), r->arena = 0;
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
     free(r->hot), free(r->late_cnt), free(r->late_seen), free(r->hot_sub), free(r->pin);
